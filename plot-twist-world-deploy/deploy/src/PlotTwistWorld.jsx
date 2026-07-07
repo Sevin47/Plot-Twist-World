@@ -11,8 +11,18 @@ const MASK_W = 2048, MASK_H = 1024;
 
 const Z = 17;                 // parcel zoom: ~306m tiles at the equator
 const N = 1 << Z;             // tiles per axis
-const PZ = 14;                 // district-preview zoom: ~2.4km cells at the equator
-const PN = 1 << PZ;
+
+/* district-preview LOD: continuously choose a coarser quadkey depth so
+   color cells stay a sensible on-screen size at any zoom, spanning from
+   ~20km cells (country/region scale) down to ~600m (just above the real
+   ~306m deed grid, which takes over entirely once gridOn kicks in). */
+const PREVIEW_T = 26;       // target on-screen cell size, px
+const PREVIEW_Z_MIN = 11;   // ~19.6km cells at the equator
+const PREVIEW_Z_MAX = 16;   // ~611m cells at the equator
+function previewLevelFor(s) {
+  const z = Math.round(Math.log2(s / PREVIEW_T));
+  return Math.max(PREVIEW_Z_MIN, Math.min(PREVIEW_Z_MAX, z));
+}
 const REGION_LEN = 8;         // shared-storage shard prefix (~150km regions)
 const SAVE_KEY = "plottwist:world:v1";
 
@@ -303,7 +313,7 @@ export default function PlotTwistWorld() {
               <div>Zoom into anywhere on Earth until the deed grid appears, then tap a ~300 m tile and buy it. Everyone plays on the same planet — one tile, one owner.</div>
               <div>Tiles pay rent per second. Rarity is rolled when you buy (up to 8×). Build them up from cottage to tower for more rent.</div>
               <div>Trade with real players: list your tiles at any price on the open market, or buy theirs. Sales pay you even while you're offline.</div>
-              <div>Districts follow real geography: Downtown cores near big cities pay best, fading through Urban and Suburbs out to Rural land. Open water belongs to no one. The map itself is real too — live satellite-derived street data, zoomable down to your block.</div>
+              <div>Districts follow real geography: Downtown cores near big cities pay best, fading through Urban and Suburbs out to Rural land. Zoom continuously from ~20km regional color down to your actual ~300m deed. Open water belongs to no one. The map itself is real too — live street data, zoomable down to your block.</div>
             </div>
             <div className="mt-4"><Btn full onClick={() => setHowto(false)}>Got it</Btn></div>
           </Modal>
@@ -544,16 +554,19 @@ function Game({ G, onExit }) {
     return classifyTxy(tx, ty);
   }, [classifyTxy]);
 
-  /* coarser ~2.4km grid purely for visual district context at mid zoom,
-     before individual ~306m deeds are close enough to tap */
+  /* coarser grid purely for visual district context at mid zoom, before
+     individual ~306m deeds are close enough to tap — resolution varies
+     continuously with zoom (see previewLevelFor), so the cache key must
+     include the level */
   const previewCache = useRef(new Map());
-  const classifyPreviewTxy = useCallback((tx, ty) => {
+  const classifyPreviewAt = useCallback((pz, tx, ty) => {
     const cc = previewCache.current;
-    const key = ty * PN + tx;
+    const key = `${pz}_${tx}_${ty}`;
     let v = cc.get(key);
     if (v) return v;
-    v = computeClass((tx + 0.5) / PN, (ty + 0.5) / PN);
-    if (cc.size > 20000) cc.clear();
+    const pn = 1 << pz;
+    v = computeClass((tx + 0.5) / pn, (ty + 0.5) / pn);
+    if (cc.size > 24000) cc.clear();
     cc.set(key, v);
     return v;
   }, [computeClass]);
@@ -1002,20 +1015,22 @@ function Game({ G, onExit }) {
         }
       }
     } else {
-      /* district preview: coarse ~2.4km cells, tinted by land-use class,
-         shown as soon as the viewport holds a reasonable number of them —
-         bridges the gap between "whole planet" and the tappable deed grid */
-      const ptile = s / PN;
+      /* district preview: land-use-tinted cells at a zoom-appropriate
+         resolution (~20km down to ~600m), bridging "whole planet" and the
+         tappable ~306m deed grid with no gap in coverage */
+      const pz = previewLevelFor(s);
+      const pn = 1 << pz;
+      const ptile = s / pn;
       const px0 = Math.max(0, Math.floor(-ox / ptile));
       const py0 = Math.max(0, Math.floor(-oy / ptile));
-      const px1 = Math.min(PN - 1, Math.ceil((w - ox) / ptile));
-      const py1 = Math.min(PN - 1, Math.ceil((h - oy) / ptile));
+      const px1 = Math.min(pn - 1, Math.ceil((w - ox) / ptile));
+      const py1 = Math.min(pn - 1, Math.ceil((h - oy) / ptile));
       const pcnt = Math.max(0, px1 - px0 + 1) * Math.max(0, py1 - py0 + 1);
-      D.pcnt = pcnt; D.ptile = ptile;
-      if (ptile >= 3 && pcnt > 0 && pcnt <= 6500) {
+      D.pcnt = pcnt; D.ptile = ptile; D.pz = pz;
+      if (pcnt > 0 && pcnt <= 8000) {
         for (let ty = py0; ty <= py1; ty++) {
           for (let tx = px0; tx <= px1; tx++) {
-            const cc = classifyPreviewTxy(tx, ty);
+            const cc = classifyPreviewAt(pz, tx, ty);
             if (cc.c === "water") continue;
             ctx.fillStyle = hexA(CLS[cc.c].color, 0.24);
             ctx.fillRect(ox + tx * ptile, oy + ty * ptile, ptile + 0.6, ptile + 0.6);
@@ -1069,7 +1084,7 @@ function Game({ G, onExit }) {
     ctx.fillStyle = hexA(C.dim, 0.7);
     ctx.fillText("\u00A9 OpenStreetMap \u00A9 CARTO", w - 8, h - 6);
     ctx.textAlign = "left";
-  }, [g, sel, classifyTxy, reduced, getTile]);
+  }, [g, sel, classifyTxy, classifyPreviewAt, reduced, getTile]);
 
   useEffect(() => {
     if (!ready || tab !== "map" || !maskReady) return;
@@ -1229,7 +1244,7 @@ function Game({ G, onExit }) {
       ua: navigator.userAgent, dpr: size.current.dpr,
       view: { w: size.current.w, h: size.current.h }, cam: cam.current,
       fps: D.fps, drawAvgMs: D.avg, drawMaxMs: D.max, tilePx: D.tilePx, tiles: D.cnt, gridOn: D.gridOn,
-      previewPx: D.ptile, previewCells: D.pcnt, basemapOk: D.tileOk, basemapFail: D.tileFail,
+      previewZ: D.pz, previewPx: D.ptile, previewCells: D.pcnt, basemapOk: D.tileOk, basemapFail: D.tileFail,
       pointers: ptrs.current.size, gesture: gesture.current && gesture.current.kind,
       regions: regions.current.size, clsCache: clsCache.current.size,
       longtasks: D.long, longtaskMaxMs: D.longMax, errors: D.errs, lastInput: D.lastEvt, owned: g.own.length,
@@ -1340,7 +1355,14 @@ function Game({ G, onExit }) {
           )}
           {tilePxNow < 8 && !sel && (
             <div className="pt10 pointer-events-none absolute inset-x-0 top-3 text-center" style={{ ...mono, color: C.dim }}>
-              {cam.current.s / PN >= 3 ? "tap a district to zoom in · deed grid appears up close" : "zoom in to see districts · tap to zoom"}
+              {(() => {
+                const { s: cs } = cam.current;
+                const { w: vw, h: vh } = size.current;
+                const pz = previewLevelFor(cs);
+                const ptile = cs / (1 << pz);
+                const cnt = (vw / ptile) * (vh / ptile);
+                return cnt <= 8000 ? "tap a district to zoom in · deed grid appears up close" : "zoom in to see districts · tap to zoom";
+              })()}
             </div>
           )}
 
@@ -1348,7 +1370,7 @@ function Game({ G, onExit }) {
             <div className="pt10 absolute bottom-8 left-3 rounded-lg p-2 leading-relaxed" style={{ ...mono, color: C.text, background: C.panel + "f0", border: `1px solid ${C.hair}`, maxWidth: 240 }}>
               <div>fps {D.fps} · draw {D.avg}ms · max {D.max}ms</div>
               <div>tilePx {D.tilePx.toFixed(2)} · grid {String(D.gridOn)} · tiles {D.cnt}</div>
-              <div>preview {D.ptile.toFixed(1)}px · cells {D.pcnt}</div>
+              <div>preview z{D.pz || 0} · {D.ptile.toFixed(1)}px · cells {D.pcnt}</div>
               <div>basemap tiles ok {D.tileOk} · fail {D.tileFail}</div>
               <div>s {Math.round(D.s).toLocaleString()} · dpr {size.current.dpr}</div>
               <div>pointers {ptrs.current.size} · gesture {gesture.current ? gesture.current.kind : "-"}</div>
