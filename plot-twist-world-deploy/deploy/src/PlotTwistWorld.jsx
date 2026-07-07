@@ -646,23 +646,35 @@ function Game({ G, onExit }) {
     const half = blockPx / 2;
     const step = blockPx <= 8 ? 1 : Math.ceil(blockPx / 8);
 
-    let n = 0, sumBright = 0, minB = 255, maxB = 0;
+    let n = 0, sr = 0, sg = 0, sb = 0, sumBright = 0, minB = 255, maxB = 0;
     for (let dy = -half; dy <= half; dy += step) {
       for (let dx = -half; dx <= half; dx += step) {
         const px = Math.max(0, Math.min(e.pw - 1, Math.round(u0 + dx)));
         const py = Math.max(0, Math.min(e.ph - 1, Math.round(v0 + dy)));
         const i = (py * e.pw + px) * 4;
-        const bright = (e.pix[i] + e.pix[i + 1] + e.pix[i + 2]) / 3;
+        const r = e.pix[i], g = e.pix[i + 1], b = e.pix[i + 2];
+        sr += r; sg += g; sb += b;
+        const bright = (r + g + b) / 3;
         sumBright += bright;
         if (bright < minB) minB = bright;
         if (bright > maxB) maxB = bright;
         n++;
       }
     }
-    const avgBright = sumBright / n;
+    const avgR = sr / n, avgG = sg / n, avgB = sb / n, avgBright = sumBright / n;
     const spread = maxB - minB; // road/building edges widen this far more reliably than point-sample variance
     const density = Math.max(0, Math.min(1, 0.55 * (spread / 90) + 0.45 * ((avgBright - 15) / 90)));
-    return { density, dbg: { blockPx, samples: n, avgBright: Math.round(avgBright), spread: Math.round(spread), density: +density.toFixed(2) } };
+    // Calibrated against a real captured tile: CARTO's neutral land fill
+    // reads ~rgb(38,38,38) — flat, R≈G≈B, brightness in the high-30s/low-40s.
+    // Real water is distinctly blue-dominant and darker. Used only to catch
+    // cases where our mask disagrees with what's actually drawn on screen —
+    // exactly the coastline-mismatch case this is meant to fix.
+    const blueness = avgB - (avgR + avgG) / 2;
+    const pixelWater = blueness > 10 && avgBright < 34 && spread < 30;
+    return {
+      density, pixelWater,
+      dbg: { blockPx, samples: n, avgBright: Math.round(avgBright), spread: Math.round(spread), blueness: Math.round(blueness), density: +density.toFixed(2), pixelWater },
+    };
   }, [getTile]);
 
   const clsCache = useRef(new Map());
@@ -676,16 +688,27 @@ function Game({ G, onExit }) {
     const l = landness(wx, wy);
     const lat = wyToLat(wy), lon = wx * 360 - 180;
     const { n, d } = nearestCity(lat, lon);
-    if (l < 0.2) {
-      const v = { c: "water", n, d, src: "mask" };
-      if (cc.size > 60000) cc.clear();
-      cc.set(key, v); // water is stable — always safe to cache permanently
-      return v;
-    }
 
     const bzRaw = Math.max(0, Math.min(19, Math.round(Math.log2(cam.current.s / 256))));
     const bz = Math.min(bzRaw, Z);
     const px = classifyDeedPixelDensity(bz, wx, wy);
+
+    if (l < 0.2 && !(px && !px.pixelWater)) {
+      // mask says water, and either we have no better data or the pixel
+      // reading agrees — this is stable, cache it permanently
+      const v = { c: "water", n, d, src: px ? "pixel" : "mask" };
+      if (cc.size > 60000) cc.clear();
+      cc.set(key, v);
+      return v;
+    }
+    if (px && px.pixelWater) {
+      // pixel reading confidently disagrees with the mask and says water —
+      // trust what's actually drawn on screen over our generalized coastline
+      const v = { c: "water", n, d, src: "pixel", dbg: px.dbg };
+      if (cc.size > 60000) cc.clear();
+      cc.set(key, v);
+      return v;
+    }
     if (px) {
       const v = { c: tierFor(l < 0.8, px.density), n, d, src: "pixel", dbg: px.dbg };
       if (cc.size > 60000) cc.clear();
@@ -1097,9 +1120,16 @@ function Game({ G, onExit }) {
       if (cnt <= 6500) {
         for (let ty = ty0; ty <= ty1; ty++) for (let tx = tx0; tx <= tx1; tx++) {
           const cc = classifyTxy(tx, ty);
-          if (cc.c !== "water") {
-            ctx.fillStyle = hexA(CLS[cc.c].color, 0.14);
-            ctx.fillRect(ox + tx * tilePx, oy + ty * tilePx, tilePx, tilePx);
+          const px = ox + tx * tilePx, py = oy + ty * tilePx;
+          if (cc.c === "water") {
+            // explicit, unmistakable water treatment — never leave it as
+            // blank passthrough, which reads as "uncertain" rather than
+            // "not for sale"
+            ctx.fillStyle = hexA(CLS.water.color, 0.3);
+            ctx.fillRect(px, py, tilePx, tilePx);
+          } else {
+            ctx.fillStyle = hexA(CLS[cc.c].color, 0.34);
+            ctx.fillRect(px, py, tilePx, tilePx);
           }
         }
       }
@@ -1154,8 +1184,8 @@ function Game({ G, onExit }) {
         for (let ty = py0; ty <= py1; ty++) {
           for (let tx = px0; tx <= px1; tx++) {
             const cc = classifyPreviewAt(pz, tx, ty);
-            if (cc.c === "water") continue;
-            ctx.fillStyle = hexA(CLS[cc.c].color, 0.24);
+            const col = cc.c === "water" ? CLS.water.color : CLS[cc.c].color;
+            ctx.fillStyle = hexA(col, cc.c === "water" ? 0.18 : 0.26);
             ctx.fillRect(ox + tx * ptile, oy + ty * ptile, ptile + 0.6, ptile + 0.6);
           }
         }
@@ -1499,7 +1529,7 @@ function Game({ G, onExit }) {
               <div>inflight {inflight.current} queued {fetchQueue.current.length}</div>
               {selDbg && (
                 <div style={{ color: selDbg.src === "pixel" ? C.amber : selDbg.src === "mask" ? "#5FA8F5" : C.dim }}>
-                  sel: {selDbg.src}{selDbg.dbg ? ` · block ${selDbg.dbg.blockPx}px (${selDbg.dbg.samples}smp) bright ${selDbg.dbg.avgBright} spread ${selDbg.dbg.spread} dens ${selDbg.dbg.density}` : ""}
+                  sel: {selDbg.c} via {selDbg.src}{selDbg.dbg ? ` · bright ${selDbg.dbg.avgBright} blue ${selDbg.dbg.blueness ?? "-"} spread ${selDbg.dbg.spread} dens ${selDbg.dbg.density} water? ${String(!!selDbg.dbg.pixelWater)}` : ""}
                 </div>
               )}
               <div>s {Math.round(D.s).toLocaleString()} · dpr {size.current.dpr}</div>
