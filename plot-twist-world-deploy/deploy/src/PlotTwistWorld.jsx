@@ -736,6 +736,7 @@ function Game({ G, onExit }) {
     if (!el || !cv) return;
     const measure = () => {
       const r = el.getBoundingClientRect();
+      if (r.width === 0 || r.height === 0) return; // hidden or not laid out yet
       const dpr = Math.min(window.devicePixelRatio || 1, 2);
       if (size.current.w === r.width && size.current.h === r.height && size.current.dpr === dpr && cam.current.init) return;
       size.current = { w: r.width, h: r.height, dpr };
@@ -746,8 +747,9 @@ function Game({ G, onExit }) {
     measure();
     const ro = new ResizeObserver(measure);
     ro.observe(el);
-    return () => ro.disconnect();
-  }, [fitWorld]);
+    window.addEventListener("resize", measure);
+    return () => { ro.disconnect(); window.removeEventListener("resize", measure); };
+  }, [fitWorld, ready, maskReady]); // must re-run after the loading screen unmounts
 
   const hexA = (hex, a) => {
     const n = parseInt(hex.slice(1), 16);
@@ -797,6 +799,7 @@ function Game({ G, onExit }) {
     if (!cv) return;
     const ctx = cv.getContext("2d");
     const { w, h, dpr } = size.current;
+    if (!w || !h) return;
     const { x: ox, y: oy, s } = cam.current;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.fillStyle = C.oceanDeep;
@@ -830,7 +833,7 @@ function Game({ G, onExit }) {
       const ty0 = Math.max(0, Math.floor(-oy / tilePx));
       const tx1 = Math.min(N - 1, Math.ceil((w - ox) / tilePx));
       const ty1 = Math.min(N - 1, Math.ceil((h - oy) / tilePx));
-      const cnt = (tx1 - tx0 + 1) * (ty1 - ty0 + 1);
+      const cnt = Math.max(0, tx1 - tx0 + 1) * Math.max(0, ty1 - ty0 + 1);
       D.cnt = cnt;
 
       /* coast tint: per-tile, but cached under numeric keys and skipped
