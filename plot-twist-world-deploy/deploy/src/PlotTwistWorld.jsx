@@ -362,6 +362,7 @@ function Game({ G, onExit }) {
   const [syncing, setSyncing] = useState(false);
   const [cities, setCities] = useState(false);
   const [citySearch, setCitySearch] = useState("");
+  const [showBasemap, setShowBasemap] = useState(true);
   const [dbg, setDbg] = useState(() => typeof location !== "undefined" && location.hash.includes("debug"));
   const [market, setMarket] = useState({ loading: false, rows: null });
   const [lb, setLb] = useState({ loading: false, rows: null });
@@ -1083,7 +1084,7 @@ function Game({ G, onExit }) {
     /* terrain: real basemap tiles at whatever integer zoom best matches the
        current camera scale, so imagery is always native-resolution crisp
        instead of one static image stretched to arbitrary size */
-    if (dx1 > dx && dy1 > dy) {
+    if (showBasemap && dx1 > dx && dy1 > dy) {
       const bz = Math.max(0, Math.min(19, Math.round(Math.log2(s / 256))));
       const bn = 1 << bz, btile = s / bn;
       const tx0 = Math.max(0, Math.floor(-ox / btile));
@@ -1100,6 +1101,11 @@ function Game({ G, onExit }) {
           }
         }
       }
+    } else if (!showBasemap && dx1 > dx && dy1 > dy) {
+      // grid-only mode: flat neutral so district tint/lines read on their
+      // own, undistracted by real imagery — this is the whole point of the toggle
+      ctx.fillStyle = "#12151A";
+      ctx.fillRect(dx, dy, dx1 - dx, dy1 - dy);
     }
 
     const gridOn = tilePx >= 8;
@@ -1232,12 +1238,14 @@ function Game({ G, onExit }) {
       ctx.lineWidth = 1;
     }
 
-    ctx.textAlign = "right";
-    ctx.font = "9px ui-monospace, Menlo, monospace";
-    ctx.fillStyle = hexA(C.dim, 0.7);
-    ctx.fillText("\u00A9 OpenStreetMap \u00A9 CARTO", w - 8, h - 6);
-    ctx.textAlign = "left";
-  }, [g, sel, classifyTxy, classifyPreviewAt, reduced, getTile]);
+    if (showBasemap) {
+      ctx.textAlign = "right";
+      ctx.font = "9px ui-monospace, Menlo, monospace";
+      ctx.fillStyle = hexA(C.dim, 0.7);
+      ctx.fillText("\u00A9 OpenStreetMap \u00A9 CARTO", w - 8, h - 6);
+      ctx.textAlign = "left";
+    }
+  }, [g, sel, classifyTxy, classifyPreviewAt, reduced, getTile, showBasemap]);
 
   useEffect(() => {
     if (!ready || tab !== "map" || !maskReady) return;
@@ -1472,6 +1480,20 @@ function Game({ G, onExit }) {
                 {t}
               </button>
             ))}
+            <button
+              onClick={() => setShowBasemap((v) => !v)}
+              title={showBasemap ? "Hide basemap — grid only" : "Show basemap"}
+              className="h-9 w-9 rounded-lg text-sm focus-visible:outline focus-visible:outline-2"
+              style={{
+                ...mono,
+                background: showBasemap ? C.panel + "e6" : C.amber,
+                color: showBasemap ? C.text : "#221A05",
+                border: `1px solid ${showBasemap ? C.hair : C.amber}`,
+                outlineColor: C.amber,
+              }}
+            >
+              {showBasemap ? "🗺" : "▦"}
+            </button>
           </div>
           {cities && (
             <div className="absolute right-14 top-3 w-48 rounded-xl p-2" style={{ background: C.panel + "f2", border: `1px solid ${C.hair}` }}>
