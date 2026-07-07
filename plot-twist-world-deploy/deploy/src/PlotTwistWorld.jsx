@@ -313,7 +313,7 @@ export default function PlotTwistWorld() {
               <div>Zoom into anywhere on Earth until the deed grid appears, then tap a ~300 m tile and buy it. Everyone plays on the same planet — one tile, one owner.</div>
               <div>Tiles pay rent per second. Rarity is rolled when you buy (up to 8×). Build them up from cottage to tower for more rent.</div>
               <div>Trade with real players: list your tiles at any price on the open market, or buy theirs. Sales pay you even while you're offline.</div>
-              <div>Districts follow real geography: Downtown cores near big cities pay best, fading through Urban and Suburbs out to Rural land. Zoom continuously from ~20km regional color down to your actual ~300m deed. Open water belongs to no one. The map itself is real too — live street data, zoomable down to your block.</div>
+              <div>Districts follow real geography: Downtown cores near big cities pay best, fading through Urban and Suburbs out to Rural land. Ocean, lakes and rivers are read straight from real coastline data and can never be bought. Zoom continuously from ~20km regional color down to your actual ~300m deed, where district tier reads real road density off the live map.</div>
             </div>
             <div className="mt-4"><Btn full onClick={() => setHowto(false)}>Got it</Btn></div>
           </Modal>
@@ -528,6 +528,29 @@ function Game({ G, onExit }) {
   const tileOrder = useRef([]);
   const tileStats = useRef({ ok: 0, fail: 0, analyzed: 0, analyzeFail: 0 });
 
+  // cap simultaneous proxy fetches so fast panning/zooming can't spawn a
+  // request storm that stalls the browser or the free proxy — queued
+  // requests just wait their turn instead of piling up
+  const MAX_INFLIGHT = 6;
+  const inflight = useRef(0);
+  const fetchQueue = useRef([]);
+  const runQueue = () => {
+    while (inflight.current < MAX_INFLIGHT && fetchQueue.current.length) {
+      const job = fetchQueue.current.shift();
+      startTileFetch(job.e, job.url);
+    }
+  };
+  const startTileFetch = (e, url) => {
+    inflight.current++;
+    const img = new Image();
+    img.crossOrigin = "anonymous";
+    const settle = () => { inflight.current--; runQueue(); };
+    img.onload = () => { e.loaded = true; tileStats.current.ok++; analyzeTile(e); settle(); };
+    img.onerror = () => { e.failed = true; tileStats.current.fail++; settle(); };
+    img.src = url;
+    e.img = img;
+  };
+
   const analyzeTile = (e) => {
     try {
       const oc = document.createElement("canvas");
@@ -556,106 +579,91 @@ function Game({ G, onExit }) {
       tileCache.current.delete(old);
     }
     const sub = TILE_SUBS[(tx + ty) % TILE_SUBS.length];
-    const real = `https://${sub}.basemaps.cartocdn.com/dark_all/${z}/${tx}/${ty}.png`;
     // Route through a CORS-enabling proxy (wsrv.nl) so we can read the tile's
-    // own pixels back — required both to let the coastline in our purchase
-    // grid exactly match what's drawn, and to read real road/building density
-    // for district classification instead of a synthetic distance-from-city
-    // formula. CARTO's tile CDN itself sends no CORS header, so a direct
-    // crossOrigin request (as before) fails outright; the proxy re-serves the
-    // same bytes with permission attached.
-    const img = new Image();
-    img.crossOrigin = "anonymous";
-    img.onload = () => { e.loaded = true; tileStats.current.ok++; analyzeTile(e); };
-    img.onerror = () => { e.failed = true; tileStats.current.fail++; };
-    img.src = `https://wsrv.nl/?url=${encodeURIComponent(real.replace("https://", ""))}&output=png`;
-    e.img = img;
+    // own pixels back for district texture — CARTO's CDN sends no CORS
+    // header itself. Path kept unencoded (raw domain/path, no query chars
+    // that need escaping) to match wsrv.nl's documented usage exactly.
+    const url = `https://wsrv.nl/?url=${sub}.basemaps.cartocdn.com/dark_all/${z}/${tx}/${ty}.png&output=png`;
+    if (inflight.current < MAX_INFLIGHT) startTileFetch(e, url);
+    else {
+      if (fetchQueue.current.length > 60) fetchQueue.current.shift(); // drop stalest queued request
+      fetchQueue.current.push({ e, url });
+    }
     return e;
   }, []);
 
-  /* nearest-city label (flavor text only — "near X, 4 km") stays sourced
-     from real populated-places data regardless of which classifier below
-     decided the district/price */
+  /* nearest-city label (flavor text only — "near X, 4 km") */
   const nearestCity = useCallback((lat, lon) => {
     const { city, dkm } = urbanAt(lat, lon);
     return city && dkm < 60 ? { n: city.name, d: Math.round(dkm) } : { n: null, d: Math.round(dkm) };
   }, []);
 
-  /* fallback classifier: our own procedural coastline + distance-from-city
-     rings. Used only where real tile pixels aren't available yet (still
-     loading, or the proxy failed for that tile) — never cached, so it's
-     retried and silently upgraded once real data arrives. */
+  /* Shared tier decision: given "is this land near water" (from our own
+     mask — see below, never from live pixels) plus a 0..1 built-up density
+     (from whichever source is available), pick a district. */
+  const tierFor = (coastal, density) => {
+    if (coastal) return density >= 0.4 ? "waterfront" : "coast";
+    if (density >= 0.62) return "downtown";
+    if (density >= 0.4) return "urban";
+    if (density >= 0.18) return "suburbs";
+    return "rural";
+  };
+
+  /* Water/land and district density for the wide preview layer (country
+     down to ~600m context wash): entirely procedural — our own embedded
+     coastline mask decides water, population-distance rings decide density.
+     No network calls at all, which matters here since this layer can cover
+     thousands of on-screen cells while panning; fetching a live tile per
+     cell at this scale is what made the map feel sluggish. */
   const computeClassProcedural = useCallback((wx, wy) => {
     const l = landness(wx, wy);
     const lat = wyToLat(wy), lon = wx * 360 - 180;
-    if (l < 0.2) { const { n, d } = nearestCity(lat, lon); return { c: "water", n, d, src: "fallback" }; }
-    const { u, city, dkm } = urbanAt(lat, lon);
-    const coastal = l < 0.8;
-    let c;
-    if (u >= 0.75) c = "downtown";
-    else if (coastal && u >= 0.25) c = "waterfront";
-    else if (u >= 0.45) c = "urban";
-    else if (coastal) c = "coast";
-    else if (u >= 0.15) c = "suburbs";
-    else c = "rural";
-    return { c, n: city && dkm < 60 ? city.name : null, d: Math.round(dkm), src: "fallback" };
+    const { n, d } = nearestCity(lat, lon);
+    if (l < 0.2) return { c: "water", n, d, src: "mask" };
+    const { u } = urbanAt(lat, lon);
+    return { c: tierFor(l < 0.8, u), n, d, src: "fallback" };
   }, [landness, nearestCity]);
 
-  /* real classifier: reads actual basemap pixels at (wx,wy) via whichever
-     tile is loaded at zoom bz. Water = flat, saturated blue. District tier
-     = measured road/building texture density right at that spot, so a
-     city's real shape (river, one-sided bay, industrial spur) comes through
-     instead of a synthetic ring around its center point. Returns null when
-     the covering tile isn't analyzed yet, so the caller can fall back. */
-  const SAMPLE_OFFSETS = [[0,0],[-5,0],[5,0],[0,-5],[0,5],[-4,-4],[4,-4],[-4,4],[4,4]];
-  const classifyFromPixels = useCallback((bz, wx, wy) => {
+  /* Real classifier for the fine ~306m deed grid only — the layer players
+     actually spend money on, and small enough in on-screen count to afford
+     a live tile fetch per cell. Water/coastal is STILL decided by our mask
+     (reliable, instant, no dependency on a third-party proxy for something
+     that must never be wrong); pixels only refine the density reading, by
+     averaging a whole pixel block sized to how much of the tile this one
+     deed covers — sparse point-sampling mostly missed CARTO's thin 1-2px
+     road lines and produced noisy, near-random results. Returns null (falls
+     back to the procedural reading above) until the covering tile loads. */
+  const classifyDeedPixelDensity = useCallback((bz, wx, wy) => {
     const bn = 1 << bz;
     const fx = wx * bn, fy = wy * bn;
     const tx = Math.max(0, Math.min(bn - 1, Math.floor(fx)));
     const ty = Math.max(0, Math.min(bn - 1, Math.floor(fy)));
     const e = getTile(bz, tx, ty);
     if (!e.analyzed) return null;
+
     const u0 = (fx - tx) * e.pw, v0 = (fy - ty) * e.ph;
-    let sr = 0, sg = 0, sb = 0, sumBright = 0, maxBright = 0;
-    const brights = [];
-    for (const [dx, dy] of SAMPLE_OFFSETS) {
-      const px = Math.max(0, Math.min(e.pw - 1, Math.round(u0 + dx)));
-      const py = Math.max(0, Math.min(e.ph - 1, Math.round(v0 + dy)));
-      const i = (py * e.pw + px) * 4;
-      const r = e.pix[i], g = e.pix[i + 1], b = e.pix[i + 2];
-      sr += r; sg += g; sb += b;
-      const bright = (r + g + b) / 3;
-      brights.push(bright); sumBright += bright;
-      if (bright > maxBright) maxBright = bright;
-    }
-    const n = SAMPLE_OFFSETS.length;
-    const avgR = sr / n, avgG = sg / n, avgB = sb / n, avgBright = sumBright / n;
-    const blueness = avgB - (avgR + avgG) / 2;
-    let variance = 0;
-    for (const bv of brights) variance += Math.abs(bv - avgBright);
-    variance /= n;
+    const blockPx = Math.max(1, Math.min(32, Math.round(e.pw / Math.pow(2, Z - bz))));
+    const half = blockPx / 2;
+    const step = blockPx <= 8 ? 1 : Math.ceil(blockPx / 8);
 
-    const lat = wyToLat(wy), lon = wx * 360 - 180;
-    const { n: cityName, d: dkm } = nearestCity(lat, lon);
-    const density = Math.max(0, Math.min(1, 0.6 * (variance / 40) + 0.4 * ((maxBright - 25) / 150)));
-    const debugInfo = { avgR: Math.round(avgR), avgG: Math.round(avgG), avgB: Math.round(avgB), blueness: Math.round(blueness), variance: Math.round(variance), maxBright: Math.round(maxBright), density: +density.toFixed(2) };
-
-    let c;
-    const isWater = blueness > 8 && variance < 6;
-    if (isWater) c = "water";
-    else {
-      // "near water" check: same neighborhood, wider blueness scan
-      let waterish = 0;
-      for (const bv of brights) { /* no-op placeholder to keep structure */ }
-      const nearWater = blueness > 2.5; // partial blue tint = coastline mixed into this cell
-      if (nearWater) c = density >= 0.4 ? "waterfront" : "coast";
-      else if (density >= 0.62) c = "downtown";
-      else if (density >= 0.4) c = "urban";
-      else if (density >= 0.18) c = "suburbs";
-      else c = "rural";
+    let n = 0, sumBright = 0, minB = 255, maxB = 0;
+    for (let dy = -half; dy <= half; dy += step) {
+      for (let dx = -half; dx <= half; dx += step) {
+        const px = Math.max(0, Math.min(e.pw - 1, Math.round(u0 + dx)));
+        const py = Math.max(0, Math.min(e.ph - 1, Math.round(v0 + dy)));
+        const i = (py * e.pw + px) * 4;
+        const bright = (e.pix[i] + e.pix[i + 1] + e.pix[i + 2]) / 3;
+        sumBright += bright;
+        if (bright < minB) minB = bright;
+        if (bright > maxB) maxB = bright;
+        n++;
+      }
     }
-    return { c, n: cityName, d: dkm, src: "pixel", dbg: debugInfo };
-  }, [getTile, nearestCity]);
+    const avgBright = sumBright / n;
+    const spread = maxB - minB; // road/building edges widen this far more reliably than point-sample variance
+    const density = Math.max(0, Math.min(1, 0.55 * (spread / 90) + 0.45 * ((avgBright - 15) / 90)));
+    return { density, dbg: { blockPx, samples: n, avgBright: Math.round(avgBright), spread: Math.round(spread), density: +density.toFixed(2) } };
+  }, [getTile]);
 
   const clsCache = useRef(new Map());
   const classifyTxy = useCallback((tx, ty) => {
@@ -663,16 +671,33 @@ function Game({ G, onExit }) {
     const key = ty * N + tx;
     const cached = cc.get(key);
     if (cached) return cached;
+
     const wx = (tx + 0.5) / N, wy = (ty + 0.5) / N;
-    const bz = Math.max(0, Math.min(19, Math.round(Math.log2(cam.current.s / 256))));
-    const real = classifyFromPixels(bz, wx, wy);
-    if (real) {
+    const l = landness(wx, wy);
+    const lat = wyToLat(wy), lon = wx * 360 - 180;
+    const { n, d } = nearestCity(lat, lon);
+    if (l < 0.2) {
+      const v = { c: "water", n, d, src: "mask" };
       if (cc.size > 60000) cc.clear();
-      cc.set(key, real);
-      return real;
+      cc.set(key, v); // water is stable — always safe to cache permanently
+      return v;
     }
-    return computeClassProcedural(wx, wy);
-  }, [classifyFromPixels, computeClassProcedural]);
+
+    const bzRaw = Math.max(0, Math.min(19, Math.round(Math.log2(cam.current.s / 256))));
+    const bz = Math.min(bzRaw, Z);
+    const px = classifyDeedPixelDensity(bz, wx, wy);
+    if (px) {
+      const v = { c: tierFor(l < 0.8, px.density), n, d, src: "pixel", dbg: px.dbg };
+      if (cc.size > 60000) cc.clear();
+      cc.set(key, v);
+      return v;
+    }
+    // tile not loaded yet — cheap fallback, deliberately NOT cached so this
+    // cell re-attempts the real classifier (and upgrades) on a later call
+    const { u } = urbanAt(lat, lon);
+    return { c: tierFor(l < 0.8, u), n, d, src: "fallback" };
+  }, [landness, nearestCity, classifyDeedPixelDensity]);
+
   const classify = useCallback((qk) => {
     const [tx, ty] = txyOf(qk);
     return classifyTxy(tx, ty);
@@ -680,7 +705,8 @@ function Game({ G, onExit }) {
 
   /* coarser grid purely for visual district context at mid zoom, before
      individual ~306m deeds are close enough to tap — resolution varies
-     continuously with zoom (see previewLevelFor) */
+     continuously with zoom (see previewLevelFor). Procedural only, by
+     design — see computeClassProcedural's comment above. */
   const previewCache = useRef(new Map());
   const classifyPreviewAt = useCallback((pz, tx, ty) => {
     const cc = previewCache.current;
@@ -688,16 +714,11 @@ function Game({ G, onExit }) {
     const cached = cc.get(key);
     if (cached) return cached;
     const pn = 1 << pz;
-    const wx = (tx + 0.5) / pn, wy = (ty + 0.5) / pn;
-    const bz = Math.max(0, Math.min(19, Math.round(Math.log2(cam.current.s / 256))));
-    const real = classifyFromPixels(bz, wx, wy);
-    if (real) {
-      if (cc.size > 24000) cc.clear();
-      cc.set(key, real);
-      return real;
-    }
-    return computeClassProcedural(wx, wy);
-  }, [classifyFromPixels, computeClassProcedural]);
+    const v = computeClassProcedural((tx + 0.5) / pn, (ty + 0.5) / pn);
+    if (cc.size > 24000) cc.clear();
+    cc.set(key, v);
+    return v;
+  }, [computeClassProcedural]);
 
   /* ── real basemap tiles (CARTO Dark Matter, © OpenStreetMap contributors
      © CARTO) — crisp raster imagery with built-in place labels at every
@@ -1474,10 +1495,11 @@ function Game({ G, onExit }) {
               <div>fps {D.fps} · draw {D.avg}ms · max {D.max}ms</div>
               <div>tilePx {D.tilePx.toFixed(2)} · grid {String(D.gridOn)} · tiles {D.cnt}</div>
               <div>preview z{D.pz || 0} · {D.ptile.toFixed(1)}px · cells {D.pcnt}</div>
-              <div>basemap tiles ok {D.tileOk} · fail {D.tileFail} · analyzed {tileStats.current.analyzed} · CORS-blocked {tileStats.current.analyzeFail}</div>
+              <div>tiles ok {D.tileOk} fail {D.tileFail} · analyzed {tileStats.current.analyzed} CORS-blocked {tileStats.current.analyzeFail}</div>
+              <div>inflight {inflight.current} queued {fetchQueue.current.length}</div>
               {selDbg && (
-                <div style={{ color: selDbg.src === "pixel" ? C.amber : C.dim }}>
-                  sel: {selDbg.src} rgb({selDbg.dbg ? `${selDbg.dbg.avgR},${selDbg.dbg.avgG},${selDbg.dbg.avgB}` : "-"}) blue {selDbg.dbg ? selDbg.dbg.blueness : "-"} var {selDbg.dbg ? selDbg.dbg.variance : "-"} dens {selDbg.dbg ? selDbg.dbg.density : "-"}
+                <div style={{ color: selDbg.src === "pixel" ? C.amber : selDbg.src === "mask" ? "#5FA8F5" : C.dim }}>
+                  sel: {selDbg.src}{selDbg.dbg ? ` · block ${selDbg.dbg.blockPx}px (${selDbg.dbg.samples}smp) bright ${selDbg.dbg.avgBright} spread ${selDbg.dbg.spread} dens ${selDbg.dbg.density}` : ""}
                 </div>
               )}
               <div>s {Math.round(D.s).toLocaleString()} · dpr {size.current.dpr}</div>
