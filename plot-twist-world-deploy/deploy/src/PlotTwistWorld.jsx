@@ -11,6 +11,8 @@ const MASK_W = 2048, MASK_H = 1024;
 
 const Z = 17;                 // parcel zoom: ~306m tiles at the equator
 const N = 1 << Z;             // tiles per axis
+const PZ = 14;                 // district-preview zoom: ~2.4km cells at the equator
+const PN = 1 << PZ;
 const REGION_LEN = 8;         // shared-storage shard prefix (~150km regions)
 const SAVE_KEY = "plottwist:world:v1";
 
@@ -52,11 +54,7 @@ const ADS = [
   { brand: "Actual Cloud Storage", line: "0% uptime. 100% sky." },
 ];
 
-const CITIES = [
-  ["New York", 40.71, -74.01], ["London", 51.51, -0.13], ["Tokyo", 35.68, 139.69],
-  ["São Paulo", -23.55, -46.63], ["Sydney", -33.87, 151.21], ["Cairo", 30.04, 31.24],
-  ["Lagos", 6.52, 3.37], ["Mumbai", 19.08, 72.88],
-];
+
 
 const ACH = [
   { k: "deed1",  name: "First deed",     desc: "Claim your first tile" },
@@ -134,6 +132,11 @@ for (const [name, la, lo, lp] of CITY_DATA) {
   const b = CITY_IDX.get(key);
   if (b) b.push(c); else CITY_IDX.set(key, [c]);
 }
+
+const TOP_CITIES = [...CITY_DATA]
+  .sort((a, b) => b[3] - a[3])
+  .slice(0, 60)
+  .map(([name, la, lo]) => [name, la / 100, lo / 100]);
 
 function urbanAt(lat, lon) {
   const cosl = Math.max(0.05, Math.cos((lat * Math.PI) / 180));
@@ -300,7 +303,7 @@ export default function PlotTwistWorld() {
               <div>Zoom into anywhere on Earth until the deed grid appears, then tap a ~300 m tile and buy it. Everyone plays on the same planet — one tile, one owner.</div>
               <div>Tiles pay rent per second. Rarity is rolled when you buy (up to 8×). Build them up from cottage to tower for more rent.</div>
               <div>Trade with real players: list your tiles at any price on the open market, or buy theirs. Sales pay you even while you're offline.</div>
-              <div>Districts follow real geography: Downtown cores near big cities pay best, fading through Urban and Suburbs out to Rural land. Open water belongs to no one. The scale bar is real — that's actually how big Greenland isn't.</div>
+              <div>Districts follow real geography: Downtown cores near big cities pay best, fading through Urban and Suburbs out to Rural land. Open water belongs to no one. The map itself is real too — live satellite-derived street data, zoomable down to your block.</div>
             </div>
             <div className="mt-4"><Btn full onClick={() => setHowto(false)}>Got it</Btn></div>
           </Modal>
@@ -348,6 +351,7 @@ function Game({ G, onExit }) {
   const [toasts, setToasts] = useState([]);
   const [syncing, setSyncing] = useState(false);
   const [cities, setCities] = useState(false);
+  const [citySearch, setCitySearch] = useState("");
   const [dbg, setDbg] = useState(() => typeof location !== "undefined" && location.hash.includes("debug"));
   const [market, setMarket] = useState({ loading: false, rows: null });
   const [lb, setLb] = useState({ loading: false, rows: null });
@@ -455,19 +459,6 @@ function Game({ G, onExit }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  /* migrate tile classes from older builds once terrain data is ready */
-  useEffect(() => {
-    if (!ready || !maskReady) return;
-    let changed = false;
-    for (const t of g.own) {
-      if (t.cls === "water") continue; // grandfathered ocean deeds keep working
-      const c = classify(t.qk).c;
-      if (t.cls !== c) { t.cls = c; changed = true; }
-    }
-    if (changed) { rebuildOwn(); dirty.current = true; save(); }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ready, maskReady]);
-
   /* ── economy tick ── */
   useEffect(() => {
     if (!ready) return;
@@ -485,8 +476,9 @@ function Game({ G, onExit }) {
   }, [ready, g, checkAch, save, pushLB, collectBank]);
 
   /* ── land mask ── */
-  const mask = useRef(null);        // Uint8Array alpha
-  const landCanvas = useRef(null);  // tinted land image
+  /* land/water alpha mask — used only for gameplay classification (district
+     pricing, purchasability). Visuals come from real map tiles below. */
+  const mask = useRef(null);
   const [maskReady, setMaskReady] = useState(false);
   useEffect(() => {
     const img = new Image();
@@ -499,14 +491,6 @@ function Game({ G, onExit }) {
       const a = new Uint8Array(MASK_W * MASK_H);
       for (let i = 0; i < a.length; i++) a[i] = d[i * 4 + 3];
       mask.current = a;
-      const tc = document.createElement("canvas");
-      tc.width = MASK_W; tc.height = MASK_H;
-      const t = tc.getContext("2d");
-      t.drawImage(img, 0, 0);
-      t.globalCompositeOperation = "source-in";
-      t.fillStyle = C.landFill;
-      t.fillRect(0, 0, MASK_W, MASK_H);
-      landCanvas.current = tc;
       setMaskReady(true);
     };
     img.src = "data:image/png;base64," + LAND_B64;
@@ -528,36 +512,93 @@ function Game({ G, onExit }) {
     return v / 255;
   }, []);
 
+  const computeClass = useCallback((wx, wy) => {
+    const l = landness(wx, wy);
+    if (l < 0.2) return { c: "water", n: null, d: 0 };
+    const lat = wyToLat(wy), lon = wx * 360 - 180;
+    const { u, city, dkm } = urbanAt(lat, lon);
+    const coastal = l < 0.8;
+    let c;
+    if (u >= 0.75) c = "downtown";
+    else if (coastal && u >= 0.25) c = "waterfront";
+    else if (u >= 0.45) c = "urban";
+    else if (coastal) c = "coast";
+    else if (u >= 0.15) c = "suburbs";
+    else c = "rural";
+    return { c, n: city && dkm < 60 ? city.name : null, d: Math.round(dkm) };
+  }, [landness]);
+
   const clsCache = useRef(new Map());
   const classifyTxy = useCallback((tx, ty) => {
     const cc = clsCache.current;
     const key = ty * N + tx;
     let v = cc.get(key);
     if (v) return v;
-    const wx = (tx + 0.5) / N, wy = (ty + 0.5) / N;
-    const l = landness(wx, wy);
-    if (l < 0.2) v = { c: "water", n: null, d: 0 };
-    else {
-      const lat = wyToLat(wy), lon = wx * 360 - 180;
-      const { u, city, dkm } = urbanAt(lat, lon);
-      const coastal = l < 0.8;
-      let c;
-      if (u >= 0.75) c = "downtown";
-      else if (coastal && u >= 0.25) c = "waterfront";
-      else if (u >= 0.45) c = "urban";
-      else if (coastal) c = "coast";
-      else if (u >= 0.15) c = "suburbs";
-      else c = "rural";
-      v = { c, n: city && dkm < 60 ? city.name : null, d: Math.round(dkm) };
-    }
+    v = computeClass((tx + 0.5) / N, (ty + 0.5) / N);
     if (cc.size > 60000) cc.clear();
     cc.set(key, v);
     return v;
-  }, [landness]);
+  }, [computeClass]);
   const classify = useCallback((qk) => {
     const [tx, ty] = txyOf(qk);
     return classifyTxy(tx, ty);
   }, [classifyTxy]);
+
+  /* coarser ~2.4km grid purely for visual district context at mid zoom,
+     before individual ~306m deeds are close enough to tap */
+  const previewCache = useRef(new Map());
+  const classifyPreviewTxy = useCallback((tx, ty) => {
+    const cc = previewCache.current;
+    const key = ty * PN + tx;
+    let v = cc.get(key);
+    if (v) return v;
+    v = computeClass((tx + 0.5) / PN, (ty + 0.5) / PN);
+    if (cc.size > 20000) cc.clear();
+    cc.set(key, v);
+    return v;
+  }, [computeClass]);
+
+  /* ── real basemap tiles (CARTO Dark Matter, © OpenStreetMap contributors
+     © CARTO) — crisp raster imagery with built-in place labels at every
+     zoom, replacing the single static planet image for visuals. ── */
+  const TILE_SUBS = ["a", "b", "c", "d"];
+  const tileCache = useRef(new Map()); // "z/x/y" -> { img, loaded, failed }
+  const tileOrder = useRef([]);
+  const getTile = useCallback((z, tx, ty) => {
+    const key = `${z}/${tx}/${ty}`;
+    let e = tileCache.current.get(key);
+    if (e) return e;
+    e = { img: null, loaded: false, failed: false };
+    tileCache.current.set(key, e);
+    tileOrder.current.push(key);
+    if (tileOrder.current.length > 500) {
+      const old = tileOrder.current.shift();
+      tileCache.current.delete(old);
+    }
+    const sub = TILE_SUBS[(tx + ty) % TILE_SUBS.length];
+    const img = new Image(); // no crossOrigin: we only ever draw these tiles,
+    // never read their pixels back, and CARTO's tile CDN doesn't send CORS
+    // headers — setting crossOrigin here makes every load fail silently.
+    img.onload = () => { e.loaded = true; tileStats.current.ok++; };
+    img.onerror = () => { e.failed = true; tileStats.current.fail++; };
+    img.src = `https://${sub}.basemaps.cartocdn.com/dark_all/${z}/${tx}/${ty}.png`;
+    e.img = img;
+    return e;
+  }, []);
+  const tileStats = useRef({ ok: 0, fail: 0 });
+
+  /* migrate tile classes from older builds once terrain data is ready */
+  useEffect(() => {
+    if (!ready || !maskReady) return;
+    let changed = false;
+    for (const t of g.own) {
+      if (t.cls === "water") continue; // grandfathered ocean deeds keep working
+      const c = classify(t.qk).c;
+      if (t.cls !== c) { t.cls = c; changed = true; }
+    }
+    if (changed) { rebuildOwn(); dirty.current = true; save(); }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ready, maskReady]);
 
   /* ── shared world regions ── */
   const ensureRegion = useCallback(async (prefix, forceRefresh) => {
@@ -880,20 +921,32 @@ function Game({ G, onExit }) {
       ctx.fillRect(dx, dy, dx1 - dx, dy1 - dy);
     }
 
-    /* terrain: draw only the visible slice of the land image — a full
-       (s × s) destination rect reaches millions of px at deep zoom and
-       freezes the GPU */
-    if (landCanvas.current && dx1 > dx && dy1 > dy) {
-      const sx = ((dx - ox) / s) * MASK_W, sy = ((dy - oy) / s) * MASK_H;
-      const sw = Math.max(((dx1 - dx) / s) * MASK_W, 1e-4);
-      const sh = Math.max(((dy1 - dy) / s) * MASK_H, 1e-4);
-      ctx.imageSmoothingEnabled = tilePx < 6;
-      ctx.drawImage(landCanvas.current, sx, sy, sw, sh, dx, dy, dx1 - dx, dy1 - dy);
+    /* terrain: real basemap tiles at whatever integer zoom best matches the
+       current camera scale, so imagery is always native-resolution crisp
+       instead of one static image stretched to arbitrary size */
+    if (dx1 > dx && dy1 > dy) {
+      const bz = Math.max(0, Math.min(19, Math.round(Math.log2(s / 256))));
+      const bn = 1 << bz, btile = s / bn;
+      const tx0 = Math.max(0, Math.floor(-ox / btile));
+      const ty0 = Math.max(0, Math.floor(-oy / btile));
+      const tx1 = Math.min(bn - 1, Math.floor((w - ox) / btile));
+      const ty1 = Math.min(bn - 1, Math.floor((h - oy) / btile));
+      ctx.imageSmoothingEnabled = true;
+      for (let ty = ty0; ty <= ty1; ty++) {
+        for (let tx = tx0; tx <= tx1; tx++) {
+          const e = getTile(bz, tx, ty);
+          if (e.loaded) {
+            const px = ox + tx * btile, py = oy + ty * btile;
+            ctx.drawImage(e.img, px, py, btile + 0.6, btile + 0.6); // +overlap hides seams
+          }
+        }
+      }
     }
 
     const gridOn = tilePx >= 8;
     const D = dbgRef.current;
-    D.s = s; D.tilePx = tilePx; D.gridOn = gridOn; D.cnt = 0;
+    D.s = s; D.tilePx = tilePx; D.gridOn = gridOn; D.cnt = 0; D.pcnt = 0; D.ptile = 0;
+    D.tileOk = tileStats.current.ok; D.tileFail = tileStats.current.fail;
 
     if (gridOn) {
       const tx0 = Math.max(0, Math.floor(-ox / tilePx));
@@ -949,7 +1002,28 @@ function Game({ G, onExit }) {
         }
       }
     } else {
-      // empire view: your deeds as glowing dots
+      /* district preview: coarse ~2.4km cells, tinted by land-use class,
+         shown as soon as the viewport holds a reasonable number of them —
+         bridges the gap between "whole planet" and the tappable deed grid */
+      const ptile = s / PN;
+      const px0 = Math.max(0, Math.floor(-ox / ptile));
+      const py0 = Math.max(0, Math.floor(-oy / ptile));
+      const px1 = Math.min(PN - 1, Math.ceil((w - ox) / ptile));
+      const py1 = Math.min(PN - 1, Math.ceil((h - oy) / ptile));
+      const pcnt = Math.max(0, px1 - px0 + 1) * Math.max(0, py1 - py0 + 1);
+      D.pcnt = pcnt; D.ptile = ptile;
+      if (ptile >= 3 && pcnt > 0 && pcnt <= 6500) {
+        for (let ty = py0; ty <= py1; ty++) {
+          for (let tx = px0; tx <= px1; tx++) {
+            const cc = classifyPreviewTxy(tx, ty);
+            if (cc.c === "water") continue;
+            ctx.fillStyle = hexA(CLS[cc.c].color, 0.24);
+            ctx.fillRect(ox + tx * ptile, oy + ty * ptile, ptile + 0.6, ptile + 0.6);
+          }
+        }
+      }
+
+      // your deeds as glowing dots, layered on top regardless of preview state
       ctx.fillStyle = C.amber;
       let i = 0;
       for (const t of g.own) {
@@ -989,7 +1063,13 @@ function Game({ G, onExit }) {
       ctx.fillText(label, bx + 4, by - 6);
       ctx.lineWidth = 1;
     }
-  }, [g, sel, classifyTxy, reduced]);
+
+    ctx.textAlign = "right";
+    ctx.font = "9px ui-monospace, Menlo, monospace";
+    ctx.fillStyle = hexA(C.dim, 0.7);
+    ctx.fillText("\u00A9 OpenStreetMap \u00A9 CARTO", w - 8, h - 6);
+    ctx.textAlign = "left";
+  }, [g, sel, classifyTxy, reduced, getTile]);
 
   useEffect(() => {
     if (!ready || tab !== "map" || !maskReady) return;
@@ -1149,6 +1229,7 @@ function Game({ G, onExit }) {
       ua: navigator.userAgent, dpr: size.current.dpr,
       view: { w: size.current.w, h: size.current.h }, cam: cam.current,
       fps: D.fps, drawAvgMs: D.avg, drawMaxMs: D.max, tilePx: D.tilePx, tiles: D.cnt, gridOn: D.gridOn,
+      previewPx: D.ptile, previewCells: D.pcnt, basemapOk: D.tileOk, basemapFail: D.tileFail,
       pointers: ptrs.current.size, gesture: gesture.current && gesture.current.kind,
       regions: regions.current.size, clsCache: clsCache.current.size,
       longtasks: D.long, longtaskMaxMs: D.longMax, errors: D.errs, lastInput: D.lastEvt, owned: g.own.length,
@@ -1224,13 +1305,23 @@ function Game({ G, onExit }) {
             ))}
           </div>
           {cities && (
-            <div className="absolute right-14 top-3 rounded-xl p-2" style={{ background: C.panel + "f2", border: `1px solid ${C.hair}` }}>
-              {CITIES.map(([name, lat, lon]) => (
-                <button key={name} onClick={() => flyTo(lat, lon)} className="block w-full rounded px-2 py-1.5 text-left text-xs focus-visible:outline focus-visible:outline-2"
-                  style={{ ...mono, color: C.text, outlineColor: C.amber }}>
-                  {name}
-                </button>
-              ))}
+            <div className="absolute right-14 top-3 w-48 rounded-xl p-2" style={{ background: C.panel + "f2", border: `1px solid ${C.hair}` }}>
+              <input
+                autoFocus
+                value={citySearch}
+                onChange={(e) => setCitySearch(e.target.value)}
+                placeholder="Search cities…"
+                className="mb-1 w-full rounded px-2 py-1.5 text-xs focus-visible:outline focus-visible:outline-2"
+                style={{ ...mono, background: C.ink, color: C.text, border: `1px solid ${C.hair}`, outlineColor: C.amber }}
+              />
+              <div className="max-h-64 overflow-y-auto">
+                {TOP_CITIES.filter(([name]) => name.toLowerCase().includes(citySearch.trim().toLowerCase())).slice(0, 60).map(([name, lat, lon]) => (
+                  <button key={name} onClick={() => flyTo(lat, lon)} className="block w-full rounded px-2 py-1.5 text-left text-xs focus-visible:outline focus-visible:outline-2"
+                    style={{ ...mono, color: C.text, outlineColor: C.amber }}>
+                    {name}
+                  </button>
+                ))}
+              </div>
             </div>
           )}
           <div className="absolute left-3 top-3 rounded-lg px-2.5 py-2" style={{ background: C.panel + "e6", border: `1px solid ${C.hair}` }}>
@@ -1249,7 +1340,7 @@ function Game({ G, onExit }) {
           )}
           {tilePxNow < 8 && !sel && (
             <div className="pt10 pointer-events-none absolute inset-x-0 top-3 text-center" style={{ ...mono, color: C.dim }}>
-              zoom in until the deed grid appears · tap to zoom
+              {cam.current.s / PN >= 3 ? "tap a district to zoom in · deed grid appears up close" : "zoom in to see districts · tap to zoom"}
             </div>
           )}
 
@@ -1257,6 +1348,8 @@ function Game({ G, onExit }) {
             <div className="pt10 absolute bottom-8 left-3 rounded-lg p-2 leading-relaxed" style={{ ...mono, color: C.text, background: C.panel + "f0", border: `1px solid ${C.hair}`, maxWidth: 240 }}>
               <div>fps {D.fps} · draw {D.avg}ms · max {D.max}ms</div>
               <div>tilePx {D.tilePx.toFixed(2)} · grid {String(D.gridOn)} · tiles {D.cnt}</div>
+              <div>preview {D.ptile.toFixed(1)}px · cells {D.pcnt}</div>
+              <div>basemap tiles ok {D.tileOk} · fail {D.tileFail}</div>
               <div>s {Math.round(D.s).toLocaleString()} · dpr {size.current.dpr}</div>
               <div>pointers {ptrs.current.size} · gesture {gesture.current ? gesture.current.kind : "-"}</div>
               <div>regions {regions.current.size} · cache {clsCache.current.size}</div>
