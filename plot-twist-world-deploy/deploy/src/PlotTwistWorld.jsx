@@ -91,6 +91,25 @@ function txyOf(qk) {
 const centerOfQk = (qk) => { const [tx, ty] = txyOf(qk); const n = 1 << qk.length; return [(tx + 0.5) / n, (ty + 0.5) / n]; };
 const regionOf = (qk) => qk.slice(0, REGION_LEN);
 
+function prefixesFor(camv, sz, cap = 9) {
+  const out = [];
+  const { s, x: ox, y: oy } = camv;
+  const { w, h } = sz;
+  const nR = 1 << REGION_LEN, rpx = s / nR;
+  const rx0 = Math.max(0, Math.floor(-ox / rpx)), ry0 = Math.max(0, Math.floor(-oy / rpx));
+  const rx1 = Math.min(nR - 1, Math.floor((w - ox) / rpx)), ry1 = Math.min(nR - 1, Math.floor((h - oy) / rpx));
+  for (let ry = ry0; ry <= ry1 && out.length < cap; ry++)
+    for (let rx = rx0; rx <= rx1 && out.length < cap; rx++) {
+      let q = "";
+      for (let i = REGION_LEN; i > 0; i--) {
+        const m = 1 << (i - 1);
+        q += (rx & m ? 1 : 0) + (ry & m ? 2 : 0);
+      }
+      out.push(q);
+    }
+  return out;
+}
+
 function coordLabel(qk) {
   const [wx, wy] = centerOfQk(qk);
   const lat = wyToLat(wy), lon = wx * 360 - 180;
@@ -268,8 +287,8 @@ export default function PlotTwistWorld() {
 
 function Modal({ children, onClose }) {
   return (
-    <div className="absolute inset-0 z-20 flex items-center justify-center p-6" style={{ background: "rgba(4,9,16,0.85)" }}>
-      <div className="w-full max-w-sm rounded-2xl p-5" style={{ background: C.panel, border: `1px solid ${C.hair}` }}>
+    <div className="absolute inset-0 z-20 flex items-center justify-center p-6" style={{ background: "rgba(4,9,16,0.85)" }} onClick={onClose}>
+      <div className="w-full max-w-sm rounded-2xl p-5" style={{ background: C.panel, border: `1px solid ${C.hair}` }} onClick={(e) => e.stopPropagation()}>
         {children}
       </div>
     </div>
@@ -455,17 +474,21 @@ function Game({ G, onExit }) {
   }, []);
 
   const clsCache = useRef(new Map());
-  const classify = useCallback((qk) => {
+  const classifyTxy = useCallback((tx, ty) => {
     const cc = clsCache.current;
-    let v = cc.get(qk);
+    const key = ty * N + tx;
+    let v = cc.get(key);
     if (v) return v;
-    const [wx, wy] = centerOfQk(qk);
-    const l = landness(wx, wy);
+    const l = landness((tx + 0.5) / N, (ty + 0.5) / N);
     v = l >= 0.8 ? "land" : l >= 0.2 ? "coast" : "water";
-    if (cc.size > 40000) cc.clear();
-    cc.set(qk, v);
+    if (cc.size > 60000) cc.clear();
+    cc.set(key, v);
     return v;
   }, [landness]);
+  const classify = useCallback((qk) => {
+    const [tx, ty] = txyOf(qk);
+    return classifyTxy(tx, ty);
+  }, [classifyTxy]);
 
   /* ── shared world regions ── */
   const ensureRegion = useCallback(async (prefix, forceRefresh) => {
@@ -583,7 +606,8 @@ function Game({ G, onExit }) {
   const buyListed = async (qk) => {
     if (needName()) return;
     const rec = recOf(qk);
-    if (!rec || !rec.p || rec.o === g.pid) return;
+    if (!rec) { toast("Tile not synced yet \u2014 one moment, then try again."); return; }
+    if (!rec.p || rec.o === g.pid) return;
     const price = rec.p, seller = rec.o;
     if (g.bal < price) return;
     g.bal -= price;
@@ -710,6 +734,7 @@ function Game({ G, onExit }) {
     const measure = () => {
       const r = el.getBoundingClientRect();
       const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      if (size.current.w === r.width && size.current.h === r.height && size.current.dpr === dpr && cam.current.init) return;
       size.current = { w: r.width, h: r.height, dpr };
       cv.width = r.width * dpr; cv.height = r.height * dpr;
       cv.style.width = r.width + "px"; cv.style.height = r.height + "px";
@@ -776,12 +801,21 @@ function Game({ G, onExit }) {
     ctx.fillStyle = C.ocean;
     ctx.fillRect(ox, oy, s, s);
 
-    if (landCanvas.current) {
-      ctx.imageSmoothingEnabled = s / N < 6;
-      ctx.drawImage(landCanvas.current, ox, oy, s, s);
+    const tilePx = s / N;
+
+    /* terrain: draw only the visible slice of the land image — a full
+       (s × s) destination rect reaches millions of px at deep zoom and
+       freezes the GPU */
+    const dx = Math.max(ox, 0), dy = Math.max(oy, 0);
+    const dx1 = Math.min(ox + s, w), dy1 = Math.min(oy + s, h);
+    if (landCanvas.current && dx1 > dx && dy1 > dy) {
+      const sx = ((dx - ox) / s) * MASK_W, sy = ((dy - oy) / s) * MASK_H;
+      const sw = Math.max(((dx1 - dx) / s) * MASK_W, 1e-4);
+      const sh = Math.max(((dy1 - dy) / s) * MASK_H, 1e-4);
+      ctx.imageSmoothingEnabled = tilePx < 6;
+      ctx.drawImage(landCanvas.current, sx, sy, sw, sh, dx, dy, dx1 - dx, dy1 - dy);
     }
 
-    const tilePx = s / N;
     const gridOn = tilePx >= 8;
 
     if (gridOn) {
@@ -790,35 +824,48 @@ function Game({ G, onExit }) {
       const tx1 = Math.min(N - 1, Math.ceil((w - ox) / tilePx));
       const ty1 = Math.min(N - 1, Math.ceil((h - oy) / tilePx));
       const cnt = (tx1 - tx0 + 1) * (ty1 - ty0 + 1);
-      if (cnt < 9000) {
-        ctx.lineWidth = 1;
-        for (let ty = ty0; ty <= ty1; ty++) {
-          for (let tx = tx0; tx <= tx1; tx++) {
-            const qk = qkOf(tx, ty);
-            const px = ox + tx * tilePx, py = oy + ty * tilePx;
-            const cls = classify(qk);
-            const col = CLS[cls].color;
-            if (cls === "coast") { ctx.fillStyle = hexA(col, 0.12); ctx.fillRect(px, py, tilePx, tilePx); }
-            ctx.strokeStyle = hexA("#8DA0B8", 0.12);
-            ctx.strokeRect(px + 0.5, py + 0.5, tilePx - 1, tilePx - 1);
-            const rec = recOf(qk);
-            if (rec) {
-              const mine = rec.o === g.pid;
-              ctx.fillStyle = hexA(mine ? C.amber : col, mine ? 0.28 : 0.3);
-              ctx.fillRect(px + 1, py + 1, tilePx - 2, tilePx - 2);
-              if (rec.r === 3) {
-                const pulse = reduced ? 0.8 : 0.55 + 0.35 * Math.sin(frame.current / 12 + tx + ty);
-                ctx.strokeStyle = hexA(C.amber, pulse);
-                ctx.lineWidth = 2;
-                ctx.strokeRect(px + 1, py + 1, tilePx - 2, tilePx - 2);
-                ctx.lineWidth = 1;
-              }
-              if (tilePx > 13) drawBuilding(ctx, px, py, tilePx, rec.l || 0, tx * 7 + ty);
-              if (rec.p) {
-                ctx.fillStyle = C.amber;
-                ctx.beginPath(); ctx.arc(px + tilePx - 4, py + 4, 2.6, 0, 7); ctx.fill();
-              }
-            }
+
+      /* coast tint: per-tile, but cached under numeric keys and skipped
+         when the viewport holds too many tiles */
+      if (cnt <= 6500) {
+        ctx.fillStyle = hexA(CLS.coast.color, 0.12);
+        for (let ty = ty0; ty <= ty1; ty++) for (let tx = tx0; tx <= tx1; tx++) {
+          if (classifyTxy(tx, ty) === "coast") {
+            ctx.fillRect(ox + tx * tilePx, oy + ty * tilePx, tilePx, tilePx);
+          }
+        }
+      }
+
+      /* grid as a few hundred batched lines instead of ~20k strokeRects */
+      ctx.strokeStyle = hexA("#8DA0B8", 0.12);
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      for (let tx = tx0; tx <= tx1 + 1; tx++) { const px = ox + tx * tilePx; ctx.moveTo(px, dy); ctx.lineTo(px, dy1); }
+      for (let ty = ty0; ty <= ty1 + 1; ty++) { const py = oy + ty * tilePx; ctx.moveTo(dx, py); ctx.lineTo(dx1, py); }
+      ctx.stroke();
+
+      /* owned & listed tiles: iterate sparse region records, not every tile */
+      for (const prefix of prefixesFor(cam.current, size.current)) {
+        const reg = regions.current.get(prefix);
+        if (!reg) continue;
+        for (const [qk, rec] of Object.entries(reg.t)) {
+          const [tx, ty] = txyOf(qk);
+          if (tx < tx0 || tx > tx1 || ty < ty0 || ty > ty1) continue;
+          const px = ox + tx * tilePx, py = oy + ty * tilePx;
+          const mine = rec.o === g.pid;
+          ctx.fillStyle = hexA(mine ? C.amber : CLS[classifyTxy(tx, ty)].color, mine ? 0.28 : 0.3);
+          ctx.fillRect(px + 1, py + 1, tilePx - 2, tilePx - 2);
+          if (rec.r === 3) {
+            const pulse = reduced ? 0.8 : 0.55 + 0.35 * Math.sin(frame.current / 12 + tx + ty);
+            ctx.strokeStyle = hexA(C.amber, pulse);
+            ctx.lineWidth = 2;
+            ctx.strokeRect(px + 1, py + 1, tilePx - 2, tilePx - 2);
+            ctx.lineWidth = 1;
+          }
+          if (tilePx > 13) drawBuilding(ctx, px, py, tilePx, rec.l || 0, tx * 7 + ty);
+          if (rec.p) {
+            ctx.fillStyle = C.amber;
+            ctx.beginPath(); ctx.arc(px + tilePx - 4, py + 4, 2.6, 0, 7); ctx.fill();
           }
         }
       }
@@ -863,7 +910,7 @@ function Game({ G, onExit }) {
       ctx.fillText(label, bx + 4, by - 6);
       ctx.lineWidth = 1;
     }
-  }, [g, sel, classify, reduced]);
+  }, [g, sel, classifyTxy, reduced]);
 
   useEffect(() => {
     if (!ready || tab !== "map" || !maskReady) return;
@@ -881,23 +928,8 @@ function Game({ G, onExit }) {
     if (!ready) return;
     const iv = setInterval(() => {
       if (tab !== "map") return;
-      const { s, x: ox, y: oy } = cam.current;
-      if (s / N < 8) return;
-      const { w, h } = size.current;
-      const nR = 1 << REGION_LEN;
-      const rpx = s / nR;
-      const rx0 = Math.max(0, Math.floor(-ox / rpx)), ry0 = Math.max(0, Math.floor(-oy / rpx));
-      const rx1 = Math.min(nR - 1, Math.floor((w - ox) / rpx)), ry1 = Math.min(nR - 1, Math.floor((h - oy) / rpx));
-      let cnt = 0;
-      for (let ry = ry0; ry <= ry1 && cnt < 9; ry++)
-        for (let rx = rx0; rx <= rx1 && cnt < 9; rx++, cnt++) {
-          let q = "";
-          for (let i = REGION_LEN; i > 0; i--) {
-            const m = 1 << (i - 1);
-            q += (rx & m ? 1 : 0) + (ry & m ? 2 : 0);
-          }
-          ensureRegion(q, false);
-        }
+      if (cam.current.s / N < 8) return;
+      for (const q of prefixesFor(cam.current, size.current)) ensureRegion(q, false);
     }, 1200);
     return () => clearInterval(iv);
   }, [ready, tab, ensureRegion]);
@@ -990,7 +1022,7 @@ function Game({ G, onExit }) {
       {/* ticker */}
       <div className="flex items-center justify-between gap-3 px-4 pb-2 pt-3" style={{ borderBottom: `1px solid ${C.hair}`, background: C.panel }}>
         <div className="min-w-0">
-          <button onClick={onExit} className="pt9 trk uppercase focus-visible:outline focus-visible:outline-2" style={{ ...mono, color: C.dim, outlineColor: C.amber }}>
+          <button onClick={() => { save(); onExit(); }} className="pt9 trk uppercase focus-visible:outline focus-visible:outline-2" style={{ ...mono, color: C.dim, outlineColor: C.amber }}>
             ‹ Plot Twist · World Deed
           </button>
           <div className="flex items-baseline gap-2">
