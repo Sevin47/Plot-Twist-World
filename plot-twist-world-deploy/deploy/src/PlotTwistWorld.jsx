@@ -309,6 +309,7 @@ function Game({ G, onExit }) {
   const [toasts, setToasts] = useState([]);
   const [syncing, setSyncing] = useState(false);
   const [cities, setCities] = useState(false);
+  const [dbg, setDbg] = useState(() => typeof location !== "undefined" && location.hash.includes("debug"));
   const [market, setMarket] = useState({ loading: false, rows: null });
   const [lb, setLb] = useState({ loading: false, rows: null });
   const [nameDraft, setNameDraft] = useState(G.current.name || "");
@@ -319,6 +320,8 @@ function Game({ G, onExit }) {
   const regions = useRef(new Map()); // prefix -> {t:{qk:rec}, at}
   const busyRegions = useRef(new Set());
   const persistent = hasStore();
+  const dbgRef = useRef({ fps: 0, avg: 0, max: 0, s: 0, tilePx: 0, cnt: 0, gridOn: false, long: 0, longMax: 0, errs: [], lastEvt: "-" });
+  const logEvt = (n) => { dbgRef.current.lastEvt = n; };
 
   const reduced = typeof window !== "undefined" && window.matchMedia &&
     window.matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -798,16 +801,18 @@ function Game({ G, onExit }) {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.fillStyle = C.oceanDeep;
     ctx.fillRect(0, 0, w, h);
-    ctx.fillStyle = C.ocean;
-    ctx.fillRect(ox, oy, s, s);
 
     const tilePx = s / N;
+    const dx = Math.max(ox, 0), dy = Math.max(oy, 0);
+    const dx1 = Math.min(ox + s, w), dy1 = Math.min(oy + s, h);
+    if (dx1 > dx && dy1 > dy) {
+      ctx.fillStyle = C.ocean;
+      ctx.fillRect(dx, dy, dx1 - dx, dy1 - dy);
+    }
 
     /* terrain: draw only the visible slice of the land image — a full
        (s × s) destination rect reaches millions of px at deep zoom and
        freezes the GPU */
-    const dx = Math.max(ox, 0), dy = Math.max(oy, 0);
-    const dx1 = Math.min(ox + s, w), dy1 = Math.min(oy + s, h);
     if (landCanvas.current && dx1 > dx && dy1 > dy) {
       const sx = ((dx - ox) / s) * MASK_W, sy = ((dy - oy) / s) * MASK_H;
       const sw = Math.max(((dx1 - dx) / s) * MASK_W, 1e-4);
@@ -817,6 +822,8 @@ function Game({ G, onExit }) {
     }
 
     const gridOn = tilePx >= 8;
+    const D = dbgRef.current;
+    D.s = s; D.tilePx = tilePx; D.gridOn = gridOn; D.cnt = 0;
 
     if (gridOn) {
       const tx0 = Math.max(0, Math.floor(-ox / tilePx));
@@ -824,6 +831,7 @@ function Game({ G, onExit }) {
       const tx1 = Math.min(N - 1, Math.ceil((w - ox) / tilePx));
       const ty1 = Math.min(N - 1, Math.ceil((h - oy) / tilePx));
       const cnt = (tx1 - tx0 + 1) * (ty1 - ty0 + 1);
+      D.cnt = cnt;
 
       /* coast tint: per-tile, but cached under numeric keys and skipped
          when the viewport holds too many tiles */
@@ -914,9 +922,22 @@ function Game({ G, onExit }) {
 
   useEffect(() => {
     if (!ready || tab !== "map" || !maskReady) return;
-    let raf, last = 0;
+    let raf, last = 0, acc = 0, maxd = 0, n = 0, rep = performance.now();
     const loop = (t) => {
-      if (t - last > 33) { last = t; frame.current++; draw(); }
+      if (t - last > 33) {
+        last = t; frame.current++;
+        const t0 = performance.now();
+        draw();
+        const dms = performance.now() - t0;
+        acc += dms; n++; if (dms > maxd) maxd = dms;
+        if (t0 - rep > 500) {
+          const D = dbgRef.current;
+          D.fps = Math.round((n * 1000) / (t0 - rep));
+          D.avg = +(acc / Math.max(1, n)).toFixed(1);
+          D.max = +maxd.toFixed(1);
+          acc = 0; maxd = 0; n = 0; rep = t0;
+        }
+      }
       raf = requestAnimationFrame(loop);
     };
     raf = requestAnimationFrame(loop);
@@ -943,21 +964,25 @@ function Game({ G, onExit }) {
     cam.current = { s: ns, x: mx - (mx - c.x) * k, y: my - (my - c.y) * k, init: true };
   };
   const onDown = (e) => {
+    const now = performance.now();
+    for (const [id, p] of ptrs.current) if (now - p.t > 4000) ptrs.current.delete(id); // prune ghost pointers
     const cv = canvasRef.current;
-    cv.setPointerCapture(e.pointerId);
+    try { cv.setPointerCapture(e.pointerId); } catch {}
     const r = cv.getBoundingClientRect();
-    ptrs.current.set(e.pointerId, { x: e.clientX - r.left, y: e.clientY - r.top });
+    ptrs.current.set(e.pointerId, { x: e.clientX - r.left, y: e.clientY - r.top, t: now });
+    logEvt("down x" + ptrs.current.size);
     const pts = [...ptrs.current.values()];
     if (pts.length === 1) gesture.current = { kind: "pan", sx: pts[0].x, sy: pts[0].y, ox: cam.current.x, oy: cam.current.y, moved: false };
     else if (pts.length === 2) {
       const d = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
-      gesture.current = { kind: "pinch", d0: d, s0: cam.current.s, moved: true };
-    }
+      gesture.current = { kind: "pinch", d0: Math.max(d, 1), s0: cam.current.s, moved: true };
+    } else gesture.current = null;
   };
   const onMove = (e) => {
     if (!ptrs.current.has(e.pointerId)) return;
     const r = canvasRef.current.getBoundingClientRect();
-    ptrs.current.set(e.pointerId, { x: e.clientX - r.left, y: e.clientY - r.top });
+    ptrs.current.set(e.pointerId, { x: e.clientX - r.left, y: e.clientY - r.top, t: performance.now() });
+    logEvt("move");
     const gst = gesture.current;
     const pts = [...ptrs.current.values()];
     if (!gst) return;
@@ -971,7 +996,13 @@ function Game({ G, onExit }) {
       zoomAt(mx, my, gst.s0 * (d / gst.d0));
     }
   };
+  const onLost = (e) => {
+    ptrs.current.delete(e.pointerId);
+    if (ptrs.current.size === 0) gesture.current = null;
+    logEvt("lostcapture");
+  };
   const onUp = (e) => {
+    logEvt("up");
     const gst = gesture.current;
     const wasTap = gst && gst.kind === "pan" && !gst.moved && ptrs.current.size === 1;
     const pt = ptrs.current.get(e.pointerId);
@@ -992,9 +1023,67 @@ function Game({ G, onExit }) {
     }
     if (ptrs.current.size === 0) gesture.current = null;
   };
-  const onWheel = (e) => {
-    const r = canvasRef.current.getBoundingClientRect();
-    zoomAt(e.clientX - r.left, e.clientY - r.top, cam.current.s * (e.deltaY < 0 ? 1.25 : 0.8));
+  const zoomAtRef = useRef(null);
+  zoomAtRef.current = zoomAt;
+
+  useEffect(() => {
+    const cv = canvasRef.current;
+    if (!cv) return;
+    const onW = (e) => {
+      e.preventDefault(); // keep ctrl+wheel / trackpad pinch from zooming the page
+      logEvt(e.ctrlKey ? "pinch-wheel" : "wheel");
+      const r = cv.getBoundingClientRect();
+      const f = e.ctrlKey ? Math.exp(-e.deltaY * 0.01) : e.deltaY < 0 ? 1.25 : 0.8;
+      zoomAtRef.current(e.clientX - r.left, e.clientY - r.top, cam.current.s * f);
+    };
+    cv.addEventListener("wheel", onW, { passive: false });
+    return () => cv.removeEventListener("wheel", onW);
+  }, [ready, maskReady]);
+
+  useEffect(() => {
+    const onVis = () => { if (document.hidden) { ptrs.current.clear(); gesture.current = null; } };
+    document.addEventListener("visibilitychange", onVis);
+    return () => document.removeEventListener("visibilitychange", onVis);
+  }, []);
+
+  useEffect(() => {
+    const onE = (e) => {
+      const D = dbgRef.current;
+      D.errs = [...D.errs.slice(-2), String((e && (e.reason || e.message || e.error)) || "error").slice(0, 140)];
+      setDbg(true);
+    };
+    window.addEventListener("error", onE);
+    window.addEventListener("unhandledrejection", onE);
+    return () => { window.removeEventListener("error", onE); window.removeEventListener("unhandledrejection", onE); };
+  }, []);
+
+  useEffect(() => {
+    if (typeof PerformanceObserver === "undefined") return;
+    try {
+      const po = new PerformanceObserver((l) => {
+        for (const en of l.getEntries()) {
+          const D = dbgRef.current;
+          D.long++;
+          if (en.duration > D.longMax) D.longMax = Math.round(en.duration);
+        }
+      });
+      po.observe({ entryTypes: ["longtask"] });
+      return () => po.disconnect();
+    } catch {}
+  }, []);
+
+  const copyDbg = () => {
+    const D = dbgRef.current;
+    const data = JSON.stringify({
+      ua: navigator.userAgent, dpr: size.current.dpr,
+      view: { w: size.current.w, h: size.current.h }, cam: cam.current,
+      fps: D.fps, drawAvgMs: D.avg, drawMaxMs: D.max, tilePx: D.tilePx, tiles: D.cnt, gridOn: D.gridOn,
+      pointers: ptrs.current.size, gesture: gesture.current && gesture.current.kind,
+      regions: regions.current.size, clsCache: clsCache.current.size,
+      longtasks: D.long, longtaskMaxMs: D.longMax, errors: D.errs, lastInput: D.lastEvt, owned: g.own.length,
+    }, null, 1);
+    try { navigator.clipboard.writeText(data); toast("Diagnostics copied"); }
+    catch { window.prompt("Copy diagnostics:", data); }
   };
 
   /* ── render ── */
@@ -1045,7 +1134,7 @@ function Game({ G, onExit }) {
           <canvas
             ref={canvasRef}
             className="h-full w-full touch-none"
-            onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp} onPointerCancel={onUp} onWheel={onWheel}
+            onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp} onPointerCancel={onUp} onLostPointerCapture={onLost}
           />
           {/* controls */}
           <div className="absolute right-3 top-3 flex flex-col gap-1.5">
@@ -1054,6 +1143,7 @@ function Game({ G, onExit }) {
               ["−", () => zoomAt(size.current.w / 2, size.current.h / 2, cam.current.s * 0.62)],
               ["🌐", fitWorld],
               ["✈", () => setCities((c) => !c)],
+              ["🐞", () => setDbg((v) => !v)],
             ].map(([t, fn]) => (
               <button key={t} onClick={fn} className="h-9 w-9 rounded-lg text-sm focus-visible:outline focus-visible:outline-2"
                 style={{ ...mono, background: C.panel + "e6", color: C.text, border: `1px solid ${C.hair}`, outlineColor: C.amber }}>
@@ -1081,6 +1171,22 @@ function Game({ G, onExit }) {
               zoom in until the deed grid appears · tap to zoom
             </div>
           )}
+
+          {dbg && (() => { const D = dbgRef.current; return (
+            <div className="pt10 absolute bottom-8 left-3 rounded-lg p-2 leading-relaxed" style={{ ...mono, color: C.text, background: C.panel + "f0", border: `1px solid ${C.hair}`, maxWidth: 240 }}>
+              <div>fps {D.fps} · draw {D.avg}ms · max {D.max}ms</div>
+              <div>tilePx {D.tilePx.toFixed(2)} · grid {String(D.gridOn)} · tiles {D.cnt}</div>
+              <div>s {Math.round(D.s).toLocaleString()} · dpr {size.current.dpr}</div>
+              <div>pointers {ptrs.current.size} · gesture {gesture.current ? gesture.current.kind : "-"}</div>
+              <div>regions {regions.current.size} · cache {clsCache.current.size}</div>
+              <div>longtasks {D.long} · worst {D.longMax}ms</div>
+              <div>last input: {D.lastEvt}</div>
+              {D.errs.length > 0 && <div style={{ color: "#F08A8A" }}>ERR: {D.errs[D.errs.length - 1]}</div>}
+              <button onClick={copyDbg} className="mt-1 rounded px-2 py-1 font-bold focus-visible:outline focus-visible:outline-2" style={{ ...mono, background: C.amber, color: "#221A05", outlineColor: C.amber }}>
+                copy diagnostics
+              </button>
+            </div>
+          ); })()}
 
           {/* tile sheet */}
           {sel && (
