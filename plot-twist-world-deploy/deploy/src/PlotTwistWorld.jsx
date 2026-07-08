@@ -1,4 +1,6 @@
 import { useState, useEffect, useRef, useCallback, useReducer } from "react";
+import { PbfReader } from "pbf";
+import { VectorTile } from "@mapbox/vector-tile";
 
 /* ─────────────────────────────────────────────────────────────
    PLOT TWIST: WORLD DEED — one shared Earth, ~300m tiles.
@@ -22,6 +24,42 @@ const PREVIEW_Z_MAX = 16;   // ~611m cells at the equator
 function previewLevelFor(s) {
   const z = Math.round(Math.log2(s / PREVIEW_T));
   return Math.max(PREVIEW_Z_MIN, Math.min(PREVIEW_Z_MAX, z));
+}
+
+/* ── real vector geography: Protomaps hosted OSM basemap ─────────────
+   Actual water/land-use polygons and building footprints, not a color
+   guess — decoded client-side from Mapbox Vector Tiles (MVT/PBF). Free
+   for non-commercial use with a Protomaps API key (see README). Used
+   ONLY to decide classification; the CARTO raster tiles elsewhere in
+   this file remain the visual basemap, unchanged. */
+const PROTOMAPS_KEY = import.meta.env.VITE_PROTOMAPS_KEY || "";
+const VECTOR_Z = 14; // ~2.4km reference tiles — fixed, independent of
+// display zoom, so a given real-world spot always classifies the same
+// way regardless of how zoomed in the camera happens to be
+const VECTOR_EXTENT = 4096; // standard MVT tile-local coordinate space
+
+// Real OSM land-use kinds (see docs.protomaps.com/basemaps/layers_v2)
+// mapped to our district tiers. Unlisted kinds fall through to the
+// building-density estimate below.
+const LANDUSE_TIER = {
+  commercial: "downtown", retail: "downtown",
+  residential: "urban",
+  industrial: "suburbs", brownfield: "suburbs", railway: "suburbs", quarry: "suburbs", military: "suburbs", naval_base: "suburbs", airfield: "suburbs",
+  park: "rural", garden: "rural", national_park: "rural", nature_reserve: "rural", forest: "rural", farmland: "rural", cemetery: "rural", golf_course: "rural", recreation_ground: "rural", grass: "rural", orchard: "rural", winter_sports: "rural", beach: "rural", zoo: "rural",
+};
+
+function pointInRing(x, y, ring) {
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const xi = ring[i].x, yi = ring[i].y, xj = ring[j].x, yj = ring[j].y;
+    if (yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) inside = !inside;
+  }
+  return inside;
+}
+function pointInFeatureGeom(geom, x, y) {
+  let inside = false;
+  for (const ring of geom) if (pointInRing(x, y, ring)) inside = !inside;
+  return inside;
 }
 const REGION_LEN = 8;         // shared-storage shard prefix (~150km regions)
 const SAVE_KEY = "plottwist:world:v1";
@@ -313,7 +351,7 @@ export default function PlotTwistWorld() {
               <div>Zoom into anywhere on Earth until the deed grid appears, then tap a ~300 m tile and buy it. Everyone plays on the same planet — one tile, one owner.</div>
               <div>Tiles pay rent per second. Rarity is rolled when you buy (up to 8×). Build them up from cottage to tower for more rent.</div>
               <div>Trade with real players: list your tiles at any price on the open market, or buy theirs. Sales pay you even while you're offline.</div>
-              <div>Districts follow real geography: Downtown cores near big cities pay best, fading through Urban and Suburbs out to Rural land. Ocean, lakes and rivers are read straight from real coastline data and can never be bought. Zoom continuously from ~20km regional color down to your actual ~300m deed, where district tier reads real road density off the live map.</div>
+              <div>Districts follow real geography: Downtown cores near big cities pay best, fading through Urban and Suburbs out to Rural land. Ocean, lakes and rivers are read straight from real OpenStreetMap water data and can never be bought. Zoom continuously from ~20km regional color down to your actual ~300m deed — classification comes from actual land-use and building data, not a guess.</div>
             </div>
             <div className="mt-4"><Btn full onClick={() => setHowto(false)}>Got it</Btn></div>
           </Modal>
@@ -625,58 +663,123 @@ function Game({ G, onExit }) {
     return { c: tierFor(l < 0.8, u), n, d, src: "fallback" };
   }, [landness, nearestCity]);
 
-  /* Real classifier for the fine ~306m deed grid only — the layer players
-     actually spend money on, and small enough in on-screen count to afford
-     a live tile fetch per cell. Water/coastal is STILL decided by our mask
-     (reliable, instant, no dependency on a third-party proxy for something
-     that must never be wrong); pixels only refine the density reading, by
-     averaging a whole pixel block sized to how much of the tile this one
-     deed covers — sparse point-sampling mostly missed CARTO's thin 1-2px
-     road lines and produced noisy, near-random results. Returns null (falls
-     back to the procedural reading above) until the covering tile loads. */
-  const classifyDeedPixelDensity = useCallback((bz, wx, wy) => {
-    const bn = 1 << bz;
-    const fx = wx * bn, fy = wy * bn;
-    const tx = Math.max(0, Math.min(bn - 1, Math.floor(fx)));
-    const ty = Math.max(0, Math.min(bn - 1, Math.floor(fy)));
-    const e = getTile(bz, tx, ty);
-    if (!e.analyzed) return null;
+  /* Real classifier: fetches the Protomaps vector tile covering (wx,wy) at
+     a FIXED reference zoom (VECTOR_Z, ~2.4km tiles) — deliberately NOT tied
+     to whatever zoom the camera/display happens to be at, so a given spot
+     always classifies the same way regardless of how zoomed in you are.
+     This directly replaces the old raster color-guessing: water comes from
+     the tile's actual `water` polygons, district tier from actual `landuse`
+     polygon kinds (residential/commercial/industrial/park/...), refined by
+     real building-footprint coverage where no explicit landuse is tagged.
+     Returns null (falls back to the procedural mask+ring reading) until the
+     covering tile has loaded and decoded, or if no API key is configured. */
+  const vtCache = useRef(new Map()); // "z/x/y" -> { tile, loading, failed }
+  const vtOrder = useRef([]);
+  const vtInflight = useRef(0);
+  const vtQueue = useRef([]);
+  const VT_MAX_INFLIGHT = 4;
 
-    const u0 = (fx - tx) * e.pw, v0 = (fy - ty) * e.ph;
-    const blockPx = Math.max(1, Math.min(32, Math.round(e.pw / Math.pow(2, Z - bz))));
-    const half = blockPx / 2;
-    const step = blockPx <= 8 ? 1 : Math.ceil(blockPx / 8);
+  const runVtQueue = () => {
+    while (vtInflight.current < VT_MAX_INFLIGHT && vtQueue.current.length) {
+      const job = vtQueue.current.shift();
+      startVtFetch(job.e, job.z, job.tx, job.ty);
+    }
+  };
+  const startVtFetch = (e, z, tx, ty) => {
+    vtInflight.current++;
+    const settle = () => { vtInflight.current--; runVtQueue(); };
+    fetch(`https://api.protomaps.com/tiles/v4/${z}/${tx}/${ty}.mvt?key=${PROTOMAPS_KEY}`)
+      .then((res) => { if (!res.ok) throw new Error(String(res.status)); return res.arrayBuffer(); })
+      .then((buf) => {
+        e.tile = new VectorTile(new PbfReader(new Uint8Array(buf)));
+        e.loading = false;
+        settle();
+      })
+      .catch(() => { e.failed = true; e.loading = false; settle(); });
+  };
+  const getVectorTile = useCallback((z, tx, ty) => {
+    const key = `${z}/${tx}/${ty}`;
+    let e = vtCache.current.get(key);
+    if (e) return e;
+    if (!PROTOMAPS_KEY) {
+      // no key configured — don't bother hitting the network, just mark
+      // permanently unavailable so callers fall back immediately
+      e = { tile: null, loading: false, failed: true };
+      vtCache.current.set(key, e);
+      return e;
+    }
+    e = { tile: null, loading: true, failed: false };
+    vtCache.current.set(key, e);
+    vtOrder.current.push(key);
+    if (vtOrder.current.length > 300) vtCache.current.delete(vtOrder.current.shift());
+    if (vtInflight.current < VT_MAX_INFLIGHT) startVtFetch(e, z, tx, ty);
+    else {
+      if (vtQueue.current.length > 60) vtQueue.current.shift();
+      vtQueue.current.push({ e, z, tx, ty });
+    }
+    return e;
+  }, []);
 
-    let n = 0, sr = 0, sg = 0, sb = 0, sumBright = 0, minB = 255, maxB = 0;
-    for (let dy = -half; dy <= half; dy += step) {
-      for (let dx = -half; dx <= half; dx += step) {
-        const px = Math.max(0, Math.min(e.pw - 1, Math.round(u0 + dx)));
-        const py = Math.max(0, Math.min(e.ph - 1, Math.round(v0 + dy)));
-        const i = (py * e.pw + px) * 4;
-        const r = e.pix[i], g = e.pix[i + 1], b = e.pix[i + 2];
-        sr += r; sg += g; sb += b;
-        const bright = (r + g + b) / 3;
-        sumBright += bright;
-        if (bright < minB) minB = bright;
-        if (bright > maxB) maxB = bright;
-        n++;
+  // sample a small grid of points across the cell's own footprint (in this
+  // tile's local 0..VECTOR_EXTENT space) against the building layer, giving
+  // a real measured building-coverage fraction instead of a guessed density
+  const BUILD_SAMPLES = [[0,0],[-0.35,0],[0.35,0],[0,-0.35],[0,0.35],[-0.3,-0.3],[0.3,-0.3],[-0.3,0.3],[0.3,0.3]];
+  const classifyFromVector = useCallback((cellZ, wx, wy) => {
+    const vn = 1 << VECTOR_Z;
+    const fx = wx * vn, fy = wy * vn;
+    const vtx = Math.max(0, Math.min(vn - 1, Math.floor(fx)));
+    const vty = Math.max(0, Math.min(vn - 1, Math.floor(fy)));
+    const e = getVectorTile(VECTOR_Z, vtx, vty);
+    if (!e.tile) return null; // still loading or failed — caller falls back
+
+    const lx = (fx - vtx) * VECTOR_EXTENT, ly = (fy - vty) * VECTOR_EXTENT;
+    const layers = e.tile.layers;
+
+    const waterLayer = layers.water;
+    if (waterLayer) {
+      for (let i = 0; i < waterLayer.length; i++) {
+        const f = waterLayer.feature(i);
+        if (f.type === 3 && pointInFeatureGeom(f.loadGeometry(), lx, ly)) {
+          return { c: "water", src: "vector" };
+        }
       }
     }
-    const avgR = sr / n, avgG = sg / n, avgB = sb / n, avgBright = sumBright / n;
-    const spread = maxB - minB; // road/building edges widen this far more reliably than point-sample variance
-    const density = Math.max(0, Math.min(1, 0.55 * (spread / 90) + 0.45 * ((avgBright - 15) / 90)));
-    // Calibrated against a real captured tile: CARTO's neutral land fill
-    // reads ~rgb(38,38,38) — flat, R≈G≈B, brightness in the high-30s/low-40s.
-    // Real water is distinctly blue-dominant and darker. Used only to catch
-    // cases where our mask disagrees with what's actually drawn on screen —
-    // exactly the coastline-mismatch case this is meant to fix.
-    const blueness = avgB - (avgR + avgG) / 2;
-    const pixelWater = blueness > 10 && avgBright < 34 && spread < 30;
-    return {
-      density, pixelWater,
-      dbg: { blockPx, samples: n, avgBright: Math.round(avgBright), spread: Math.round(spread), blueness: Math.round(blueness), density: +density.toFixed(2), pixelWater },
-    };
-  }, [getTile]);
+
+    let landuseKind = null;
+    const luLayer = layers.landuse;
+    if (luLayer) {
+      for (let i = 0; i < luLayer.length; i++) {
+        const f = luLayer.feature(i);
+        if (f.type === 3 && pointInFeatureGeom(f.loadGeometry(), lx, ly)) {
+          landuseKind = f.properties.kind || null;
+          break;
+        }
+      }
+    }
+
+    // cell footprint size in this tile's local units, for the building sample spread
+    const cellLocal = VECTOR_EXTENT / Math.pow(2, cellZ - VECTOR_Z);
+    const bLayer = layers.buildings;
+    let hits = 0;
+    if (bLayer) {
+      for (const [ox, oy] of BUILD_SAMPLES) {
+        const sx = lx + ox * cellLocal, sy = ly + oy * cellLocal;
+        for (let i = 0; i < bLayer.length; i++) {
+          const f = bLayer.feature(i);
+          if (f.type === 3 && pointInFeatureGeom(f.loadGeometry(), sx, sy)) { hits++; break; }
+        }
+      }
+    }
+    const buildingFrac = hits / BUILD_SAMPLES.length;
+
+    const dbg = { landuseKind, buildingFrac: +buildingFrac.toFixed(2), hits };
+    if (landuseKind && LANDUSE_TIER[landuseKind]) {
+      return { c: LANDUSE_TIER[landuseKind], src: "vector", dbg };
+    }
+    // no explicit landuse tag — fall back to measured building coverage
+    const c = buildingFrac >= 0.45 ? "downtown" : buildingFrac >= 0.22 ? "urban" : buildingFrac >= 0.08 ? "suburbs" : "rural";
+    return { c, src: "vector", dbg };
+  }, [getVectorTile]);
 
   const clsCache = useRef(new Map());
   const classifyTxy = useCallback((tx, ty) => {
@@ -686,51 +789,37 @@ function Game({ G, onExit }) {
     if (cached) return cached;
 
     const wx = (tx + 0.5) / N, wy = (ty + 0.5) / N;
-    const l = landness(wx, wy);
     const lat = wyToLat(wy), lon = wx * 360 - 180;
     const { n, d } = nearestCity(lat, lon);
 
-    const bzRaw = Math.max(0, Math.min(19, Math.round(Math.log2(cam.current.s / 256))));
-    const bz = Math.min(bzRaw, Z);
-    const px = classifyDeedPixelDensity(bz, wx, wy);
-
-    if (l < 0.2 && !(px && !px.pixelWater)) {
-      // mask says water, and either we have no better data or the pixel
-      // reading agrees — this is stable, cache it permanently
-      const v = { c: "water", n, d, src: px ? "pixel" : "mask" };
+    const vec = classifyFromVector(Z, wx, wy);
+    if (vec) {
+      const v = { c: vec.c, n, d, src: "vector", dbg: vec.dbg };
       if (cc.size > 60000) cc.clear();
       cc.set(key, v);
       return v;
     }
-    if (px && px.pixelWater) {
-      // pixel reading confidently disagrees with the mask and says water —
-      // trust what's actually drawn on screen over our generalized coastline
-      const v = { c: "water", n, d, src: "pixel", dbg: px.dbg };
-      if (cc.size > 60000) cc.clear();
-      cc.set(key, v);
-      return v;
-    }
-    if (px) {
-      const v = { c: tierFor(l < 0.8, px.density), n, d, src: "pixel", dbg: px.dbg };
-      if (cc.size > 60000) cc.clear();
-      cc.set(key, v);
-      return v;
-    }
-    // tile not loaded yet — cheap fallback, deliberately NOT cached so this
-    // cell re-attempts the real classifier (and upgrades) on a later call
+    // vector tile not loaded yet (or no API key configured) — cheap
+    // fallback, deliberately NOT cached so this cell re-attempts the real
+    // classifier (and upgrades) on a later call once the tile arrives
+    const l = landness(wx, wy);
+    if (l < 0.2) return { c: "water", n, d, src: "mask" };
     const { u } = urbanAt(lat, lon);
     return { c: tierFor(l < 0.8, u), n, d, src: "fallback" };
-  }, [landness, nearestCity, classifyDeedPixelDensity]);
+  }, [landness, nearestCity, classifyFromVector]);
 
   const classify = useCallback((qk) => {
     const [tx, ty] = txyOf(qk);
     return classifyTxy(tx, ty);
   }, [classifyTxy]);
 
-  /* coarser grid purely for visual district context at mid zoom, before
-     individual ~306m deeds are close enough to tap — resolution varies
-     continuously with zoom (see previewLevelFor). Procedural only, by
-     design — see computeClassProcedural's comment above. */
+  /* coarser grid for visual district context at mid zoom, before individual
+     ~306m deeds are close enough to tap — resolution varies continuously
+     with zoom (see previewLevelFor). Now backed by the SAME real vector
+     data as the fine grid (a fixed VECTOR_Z reference tile serves many
+     preview cells at once, so this is cheap despite covering a much wider
+     view than the deed grid does) — falling back to the procedural
+     mask+ring reading only where vector data isn't loaded yet. */
   const previewCache = useRef(new Map());
   const classifyPreviewAt = useCallback((pz, tx, ty) => {
     const cc = previewCache.current;
@@ -738,11 +827,17 @@ function Game({ G, onExit }) {
     const cached = cc.get(key);
     if (cached) return cached;
     const pn = 1 << pz;
-    const v = computeClassProcedural((tx + 0.5) / pn, (ty + 0.5) / pn);
-    if (cc.size > 24000) cc.clear();
-    cc.set(key, v);
-    return v;
-  }, [computeClassProcedural]);
+    const wx = (tx + 0.5) / pn, wy = (ty + 0.5) / pn;
+
+    const vec = classifyFromVector(pz, wx, wy);
+    if (vec) {
+      const v = { c: vec.c, src: "vector" };
+      if (cc.size > 24000) cc.clear();
+      cc.set(key, v);
+      return v;
+    }
+    return computeClassProcedural(wx, wy);
+  }, [classifyFromVector, computeClassProcedural]);
 
   /* ── real basemap tiles (CARTO Dark Matter, © OpenStreetMap contributors
      © CARTO) — crisp raster imagery with built-in place labels at every
@@ -1547,11 +1642,12 @@ function Game({ G, onExit }) {
               <div>fps {D.fps} · draw {D.avg}ms · max {D.max}ms</div>
               <div>tilePx {D.tilePx.toFixed(2)} · grid {String(D.gridOn)} · tiles {D.cnt}</div>
               <div>preview z{D.pz || 0} · {D.ptile.toFixed(1)}px · cells {D.pcnt}</div>
-              <div>tiles ok {D.tileOk} fail {D.tileFail} · analyzed {tileStats.current.analyzed} CORS-blocked {tileStats.current.analyzeFail}</div>
-              <div>inflight {inflight.current} queued {fetchQueue.current.length}</div>
+              <div>basemap tiles ok {D.tileOk} fail {D.tileFail}</div>
+              <div>vector: cached {vtCache.current.size} inflight {vtInflight.current} queued {vtQueue.current.length}</div>
+              {!PROTOMAPS_KEY && <div style={{ color: "#F0784E" }}>no Protomaps key configured — using fallback classifier</div>}
               {selDbg && (
-                <div style={{ color: selDbg.src === "pixel" ? C.amber : selDbg.src === "mask" ? "#5FA8F5" : C.dim }}>
-                  sel: {selDbg.c} via {selDbg.src}{selDbg.dbg ? ` · bright ${selDbg.dbg.avgBright} blue ${selDbg.dbg.blueness ?? "-"} spread ${selDbg.dbg.spread} dens ${selDbg.dbg.density} water? ${String(!!selDbg.dbg.pixelWater)}` : ""}
+                <div style={{ color: selDbg.src === "vector" ? C.amber : selDbg.src === "mask" ? "#5FA8F5" : C.dim }}>
+                  sel: {selDbg.c} via {selDbg.src}{selDbg.dbg ? ` · landuse ${selDbg.dbg.landuseKind || "none"} bldg ${selDbg.dbg.buildingFrac ?? "-"} (${selDbg.dbg.hits ?? "-"}/9)` : ""}
                 </div>
               )}
               <div>s {Math.round(D.s).toLocaleString()} · dpr {size.current.dpr}</div>
