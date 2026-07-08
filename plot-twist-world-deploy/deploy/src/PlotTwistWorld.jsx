@@ -698,19 +698,20 @@ function Game({ G, onExit }) {
      real building-footprint coverage where no explicit landuse is tagged.
      Returns null (falls back to the procedural mask+ring reading) until the
      covering tile has loaded and decoded, or if no API key is configured. */
-  const vtCache = useRef(new Map()); // "z/x/y" -> { tile, loading, failed }
+  const vtCache = useRef(new Map()); // "z/x/y" -> { water, landuse, buildings, loading, failed, failedAt }
   const vtOrder = useRef([]);
   const vtInflight = useRef(0);
   const vtQueue = useRef([]);
   const VT_MAX_INFLIGHT = 4;
+  const VT_RETRY_MS = 20000; // don't hammer a persistently-failing tile, but don't give up on it forever either
 
   const runVtQueue = () => {
     while (vtInflight.current < VT_MAX_INFLIGHT && vtQueue.current.length) {
       const job = vtQueue.current.shift();
-      startVtFetch(job.e, job.z, job.tx, job.ty);
+      startVtFetch(job.e, job.z, job.tx, job.ty, job.key);
     }
   };
-  const startVtFetch = (e, z, tx, ty) => {
+  const startVtFetch = (e, z, tx, ty, key) => {
     vtInflight.current++;
     const settle = () => { vtInflight.current--; runVtQueue(); };
     fetch(`https://api.protomaps.com/tiles/v4/${z}/${tx}/${ty}.mvt?key=${PROTOMAPS_KEY}`)
@@ -728,27 +729,41 @@ function Game({ G, onExit }) {
         e.loading = false;
         settle();
       })
-      .catch(() => { e.failed = true; e.loading = false; settle(); });
+      .catch(() => { e.failed = true; e.failedAt = Date.now(); e.loading = false; settle(); });
   };
   const getVectorTile = useCallback((z, tx, ty) => {
     const key = `${z}/${tx}/${ty}`;
     let e = vtCache.current.get(key);
-    if (e) return e;
+    if (e) {
+      // self-heal: a tile that failed a while ago gets deleted and
+      // re-created fresh below, instead of being stuck on fallback forever.
+      // (Dropped-from-queue entries never reach this point at all — they're
+      // deleted from the cache at the moment they're evicted, below.)
+      const staleFail = e.failed && Date.now() - (e.failedAt || 0) > VT_RETRY_MS;
+      if (!staleFail) return e;
+      vtCache.current.delete(key);
+    }
     if (!PROTOMAPS_KEY) {
       // no key configured — don't bother hitting the network, just mark
       // permanently unavailable so callers fall back immediately
-      e = { tile: null, loading: false, failed: true };
+      e = { loading: false, failed: true, failedAt: Infinity };
       vtCache.current.set(key, e);
       return e;
     }
-    e = { tile: null, loading: true, failed: false };
+    e = { loading: true, failed: false };
     vtCache.current.set(key, e);
     vtOrder.current.push(key);
     if (vtOrder.current.length > 300) vtCache.current.delete(vtOrder.current.shift());
-    if (vtInflight.current < VT_MAX_INFLIGHT) startVtFetch(e, z, tx, ty);
+    if (vtInflight.current < VT_MAX_INFLIGHT) startVtFetch(e, z, tx, ty, key);
     else {
-      if (vtQueue.current.length > 60) vtQueue.current.shift();
-      vtQueue.current.push({ e, z, tx, ty });
+      if (vtQueue.current.length > 60) {
+        // drop the stalest queued job AND its cache entry, so it gets a
+        // fresh attempt later instead of sitting "loading" forever with no
+        // one ever coming back to actually fetch it
+        const dropped = vtQueue.current.shift();
+        vtCache.current.delete(dropped.key);
+      }
+      vtQueue.current.push({ e, z, tx, ty, key });
     }
     return e;
   }, []);
