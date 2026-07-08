@@ -702,7 +702,7 @@ function Game({ G, onExit }) {
   const vtOrder = useRef([]);
   const vtInflight = useRef(0);
   const vtQueue = useRef([]);
-  const VT_MAX_INFLIGHT = 4;
+  const VT_MAX_INFLIGHT = 12;
   const VT_RETRY_MS = 20000; // don't hammer a persistently-failing tile, but don't give up on it forever either
 
   const runVtQueue = () => {
@@ -756,7 +756,7 @@ function Game({ G, onExit }) {
     if (vtOrder.current.length > 300) vtCache.current.delete(vtOrder.current.shift());
     if (vtInflight.current < VT_MAX_INFLIGHT) startVtFetch(e, z, tx, ty, key);
     else {
-      if (vtQueue.current.length > 60) {
+      if (vtQueue.current.length > 200) {
         // drop the stalest queued job AND its cache entry, so it gets a
         // fresh attempt later instead of sitting "loading" forever with no
         // one ever coming back to actually fetch it
@@ -809,6 +809,34 @@ function Game({ G, onExit }) {
     // no explicit landuse tag — fall back to measured building coverage
     const c = buildingFrac >= 0.45 ? "downtown" : buildingFrac >= 0.22 ? "urban" : buildingFrac >= 0.08 ? "suburbs" : "rural";
     return { c, src: "vector", dbg };
+  }, [getVectorTile]);
+
+  /* Batch-prefetch every vector tile the current viewport (plus a margin
+     ahead of the visible edge) needs, computed directly from the camera —
+     ONE pass over tile-space, not discovered lazily one deed-cell at a time
+     as the row-by-row classify loop happens to scan across a new tile
+     boundary. That lazy discovery was the actual cause of the visible
+     left-to-right sweep: each new column paid its own fetch latency before
+     painting. Prefetching the whole area (plus margin) up front means most
+     tiles are already in flight or cached by the time classification runs. */
+  const prefetchVectorTiles = useCallback(() => {
+    if (!PROTOMAPS_KEY) return;
+    const { s, x: ox, y: oy } = cam.current;
+    const { w, h } = size.current;
+    if (!w || !h || s <= 0) return;
+    const vn = 1 << VECTOR_Z;
+    const vtile = s / vn;
+    if (vtile <= 0) return;
+    const margin = Math.max(w, h) * 0.6; // prefetch beyond the edge so panning doesn't outrun it
+    const vx0 = Math.max(0, Math.floor((-ox - margin) / vtile));
+    const vy0 = Math.max(0, Math.floor((-oy - margin) / vtile));
+    const vx1 = Math.min(vn - 1, Math.floor((w - ox + margin) / vtile));
+    const vy1 = Math.min(vn - 1, Math.floor((h - oy + margin) / vtile));
+    const cnt = Math.max(0, vx1 - vx0 + 1) * Math.max(0, vy1 - vy0 + 1);
+    if (cnt > 1800) return; // too zoomed out for vector detail to matter anyway
+    for (let ty = vy0; ty <= vy1; ty++) {
+      for (let tx = vx0; tx <= vx1; tx++) getVectorTile(VECTOR_Z, tx, ty);
+    }
   }, [getVectorTile]);
 
   const clsCache = useRef(new Map());
@@ -1122,7 +1150,8 @@ function Game({ G, onExit }) {
     const wx = lonToWx(lon), wy = latToWy(lat);
     cam.current = { s, x: w / 2 - wx * s, y: h / 2 - wy * s, init: true };
     setCities(false);
-  }, []);
+    prefetchVectorTiles();
+  }, [prefetchVectorTiles]);
 
   useEffect(() => {
     const el = wrapRef.current, cv = canvasRef.current;
@@ -1407,6 +1436,15 @@ function Game({ G, onExit }) {
     return () => clearInterval(iv);
   }, [ready, tab, ensureRegion]);
 
+  /* keep vector tiles ahead of the camera during continuous pan/zoom —
+     eager jumps (flyTo, tap-to-zoom, +/-) also call this directly for an
+     immediate kick instead of waiting for the next tick */
+  useEffect(() => {
+    if (!ready) return;
+    const iv = setInterval(() => { if (tab === "map") prefetchVectorTiles(); }, 180);
+    return () => clearInterval(iv);
+  }, [ready, tab, prefetchVectorTiles]);
+
   /* pointer input */
   const zoomAt = (mx, my, ns) => {
     const c = cam.current;
@@ -1471,6 +1509,7 @@ function Game({ G, onExit }) {
         } else setSel(null);
       } else {
         zoomAt(pt.x, pt.y, cam.current.s * 3.2);
+        prefetchVectorTiles();
       }
     }
     if (ptrs.current.size === 0) gesture.current = null;
@@ -1595,8 +1634,8 @@ function Game({ G, onExit }) {
           {/* controls */}
           <div className="absolute right-3 top-3 flex flex-col gap-1.5">
             {[
-              ["+", () => zoomAt(size.current.w / 2, size.current.h / 2, cam.current.s * 1.6)],
-              ["−", () => zoomAt(size.current.w / 2, size.current.h / 2, cam.current.s * 0.62)],
+              ["+", () => { zoomAt(size.current.w / 2, size.current.h / 2, cam.current.s * 1.6); prefetchVectorTiles(); }],
+              ["−", () => { zoomAt(size.current.w / 2, size.current.h / 2, cam.current.s * 0.62); prefetchVectorTiles(); }],
               ["🌐", fitWorld],
               ["✈", () => setCities((c) => !c)],
               ["🐞", () => setDbg((v) => !v)],
