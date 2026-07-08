@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback, useReducer } from "react";
 import { PbfReader } from "pbf";
 import { VectorTile } from "@mapbox/vector-tile";
 import { MULTIPLAYER } from "./storage.js";
+import { getTileCache, putTileCache } from "./tilecache.js";
 
 /* ─────────────────────────────────────────────────────────────
    PLOT TWIST: WORLD DEED — one shared Earth, ~300m tiles.
@@ -64,20 +65,24 @@ function pointInFeatureGeom(geom, x, y) {
 
 // Decode every polygon feature in a layer ONCE (geometry + bbox), so later
 // point queries are a cheap bbox check + ray-cast against a plain array
-// instead of re-parsing the tile's raw protobuf on every call.
+// instead of re-parsing the tile's raw protobuf on every call. Points are
+// converted to plain {x,y} objects (not the library's Point class) so this
+// data is also safe to persist via IndexedDB's structured-clone algorithm —
+// see tilecache.js.
 function decodePolyLayer(layer, withKind) {
   if (!layer) return [];
   const out = [];
   for (let i = 0; i < layer.length; i++) {
     const f = layer.feature(i);
     if (f.type !== 3) continue; // polygons only
-    const geom = f.loadGeometry();
+    const rawGeom = f.loadGeometry();
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-    for (const ring of geom) for (const p of ring) {
+    const geom = rawGeom.map((ring) => ring.map((p) => {
       if (p.x < minX) minX = p.x; if (p.x > maxX) maxX = p.x;
       if (p.y < minY) minY = p.y; if (p.y > maxY) maxY = p.y;
-    }
-    out.push({ geom, minX, minY, maxX, maxY, kind: withKind ? f.properties.kind || null : undefined });
+      return { x: p.x, y: p.y };
+    }));
+    out.push({ geom, minX, minY, maxX, maxY, kind: withKind ? f.properties.kind || null : null });
   }
   return out;
 }
@@ -676,13 +681,30 @@ function Game({ G, onExit }) {
         // query was the actual cause of the multi-second stalls — measured
         // at ~370ms per tile per layer for a typical viewport, vs <1ms once
         // decoded up front. classifyFromVector reads these plain arrays.
-        e.water = decodePolyLayer(tile.layers.water);
-        e.landuse = decodePolyLayer(tile.layers.landuse, true);
-        e.buildings = decodePolyLayer(tile.layers.buildings);
+        const water = decodePolyLayer(tile.layers.water);
+        const landuse = decodePolyLayer(tile.layers.landuse, true);
+        const buildings = decodePolyLayer(tile.layers.buildings);
+        e.water = water; e.landuse = landuse; e.buildings = buildings;
         e.loading = false;
         settle();
+        // fire-and-forget: persist so this exact tile is instant next time,
+        // for this player, on this device — no network needed at all
+        putTileCache(z, tx, ty, water, landuse, buildings);
       })
       .catch(() => { e.failed = true; e.failedAt = Date.now(); e.loading = false; settle(); });
+  };
+  const startFetchOrQueue = (e, z, tx, ty, key) => {
+    if (vtInflight.current < VT_MAX_INFLIGHT) startVtFetch(e, z, tx, ty, key);
+    else {
+      if (vtQueue.current.length > 200) {
+        // drop the stalest queued job AND its cache entry, so it gets a
+        // fresh attempt later instead of sitting "loading" forever with no
+        // one ever coming back to actually fetch it
+        const dropped = vtQueue.current.shift();
+        vtCache.current.delete(dropped.key);
+      }
+      vtQueue.current.push({ e, z, tx, ty, key });
+    }
   };
   const getVectorTile = useCallback((z, tx, ty) => {
     const key = `${z}/${tx}/${ty}`;
@@ -707,17 +729,19 @@ function Game({ G, onExit }) {
     vtCache.current.set(key, e);
     vtOrder.current.push(key);
     if (vtOrder.current.length > 300) vtCache.current.delete(vtOrder.current.shift());
-    if (vtInflight.current < VT_MAX_INFLIGHT) startVtFetch(e, z, tx, ty, key);
-    else {
-      if (vtQueue.current.length > 200) {
-        // drop the stalest queued job AND its cache entry, so it gets a
-        // fresh attempt later instead of sitting "loading" forever with no
-        // one ever coming back to actually fetch it
-        const dropped = vtQueue.current.shift();
-        vtCache.current.delete(dropped.key);
+
+    // check the persistent (IndexedDB) cache before ever touching the
+    // network — a location any player has visited before on this device
+    // resolves instantly here instead of paying a fetch
+    getTileCache(z, tx, ty).then((rec) => {
+      if (e.water) return; // already resolved (e.g. network beat the IDB read)
+      if (rec) {
+        e.water = rec.water; e.landuse = rec.landuse; e.buildings = rec.buildings;
+        e.loading = false;
+      } else {
+        startFetchOrQueue(e, z, tx, ty, key);
       }
-      vtQueue.current.push({ e, z, tx, ty, key });
-    }
+    });
     return e;
   }, []);
 
