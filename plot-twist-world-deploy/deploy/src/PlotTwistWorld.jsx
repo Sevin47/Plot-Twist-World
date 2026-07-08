@@ -1,8 +1,5 @@
 import { useState, useEffect, useRef, useCallback, useReducer } from "react";
-import { PbfReader } from "pbf";
-import { VectorTile } from "@mapbox/vector-tile";
 import { MULTIPLAYER } from "./storage.js";
-import { getTileCache, putTileCache } from "./tilecache.js";
 
 /* ─────────────────────────────────────────────────────────────
    PLOT TWIST: WORLD DEED — one shared Earth, ~300m tiles.
@@ -63,29 +60,9 @@ function pointInFeatureGeom(geom, x, y) {
   return inside;
 }
 
-// Decode every polygon feature in a layer ONCE (geometry + bbox), so later
-// point queries are a cheap bbox check + ray-cast against a plain array
-// instead of re-parsing the tile's raw protobuf on every call. Points are
-// converted to plain {x,y} objects (not the library's Point class) so this
-// data is also safe to persist via IndexedDB's structured-clone algorithm —
-// see tilecache.js.
-function decodePolyLayer(layer, withKind) {
-  if (!layer) return [];
-  const out = [];
-  for (let i = 0; i < layer.length; i++) {
-    const f = layer.feature(i);
-    if (f.type !== 3) continue; // polygons only
-    const rawGeom = f.loadGeometry();
-    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-    const geom = rawGeom.map((ring) => ring.map((p) => {
-      if (p.x < minX) minX = p.x; if (p.x > maxX) maxX = p.x;
-      if (p.y < minY) minY = p.y; if (p.y > maxY) maxY = p.y;
-      return { x: p.x, y: p.y };
-    }));
-    out.push({ geom, minX, minY, maxX, maxY, kind: withKind ? f.properties.kind || null : null });
-  }
-  return out;
-}
+// pointInDecoded is used by classifyFromVector below to test the pre-decoded,
+// bbox-indexed geometry the worker hands back — decoding itself now happens
+// in vectorWorker.js, off the main thread.
 function pointInDecoded(feat, x, y) {
   if (x < feat.minX || x > feat.maxX || y < feat.minY || y > feat.maxY) return false;
   return pointInFeatureGeom(feat.geom, x, y);
@@ -658,75 +635,90 @@ function Game({ G, onExit }) {
      covering tile has loaded and decoded, or if no API key is configured. */
   const vtCache = useRef(new Map()); // "z/x/y" -> { water, landuse, buildings, loading, failed, failedAt }
   const vtOrder = useRef([]);
-  const vtInflight = useRef(0);
-  const vtQueue = useRef([]);
-  const VT_MAX_INFLIGHT = 12;
+  const vtPending = useRef(new Set()); // keys currently awaited from the worker (dedup)
   const VT_RETRY_MS = 20000; // don't hammer a persistently-failing tile, but don't give up on it forever either
 
-  const runVtQueue = () => {
-    while (vtInflight.current < VT_MAX_INFLIGHT && vtQueue.current.length) {
-      const job = vtQueue.current.shift();
-      startResolve(job.e, job.z, job.tx, job.ty, job.key);
+  /* Fetch, protobuf decoding, and IndexedDB access all live in a dedicated
+     Web Worker (vectorWorker.js) — the same architectural pattern Mapbox GL
+     JS / MapLibre use for exactly this problem: their own docs describe
+     parsing vector tiles in workers specifically so tile processing can
+     never block the UI thread. The main thread's job shrinks to almost
+     nothing — dedupe requests, send them, and fold results back into the
+     local cache when they arrive. Classification (point-in-polygon against
+     the decoded arrays) stays HERE on the main thread, deliberately — it's
+     already sub-millisecond per query once a tile is decoded, so moving it
+     off-thread would just add message-passing overhead for no real gain. */
+  const vtWorkerRef = useRef(null);
+  if (!vtWorkerRef.current && typeof Worker !== "undefined") {
+    try {
+      vtWorkerRef.current = new Worker(new URL("./vectorWorker.js", import.meta.url), { type: "module" });
+    } catch {
+      vtWorkerRef.current = null; // e.g. no module-worker support — classification just stays "pending" forever, same as no API key
     }
-  };
-  const fetchFromNetwork = (e, z, tx, ty, key, settle) => {
-    fetch(`https://api.protomaps.com/tiles/v4/${z}/${tx}/${ty}.mvt?key=${PROTOMAPS_KEY}`)
-      .then((res) => { if (!res.ok) throw new Error(String(res.status)); return res.arrayBuffer(); })
-      .then((buf) => {
-        const tile = new VectorTile(new PbfReader(new Uint8Array(buf)));
-        // Decode + bbox-index each layer ONCE here, not per classify() call.
-        // Re-parsing a dense tile's geometry from the raw protobuf on every
-        // query was the actual cause of the multi-second stalls — measured
-        // at ~370ms per tile per layer for a typical viewport, vs <1ms once
-        // decoded up front. classifyFromVector reads these plain arrays.
-        const water = decodePolyLayer(tile.layers.water);
-        const landuse = decodePolyLayer(tile.layers.landuse, true);
-        const buildings = decodePolyLayer(tile.layers.buildings);
-        e.water = water; e.landuse = landuse; e.buildings = buildings;
-        e.loading = false;
-        settle();
-        // fire-and-forget: persist so this exact tile is instant next time,
-        // for this player, on this device — no network needed at all
-        putTileCache(z, tx, ty, water, landuse, buildings);
-      })
-      .catch(() => { e.failed = true; e.failedAt = Date.now(); e.loading = false; settle(); });
-  };
-  // One "resolution pipeline" per tile: check IndexedDB, then network only
-  // if that misses — gated behind the SAME inflight budget as the network
-  // fetch itself. This is the important part: a big prefetch burst (e.g.
-  // panning to a wide view) used to fire hundreds of *unthrottled* IndexedDB
-  // reads simultaneously, which was real main-thread contention that could
-  // starve the actual network fetches behind it — nothing to do with
-  // IndexedDB being slow, just too many transactions opened at once.
-  const startResolve = (e, z, tx, ty, key) => {
-    vtInflight.current++;
-    const settle = () => { vtInflight.current--; runVtQueue(); };
-    getTileCache(z, tx, ty)
-      .then((rec) => {
-        if (rec) {
-          e.water = rec.water; e.landuse = rec.landuse; e.buildings = rec.buildings;
-          e.loading = false;
-          settle();
-        } else {
-          fetchFromNetwork(e, z, tx, ty, key, settle);
-        }
-      })
-      .catch(() => fetchFromNetwork(e, z, tx, ty, key, settle));
-  };
+  }
+  useEffect(() => {
+    const worker = vtWorkerRef.current;
+    if (!worker) return;
+    const onMsg = (ev) => {
+      const { key, ok, water, landuse, buildings } = ev.data;
+      vtPending.current.delete(key);
+      const e = vtCache.current.get(key);
+      if (!e) return; // evicted from the local cache already — fine, it'll be re-requested if still needed
+      if (ok) { e.water = water; e.landuse = landuse; e.buildings = buildings; e.loading = false; }
+      else { e.failed = true; e.failedAt = Date.now(); e.loading = false; }
+    };
+    worker.addEventListener("message", onMsg);
+    return () => worker.removeEventListener("message", onMsg);
+  }, []);
+
+  // Tuned by real connection quality, not a fixed guess — the same aggressive
+  // concurrency/prefetch-margin that made a wifi connection feel instant was
+  // actively hurting mobile: firing many parallel requests down a narrow,
+  // high-latency pipe makes EACH of them slower (a well-known effect on
+  // constrained links), so "faster" needs to mean "sized to the connection,"
+  // not "always maximum." Stored in a ref so it updates live without any
+  // stale-closure risk if the connection changes mid-session. margin/cap
+  // are used here on the main thread (viewport prefetch math); maxInflight
+  // is relayed to the worker, which does its own fetch throttling.
+  const vtTuning = useRef({ maxInflight: 6, margin: 0.35, cap: 900 }); // moderate default until measured
+  useEffect(() => {
+    const tuningFor = (tier) => ({
+      slow:   { maxInflight: 3,  margin: 0.15, cap: 250 },
+      medium: { maxInflight: 5,  margin: 0.3,  cap: 600 },
+      fast:   { maxInflight: 10, margin: 0.6,  cap: 1800 },
+      unknown:{ maxInflight: 6,  margin: 0.35, cap: 900 }, // e.g. iOS Safari, which has no Network Information API at all
+    }[tier]);
+    const conn = typeof navigator !== "undefined" ? navigator.connection : null;
+    const measure = () => {
+      let tier = "unknown";
+      if (conn) {
+        if (conn.saveData) tier = "slow";
+        else if (conn.effectiveType === "slow-2g" || conn.effectiveType === "2g") tier = "slow";
+        else if (conn.effectiveType === "3g") tier = "medium";
+        else if (conn.effectiveType === "4g") tier = "fast";
+      }
+      vtTuning.current = tuningFor(tier);
+      if (vtWorkerRef.current) vtWorkerRef.current.postMessage({ type: "tuning", maxInflight: vtTuning.current.maxInflight });
+    };
+    measure();
+    if (conn && conn.addEventListener) {
+      conn.addEventListener("change", measure);
+      return () => conn.removeEventListener("change", measure);
+    }
+  }, []);
+
   const getVectorTile = useCallback((z, tx, ty) => {
     const key = `${z}/${tx}/${ty}`;
     let e = vtCache.current.get(key);
     if (e) {
       // self-heal: a tile that failed a while ago gets deleted and
-      // re-created fresh below, instead of being stuck on fallback forever.
-      // (Dropped-from-queue entries never reach this point at all — they're
-      // deleted from the cache at the moment they're evicted, below.)
+      // re-created fresh below, instead of being stuck on fallback forever
       const staleFail = e.failed && Date.now() - (e.failedAt || 0) > VT_RETRY_MS;
       if (!staleFail) return e;
       vtCache.current.delete(key);
     }
-    if (!PROTOMAPS_KEY) {
-      // no key configured — don't bother hitting the network, just mark
+    if (!PROTOMAPS_KEY || !vtWorkerRef.current) {
+      // no key configured, or worker unavailable — don't bother, just mark
       // permanently unavailable so callers fall back immediately
       e = { loading: false, failed: true, failedAt: Infinity };
       vtCache.current.set(key, e);
@@ -736,17 +728,9 @@ function Game({ G, onExit }) {
     vtCache.current.set(key, e);
     vtOrder.current.push(key);
     if (vtOrder.current.length > 600) vtCache.current.delete(vtOrder.current.shift());
-
-    if (vtInflight.current < VT_MAX_INFLIGHT) startResolve(e, z, tx, ty, key);
-    else {
-      if (vtQueue.current.length > 200) {
-        // drop the stalest queued job AND its cache entry, so it gets a
-        // fresh attempt later instead of sitting "loading" forever with no
-        // one ever coming back to actually fetch it
-        const dropped = vtQueue.current.shift();
-        vtCache.current.delete(dropped.key);
-      }
-      vtQueue.current.push({ e, z, tx, ty, key });
+    if (!vtPending.current.has(key)) {
+      vtPending.current.add(key);
+      vtWorkerRef.current.postMessage({ type: "resolve", key, z, tx, ty });
     }
     return e;
   }, []);
@@ -814,8 +798,13 @@ function Game({ G, onExit }) {
      as the row-by-row classify loop happens to scan across a new tile
      boundary. That lazy discovery was the actual cause of the visible
      left-to-right sweep: each new column paid its own fetch latency before
-     painting. Prefetching the whole area (plus margin) up front means most
-     tiles are already in flight or cached by the time classification runs. */
+     painting. Margin and how many tiles we're willing to prefetch scale with
+     connection quality (vtTuning) — a wide margin makes sense on wifi, but
+     on a constrained mobile link it just means competing for bandwidth with
+     the tiles actually on screen right now. IndexedDB batching for a burst
+     like this now happens inside the worker (it coalesces requests that
+     arrive in the same tick into one transaction) — this function's only
+     job is figuring out WHICH tiles are needed and asking for them. */
   const prefetchVectorTiles = useCallback(() => {
     if (!PROTOMAPS_KEY) return;
     const { s, x: ox, y: oy } = cam.current;
@@ -824,13 +813,14 @@ function Game({ G, onExit }) {
     const vn = 1 << VECTOR_Z;
     const vtile = s / vn;
     if (vtile <= 0) return;
-    const margin = Math.max(w, h) * 0.6; // prefetch beyond the edge so panning doesn't outrun it
+    const { margin: marginFrac, cap } = vtTuning.current;
+    const margin = Math.max(w, h) * marginFrac;
     const vx0 = Math.max(0, Math.floor((-ox - margin) / vtile));
     const vy0 = Math.max(0, Math.floor((-oy - margin) / vtile));
     const vx1 = Math.min(vn - 1, Math.floor((w - ox + margin) / vtile));
     const vy1 = Math.min(vn - 1, Math.floor((h - oy + margin) / vtile));
     const cnt = Math.max(0, vx1 - vx0 + 1) * Math.max(0, vy1 - vy0 + 1);
-    if (cnt > 1800) return; // too zoomed out for vector detail to matter anyway
+    if (cnt > cap) return; // too much for the current connection to be worth trying at once
     for (let ty = vy0; ty <= vy1; ty++) {
       for (let tx = vx0; tx <= vx1; tx++) getVectorTile(VECTOR_Z, tx, ty);
     }
@@ -1566,7 +1556,8 @@ function Game({ G, onExit }) {
       view: { w: size.current.w, h: size.current.h }, cam: cam.current,
       fps: D.fps, drawAvgMs: D.avg, drawMaxMs: D.max, tilePx: D.tilePx, tiles: D.cnt, gridOn: D.gridOn,
       previewZ: D.pz, previewPx: D.ptile, previewCells: D.pcnt, basemapOk: D.tileOk, basemapFail: D.tileFail,
-      protomapsKeyConfigured: !!PROTOMAPS_KEY, vectorCached: vtCache.current.size, vectorInflight: vtInflight.current, vectorQueued: vtQueue.current.length,
+      protomapsKeyConfigured: !!PROTOMAPS_KEY, vectorCached: vtCache.current.size, vectorPending: vtPending.current.size, vectorWorkerActive: !!vtWorkerRef.current,
+      vtTuning: vtTuning.current, connectionEffectiveType: typeof navigator !== "undefined" && navigator.connection ? navigator.connection.effectiveType : null, connectionSaveData: typeof navigator !== "undefined" && navigator.connection ? !!navigator.connection.saveData : null,
       pointers: ptrs.current.size, gesture: gesture.current && gesture.current.kind,
       supabaseConfigured: MULTIPLAYER, regions: regions.current.size, clsCache: clsCache.current.size,
       longtasks: D.long, longtaskMaxMs: D.longMax, errors: D.errs, lastInput: D.lastEvt, owned: g.own.length,
@@ -1709,7 +1700,8 @@ function Game({ G, onExit }) {
               <div>tilePx {D.tilePx.toFixed(2)} · grid {String(D.gridOn)} · tiles {D.cnt}</div>
               <div>preview z{D.pz || 0} · {D.ptile.toFixed(1)}px · cells {D.pcnt}</div>
               <div>basemap tiles ok {D.tileOk} fail {D.tileFail}</div>
-              <div>vector: cached {vtCache.current.size} inflight {vtInflight.current} queued {vtQueue.current.length}</div>
+              <div>vector: cached {vtCache.current.size} pending {vtPending.current.size} worker {vtWorkerRef.current ? "on" : "off"}</div>
+              <div>tuning: max {vtTuning.current.maxInflight} margin {vtTuning.current.margin} cap {vtTuning.current.cap}{typeof navigator !== "undefined" && navigator.connection ? ` (${navigator.connection.effectiveType || "?"}${navigator.connection.saveData ? " saveData" : ""})` : " (no Network Info API)"}</div>
               {!PROTOMAPS_KEY && <div style={{ color: "#F0784E" }}>no Protomaps key configured — using fallback classifier</div>}
               {!MULTIPLAYER && <div style={{ color: "#F0784E" }}>no Supabase config — single-player only</div>}
               {selDbg && (
