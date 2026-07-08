@@ -649,26 +649,43 @@ function Game({ G, onExit }) {
      already sub-millisecond per query once a tile is decoded, so moving it
      off-thread would just add message-passing overhead for no real gain. */
   const vtWorkerRef = useRef(null);
+  const vtWorkerReady = useRef(false); // true once the worker confirms it actually started
+  const vtWorkerError = useRef(null);  // captured startup/runtime error, if any — "worker: on" alone only means the Worker object was constructed, NOT that its script successfully loaded
   if (!vtWorkerRef.current && typeof Worker !== "undefined") {
     try {
       vtWorkerRef.current = new Worker(new URL("./vectorWorker.js", import.meta.url), { type: "module" });
-    } catch {
+    } catch (err) {
       vtWorkerRef.current = null; // e.g. no module-worker support — classification just stays "pending" forever, same as no API key
+      vtWorkerError.current = String(err && err.message || err);
     }
   }
   useEffect(() => {
     const worker = vtWorkerRef.current;
     if (!worker) return;
     const onMsg = (ev) => {
-      const { key, ok, water, landuse, buildings } = ev.data;
+      const d = ev.data;
+      if (d && d.type === "ready") { vtWorkerReady.current = true; return; }
+      const { key, ok, water, landuse, buildings } = d;
       vtPending.current.delete(key);
       const e = vtCache.current.get(key);
       if (!e) return; // evicted from the local cache already — fine, it'll be re-requested if still needed
       if (ok) { e.water = water; e.landuse = landuse; e.buildings = buildings; e.loading = false; }
       else { e.failed = true; e.failedAt = Date.now(); e.loading = false; }
     };
+    const onErr = (ev) => {
+      // this is exactly what "worker: on" can't tell you — the Worker object
+      // constructs fine even if its script 404s or throws, since that
+      // failure is async. This is the only way that failure becomes visible.
+      vtWorkerError.current = `${ev.message || "worker error"} (${ev.filename || "?"}:${ev.lineno || "?"})`;
+    };
     worker.addEventListener("message", onMsg);
-    return () => worker.removeEventListener("message", onMsg);
+    worker.addEventListener("error", onErr);
+    worker.addEventListener("messageerror", onErr);
+    return () => {
+      worker.removeEventListener("message", onMsg);
+      worker.removeEventListener("error", onErr);
+      worker.removeEventListener("messageerror", onErr);
+    };
   }, []);
 
   // Tuned by real connection quality, not a fixed guess — the same aggressive
@@ -808,37 +825,70 @@ function Game({ G, onExit }) {
     return { c: tierFor(coastal, buildingFrac), src: "vector", dbg };
   }, [getVectorTile]);
 
-  /* Batch-prefetch every vector tile the current viewport (plus a margin
-     ahead of the visible edge) needs, computed directly from the camera —
-     ONE pass over tile-space, not discovered lazily one deed-cell at a time
-     as the row-by-row classify loop happens to scan across a new tile
-     boundary. That lazy discovery was the actual cause of the visible
-     left-to-right sweep: each new column paid its own fetch latency before
-     painting. Margin and how many tiles we're willing to prefetch scale with
-     connection quality (vtTuning) — a wide margin makes sense on wifi, but
-     on a constrained mobile link it just means competing for bandwidth with
-     the tiles actually on screen right now. IndexedDB batching for a burst
-     like this now happens inside the worker (it coalesces requests that
-     arrive in the same tick into one transaction) — this function's only
-     job is figuring out WHICH tiles are needed and asking for them. */
+  /* Batch-prefetch every vector tile the current view needs, computed
+     directly from the camera rather than discovered lazily one cell at a
+     time. Two modes, matching the two render modes:
+
+     - Deep zoom (the tappable ~306m deed grid is on screen): scan every
+       VECTOR_Z (~2.4km) tile across the viewport+margin directly — there
+       just aren't that many at this zoom, so an exhaustive scan is cheap.
+
+     - Wide/preview zoom (country down to city scale): an exhaustive
+       VECTOR_Z scan is the wrong tool entirely — at a ~300km view that's
+       50,000+ individual 2.4km tiles, blowing through any reasonable cap
+       and causing prefetch to just give up. But the renderer at this zoom
+       only samples ONE point per visible preview cell (which can be up to
+       ~20km across), so the actual need is a couple hundred tiles, not
+       tens of thousands. This mode mirrors the render loop's own preview
+       cell math and requests exactly what it will actually sample. */
   const prefetchVectorTiles = useCallback(() => {
     if (!PROTOMAPS_KEY) return;
     const { s, x: ox, y: oy } = cam.current;
     const { w, h } = size.current;
     if (!w || !h || s <= 0) return;
-    const vn = 1 << VECTOR_Z;
-    const vtile = s / vn;
-    if (vtile <= 0) return;
     const { margin: marginFrac, cap } = vtTuning.current;
-    const margin = Math.max(w, h) * marginFrac;
-    const vx0 = Math.max(0, Math.floor((-ox - margin) / vtile));
-    const vy0 = Math.max(0, Math.floor((-oy - margin) / vtile));
-    const vx1 = Math.min(vn - 1, Math.floor((w - ox + margin) / vtile));
-    const vy1 = Math.min(vn - 1, Math.floor((h - oy + margin) / vtile));
-    const cnt = Math.max(0, vx1 - vx0 + 1) * Math.max(0, vy1 - vy0 + 1);
-    if (cnt > cap) return; // too much for the current connection to be worth trying at once
-    for (let ty = vy0; ty <= vy1; ty++) {
-      for (let tx = vx0; tx <= vx1; tx++) getVectorTile(VECTOR_Z, tx, ty);
+    const gridOn = s / N >= 8;
+
+    if (gridOn) {
+      const vn = 1 << VECTOR_Z;
+      const vtile = s / vn;
+      if (vtile <= 0) return;
+      const margin = Math.max(w, h) * marginFrac;
+      const vx0 = Math.max(0, Math.floor((-ox - margin) / vtile));
+      const vy0 = Math.max(0, Math.floor((-oy - margin) / vtile));
+      const vx1 = Math.min(vn - 1, Math.floor((w - ox + margin) / vtile));
+      const vy1 = Math.min(vn - 1, Math.floor((h - oy + margin) / vtile));
+      const cnt = Math.max(0, vx1 - vx0 + 1) * Math.max(0, vy1 - vy0 + 1);
+      if (cnt > cap) return;
+      for (let ty = vy0; ty <= vy1; ty++) {
+        for (let tx = vx0; tx <= vx1; tx++) getVectorTile(VECTOR_Z, tx, ty);
+      }
+      return;
+    }
+
+    const pz = previewLevelFor(s);
+    const pn = 1 << pz;
+    const ptile = s / pn;
+    if (ptile <= 0) return;
+    const MARGIN_CELLS = 2;
+    const px0 = Math.max(0, Math.floor(-ox / ptile) - MARGIN_CELLS);
+    const py0 = Math.max(0, Math.floor(-oy / ptile) - MARGIN_CELLS);
+    const px1 = Math.min(pn - 1, Math.ceil((w - ox) / ptile) + MARGIN_CELLS);
+    const py1 = Math.min(pn - 1, Math.ceil((h - oy) / ptile) + MARGIN_CELLS);
+    const pcnt = Math.max(0, px1 - px0 + 1) * Math.max(0, py1 - py0 + 1);
+    if (pcnt <= 0 || pcnt > 8000) return; // matches the render loop's own cap — if it won't draw, don't fetch for it either
+    const vn = 1 << VECTOR_Z;
+    const seen = new Set();
+    for (let ty = py0; ty <= py1; ty++) {
+      for (let tx = px0; tx <= px1; tx++) {
+        const wx = (tx + 0.5) / pn, wy = (ty + 0.5) / pn;
+        const vtx = Math.max(0, Math.min(vn - 1, Math.floor(wx * vn)));
+        const vty = Math.max(0, Math.min(vn - 1, Math.floor(wy * vn)));
+        const vkey = vty * vn + vtx;
+        if (seen.has(vkey)) continue; // several nearby preview cells often share one underlying vector tile
+        seen.add(vkey);
+        getVectorTile(VECTOR_Z, vtx, vty);
+      }
     }
   }, [getVectorTile]);
 
@@ -1572,7 +1622,7 @@ function Game({ G, onExit }) {
       view: { w: size.current.w, h: size.current.h }, cam: cam.current,
       fps: D.fps, drawAvgMs: D.avg, drawMaxMs: D.max, tilePx: D.tilePx, tiles: D.cnt, gridOn: D.gridOn,
       previewZ: D.pz, previewPx: D.ptile, previewCells: D.pcnt, basemapOk: D.tileOk, basemapFail: D.tileFail,
-      protomapsKeyConfigured: !!PROTOMAPS_KEY, vectorCached: vtCache.current.size, vectorPending: vtPending.current.size, vectorWorkerActive: !!vtWorkerRef.current,
+      protomapsKeyConfigured: !!PROTOMAPS_KEY, vectorCached: vtCache.current.size, vectorPending: vtPending.current.size, vectorWorkerActive: !!vtWorkerRef.current, vectorWorkerReady: vtWorkerReady.current, vectorWorkerError: vtWorkerError.current,
       vtTuning: vtTuning.current, connectionEffectiveType: typeof navigator !== "undefined" && navigator.connection ? navigator.connection.effectiveType : null, connectionSaveData: typeof navigator !== "undefined" && navigator.connection ? !!navigator.connection.saveData : null,
       pointers: ptrs.current.size, gesture: gesture.current && gesture.current.kind,
       supabaseConfigured: MULTIPLAYER, regions: regions.current.size, clsCache: clsCache.current.size,
@@ -1716,7 +1766,8 @@ function Game({ G, onExit }) {
               <div>tilePx {D.tilePx.toFixed(2)} · grid {String(D.gridOn)} · tiles {D.cnt}</div>
               <div>preview z{D.pz || 0} · {D.ptile.toFixed(1)}px · cells {D.pcnt}</div>
               <div>basemap tiles ok {D.tileOk} fail {D.tileFail}</div>
-              <div>vector: cached {vtCache.current.size} pending {vtPending.current.size} worker {vtWorkerRef.current ? "on" : "off"}</div>
+              <div>vector: cached {vtCache.current.size} pending {vtPending.current.size} worker {vtWorkerRef.current ? "on" : "off"} ready {String(vtWorkerReady.current)}</div>
+              {vtWorkerError.current && <div style={{ color: "#F0784E" }}>worker error: {vtWorkerError.current}</div>}
               <div>tuning: max {vtTuning.current.maxInflight} margin {vtTuning.current.margin} cap {vtTuning.current.cap}{typeof navigator !== "undefined" && navigator.connection ? ` (${navigator.connection.effectiveType || "?"}${navigator.connection.saveData ? " saveData" : ""})` : " (no Network Info API)"}</div>
               {!PROTOMAPS_KEY && <div style={{ color: "#F0784E" }}>no Protomaps key configured — using fallback classifier</div>}
               {!MULTIPLAYER && <div style={{ color: "#F0784E" }}>no Supabase config — single-player only</div>}
