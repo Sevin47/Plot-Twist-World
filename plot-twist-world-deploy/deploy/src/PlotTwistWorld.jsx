@@ -711,7 +711,7 @@ function Game({ G, onExit }) {
     const tuningFor = (tier) => ({
       slow:   { maxInflight: 3,  margin: 0.15, cap: 250 },
       medium: { maxInflight: 5,  margin: 0.3,  cap: 600 },
-      fast:   { maxInflight: 10, margin: 0.6,  cap: 1800 },
+      fast:   { maxInflight: 16, margin: 0.6,  cap: 1800 },
       unknown:{ maxInflight: 6,  margin: 0.35, cap: 900 }, // e.g. iOS Safari, which has no Network Information API at all
     }[tier]);
     const conn = typeof navigator !== "undefined" ? navigator.connection : null;
