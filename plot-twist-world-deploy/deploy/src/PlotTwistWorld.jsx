@@ -727,7 +727,23 @@ function Game({ G, onExit }) {
     e = { loading: true, failed: false };
     vtCache.current.set(key, e);
     vtOrder.current.push(key);
-    if (vtOrder.current.length > 600) vtCache.current.delete(vtOrder.current.shift());
+    // capacity must comfortably exceed the largest single prefetch burst
+    // (vtTuning's "fast" cap is 1800) — otherwise a single wide, stationary
+    // view could evict tiles it still needs, causing them to be re-fetched
+    // in a loop for no reason
+    if (vtOrder.current.length > 2200) {
+      const evictedKey = vtOrder.current.shift();
+      vtCache.current.delete(evictedKey);
+      if (vtPending.current.has(evictedKey)) {
+        // this tile is no longer needed — tell the worker to drop it from
+        // its queue instead of letting it keep competing with requests for
+        // wherever the camera actually is now. Without this, panning across
+        // several areas without waiting for each to finish could leave tens
+        // of thousands of stale requests ahead of the current viewport.
+        vtPending.current.delete(evictedKey);
+        vtWorkerRef.current.postMessage({ type: "cancel", key: evictedKey });
+      }
+    }
     if (!vtPending.current.has(key)) {
       vtPending.current.add(key);
       vtWorkerRef.current.postMessage({ type: "resolve", key, z, tx, ty });

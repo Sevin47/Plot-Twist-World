@@ -61,9 +61,18 @@ function decodePolyLayer(layer, withKind) {
 let maxInflight = 6;
 let inflight = 0;
 const queue = [];
+const MAX_QUEUE = 800; // hard backlog cap — without this, panning across many
+// areas without waiting for each to finish loading can queue up tens of
+// thousands of requests for places the player has long since left, which
+// then sit ahead of whatever's actually on screen right now
 
 function drainQueue() {
-  while (inflight < maxInflight && queue.length) startNetwork(queue.shift());
+  // LIFO on purpose: the most recently requested tile is the one most likely
+  // to still be on screen. FIFO here was the actual bug — panning to a new
+  // area just appended to the end of a long line of stale requests from
+  // wherever you'd already panned away from, so the new area never got its
+  // turn until that entire backlog drained first.
+  while (inflight < maxInflight && queue.length) startNetwork(queue.pop());
 }
 function startNetwork(job) {
   inflight++;
@@ -81,8 +90,14 @@ function startNetwork(job) {
     .finally(() => { inflight--; drainQueue(); });
 }
 function enqueueNetwork(job) {
-  if (inflight < maxInflight) startNetwork(job);
-  else queue.push(job);
+  if (inflight < maxInflight) { startNetwork(job); return; }
+  if (queue.length >= MAX_QUEUE) {
+    // drop the stalest (front of the array) queued job rather than let the
+    // backlog grow forever — tell the main thread so it isn't left waiting
+    const dropped = queue.shift();
+    postMessage({ key: dropped.key, ok: false });
+  }
+  queue.push(job);
 }
 
 // Coalesce IndexedDB lookups: requests that arrive in the same microtask
@@ -114,6 +129,19 @@ async function runBatchCheck() {
 self.onmessage = (ev) => {
   const msg = ev.data;
   if (msg.type === "tuning") { maxInflight = msg.maxInflight; drainQueue(); return; }
+  if (msg.type === "cancel") {
+    // the main thread evicted this tile from its cache (something newer
+    // pushed it out) — drop it from wherever it's waiting so it stops
+    // competing with requests that are actually still relevant. Can't abort
+    // a fetch already in flight without more plumbing than this is worth,
+    // but that's a small, bounded cost (at most `maxInflight` wasted
+    // requests) compared to an unbounded backlog of queued-but-not-started
+    // stale work, which is what this is actually fixing.
+    const qi = queue.findIndex((j) => j.key === msg.key);
+    if (qi !== -1) queue.splice(qi, 1);
+    pendingBatch = pendingBatch.filter((j) => j.key !== msg.key);
+    return;
+  }
   if (msg.type === "resolve") {
     if (!PROTOMAPS_KEY) { postMessage({ key: msg.key, ok: false }); return; }
     pendingBatch.push(msg);
