@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback, useReducer } from "react";
 import { PbfReader } from "pbf";
 import { VectorTile } from "@mapbox/vector-tile";
+import { MULTIPLAYER } from "./storage.js";
 
 /* ─────────────────────────────────────────────────────────────
    PLOT TWIST: WORLD DEED — one shared Earth, ~300m tiles.
@@ -1501,8 +1502,9 @@ function Game({ G, onExit }) {
       view: { w: size.current.w, h: size.current.h }, cam: cam.current,
       fps: D.fps, drawAvgMs: D.avg, drawMaxMs: D.max, tilePx: D.tilePx, tiles: D.cnt, gridOn: D.gridOn,
       previewZ: D.pz, previewPx: D.ptile, previewCells: D.pcnt, basemapOk: D.tileOk, basemapFail: D.tileFail,
+      protomapsKeyConfigured: !!PROTOMAPS_KEY, vectorCached: vtCache.current.size, vectorInflight: vtInflight.current, vectorQueued: vtQueue.current.length,
       pointers: ptrs.current.size, gesture: gesture.current && gesture.current.kind,
-      regions: regions.current.size, clsCache: clsCache.current.size,
+      supabaseConfigured: MULTIPLAYER, regions: regions.current.size, clsCache: clsCache.current.size,
       longtasks: D.long, longtaskMaxMs: D.longMax, errors: D.errs, lastInput: D.lastEvt, owned: g.own.length,
     }, null, 1);
     try { navigator.clipboard.writeText(data); toast("Diagnostics copied"); }
@@ -1645,6 +1647,7 @@ function Game({ G, onExit }) {
               <div>basemap tiles ok {D.tileOk} fail {D.tileFail}</div>
               <div>vector: cached {vtCache.current.size} inflight {vtInflight.current} queued {vtQueue.current.length}</div>
               {!PROTOMAPS_KEY && <div style={{ color: "#F0784E" }}>no Protomaps key configured — using fallback classifier</div>}
+              {!MULTIPLAYER && <div style={{ color: "#F0784E" }}>no Supabase config — single-player only</div>}
               {selDbg && (
                 <div style={{ color: selDbg.src === "vector" ? C.amber : selDbg.src === "mask" ? "#5FA8F5" : C.dim }}>
                   sel: {selDbg.c} via {selDbg.src}{selDbg.dbg ? ` · landuse ${selDbg.dbg.landuseKind || "none"} bldg ${selDbg.dbg.buildingFrac ?? "-"} (${selDbg.dbg.hits ?? "-"}/9)` : ""}
