@@ -666,12 +666,10 @@ function Game({ G, onExit }) {
   const runVtQueue = () => {
     while (vtInflight.current < VT_MAX_INFLIGHT && vtQueue.current.length) {
       const job = vtQueue.current.shift();
-      startVtFetch(job.e, job.z, job.tx, job.ty, job.key);
+      startResolve(job.e, job.z, job.tx, job.ty, job.key);
     }
   };
-  const startVtFetch = (e, z, tx, ty, key) => {
-    vtInflight.current++;
-    const settle = () => { vtInflight.current--; runVtQueue(); };
+  const fetchFromNetwork = (e, z, tx, ty, key, settle) => {
     fetch(`https://api.protomaps.com/tiles/v4/${z}/${tx}/${ty}.mvt?key=${PROTOMAPS_KEY}`)
       .then((res) => { if (!res.ok) throw new Error(String(res.status)); return res.arrayBuffer(); })
       .then((buf) => {
@@ -693,18 +691,27 @@ function Game({ G, onExit }) {
       })
       .catch(() => { e.failed = true; e.failedAt = Date.now(); e.loading = false; settle(); });
   };
-  const startFetchOrQueue = (e, z, tx, ty, key) => {
-    if (vtInflight.current < VT_MAX_INFLIGHT) startVtFetch(e, z, tx, ty, key);
-    else {
-      if (vtQueue.current.length > 200) {
-        // drop the stalest queued job AND its cache entry, so it gets a
-        // fresh attempt later instead of sitting "loading" forever with no
-        // one ever coming back to actually fetch it
-        const dropped = vtQueue.current.shift();
-        vtCache.current.delete(dropped.key);
-      }
-      vtQueue.current.push({ e, z, tx, ty, key });
-    }
+  // One "resolution pipeline" per tile: check IndexedDB, then network only
+  // if that misses — gated behind the SAME inflight budget as the network
+  // fetch itself. This is the important part: a big prefetch burst (e.g.
+  // panning to a wide view) used to fire hundreds of *unthrottled* IndexedDB
+  // reads simultaneously, which was real main-thread contention that could
+  // starve the actual network fetches behind it — nothing to do with
+  // IndexedDB being slow, just too many transactions opened at once.
+  const startResolve = (e, z, tx, ty, key) => {
+    vtInflight.current++;
+    const settle = () => { vtInflight.current--; runVtQueue(); };
+    getTileCache(z, tx, ty)
+      .then((rec) => {
+        if (rec) {
+          e.water = rec.water; e.landuse = rec.landuse; e.buildings = rec.buildings;
+          e.loading = false;
+          settle();
+        } else {
+          fetchFromNetwork(e, z, tx, ty, key, settle);
+        }
+      })
+      .catch(() => fetchFromNetwork(e, z, tx, ty, key, settle));
   };
   const getVectorTile = useCallback((z, tx, ty) => {
     const key = `${z}/${tx}/${ty}`;
@@ -728,20 +735,19 @@ function Game({ G, onExit }) {
     e = { loading: true, failed: false };
     vtCache.current.set(key, e);
     vtOrder.current.push(key);
-    if (vtOrder.current.length > 300) vtCache.current.delete(vtOrder.current.shift());
+    if (vtOrder.current.length > 600) vtCache.current.delete(vtOrder.current.shift());
 
-    // check the persistent (IndexedDB) cache before ever touching the
-    // network — a location any player has visited before on this device
-    // resolves instantly here instead of paying a fetch
-    getTileCache(z, tx, ty).then((rec) => {
-      if (e.water) return; // already resolved (e.g. network beat the IDB read)
-      if (rec) {
-        e.water = rec.water; e.landuse = rec.landuse; e.buildings = rec.buildings;
-        e.loading = false;
-      } else {
-        startFetchOrQueue(e, z, tx, ty, key);
+    if (vtInflight.current < VT_MAX_INFLIGHT) startResolve(e, z, tx, ty, key);
+    else {
+      if (vtQueue.current.length > 200) {
+        // drop the stalest queued job AND its cache entry, so it gets a
+        // fresh attempt later instead of sitting "loading" forever with no
+        // one ever coming back to actually fetch it
+        const dropped = vtQueue.current.shift();
+        vtCache.current.delete(dropped.key);
       }
-    });
+      vtQueue.current.push({ e, z, tx, ty, key });
+    }
     return e;
   }, []);
 
