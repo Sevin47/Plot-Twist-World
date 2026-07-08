@@ -1,5 +1,14 @@
 import { useState, useEffect, useRef, useCallback, useReducer } from "react";
 import { MULTIPLAYER } from "./storage.js";
+// Inlined rather than referenced by URL: Vite's separate-chunk worker
+// resolution (new Worker(new URL(...), import.meta.url)) has documented
+// failure modes specifically with a relative build base ("./", which this
+// project uses for GitHub Pages subpath hosting) — the URL can resolve to
+// the wrong place, and a Worker constructed from a bad URL never throws
+// synchronously, so the failure is silent. Inlining removes the separate
+// file/URL entirely: the worker's whole bundle travels as a data URL inside
+// the main chunk, so there's nothing for a base-path mismatch to break.
+import VectorWorker from "./vectorWorker.js?worker&inline";
 
 /* ─────────────────────────────────────────────────────────────
    PLOT TWIST: WORLD DEED — one shared Earth, ~300m tiles.
@@ -653,7 +662,7 @@ function Game({ G, onExit }) {
   const vtWorkerError = useRef(null);  // captured startup/runtime error, if any — "worker: on" alone only means the Worker object was constructed, NOT that its script successfully loaded
   if (!vtWorkerRef.current && typeof Worker !== "undefined") {
     try {
-      vtWorkerRef.current = new Worker(new URL("./vectorWorker.js", import.meta.url), { type: "module" });
+      vtWorkerRef.current = new VectorWorker();
     } catch (err) {
       vtWorkerRef.current = null; // e.g. no module-worker support — classification just stays "pending" forever, same as no API key
       vtWorkerError.current = String(err && err.message || err);
