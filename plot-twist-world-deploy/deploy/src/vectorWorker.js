@@ -148,3 +148,10 @@ self.onmessage = (ev) => {
     scheduleBatchCheck();
   }
 };
+
+// Announce successful startup. If the main thread never sees this, the
+// worker's script itself failed to load or crashed during evaluation —
+// which is otherwise a SILENT failure (constructing a Worker never throws
+// just because its script 404s or errors; that failure is async and easy
+// to miss without explicitly checking for it, exactly like this).
+postMessage({ type: "ready", hasKey: !!PROTOMAPS_KEY });
