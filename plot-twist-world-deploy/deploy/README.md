@@ -31,6 +31,25 @@ leaderboard) needs one tiny database table.
 
 That's it — every visitor to your deployed site now plays on the same planet.
 
+## Enable real geography (free, ~3 minutes)
+
+District classification (which tiles are water, downtown, residential,
+industrial, park, etc.) can read **actual OpenStreetMap data** instead of an
+approximate built-in model.
+
+1. Sign up for a free account at https://protomaps.com and create an API key
+   at https://app.protomaps.com (free for non-commercial use, 1M tile
+   requests/month soft cap).
+2. On that key's settings, add your site's origin to the allowed CORS list —
+   e.g. `https://yourname.github.io` for GitHub Pages, or `localhost` for
+   local dev (which is allowed automatically).
+3. Add `VITE_PROTOMAPS_KEY=your-key` to `.env` (or your host's environment
+   variables, same as the Supabase ones above).
+
+Without this, the game falls back to a coarser procedural model (a low-res
+embedded coastline mask plus population-distance rings) — it still works,
+just less accurately.
+
 ## Deploy
 
 Build output is a fully static site in `dist/`.
@@ -38,21 +57,31 @@ Build output is a fully static site in `dist/`.
 **Netlify** — either drag-and-drop: `npm run build`, then drag the `dist`
 folder onto https://app.netlify.com/drop — or connect your Git repo with build
 command `npm run build` and publish directory `dist`. Add the two `VITE_...`
-environment variables under Site settings → Environment variables.
+environment variables (all three `VITE_...` ones) under Site settings → Environment variables.
 
 **Vercel** — push to GitHub, import the repo at https://vercel.com/new. Vercel
-auto-detects Vite. Add the two `VITE_...` variables under Project → Settings →
+auto-detects Vite. Add the three `VITE_...` variables under Project → Settings →
 Environment Variables, then redeploy.
 
 **GitHub Pages** — the Vite config uses `base: './'`, so builds work from any
 subpath. Simplest path: in your repo, Settings → Pages → Source: GitHub
 Actions, and pick the suggested "Static site / Vite" workflow (it runs
 `npm run build` and publishes `dist`). Note that Pages has no environment
-variable UI at build time — put your two `VITE_...` values in the workflow file
+variable UI at build time — put your `VITE_...` values in the workflow file
 or repo Action secrets referenced by the workflow.
 
 ## Honest limitations
 
+- **Vector classification has a fixed reference resolution (~2.4km tiles).**
+  This fixes the old "grid resolution vs. display zoom" mismatch, but a
+  single deed still gets one classification for its whole ~306m footprint,
+  so land right at a complex coastline or a landuse boundary can occasionally
+  read as the wrong side — smaller than the old raster-based error, not zero.
+- **Building-density fallback is a rough estimate.** Where OSM has no
+  explicit landuse tag, district tier comes from sampling how much of a
+  cell's footprint is covered by real building polygons — a genuine
+  measurement, but the specific thresholds (what counts as "downtown" vs.
+  "suburbs") are a first pass, not carefully tuned.
 - **Trust-based multiplayer.** Writes go straight from browsers to the shared
   table with the public anon key, so a motivated cheater could edit world
   state. Fine for friends and demos; a production version should move buy/
