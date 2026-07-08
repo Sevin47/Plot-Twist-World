@@ -55,6 +55,38 @@ export async function getTileCache(z, tx, ty) {
   }
 }
 
+// Same lookup as getTileCache, but for many tiles at once inside a SINGLE
+// transaction — used by the batch prefetch path, which otherwise needs a
+// separate transaction per tile (real overhead: opening/closing hundreds of
+// transactions for one viewport is measurably slower than one transaction
+// making hundreds of get() requests, especially on weaker mobile CPUs).
+// Returns a Map keyed by "z/tx/ty" (not the schema-prefixed internal key).
+export async function getTileCacheBatch(keys) {
+  const results = new Map();
+  if (!keys.length) return results;
+  try {
+    const db = await openDb();
+    await new Promise((resolve) => {
+      const store = db.transaction(STORE, "readonly").objectStore(STORE);
+      const now = Date.now();
+      let pending = keys.length;
+      for (const k of keys) {
+        const req = store.get(tileKey(k.z, k.tx, k.ty));
+        req.onsuccess = () => {
+          const rec = req.result;
+          if (rec && now - rec.savedAt <= MAX_AGE_MS) results.set(`${k.z}/${k.tx}/${k.ty}`, rec);
+          if (--pending === 0) resolve();
+        };
+        req.onerror = () => { if (--pending === 0) resolve(); };
+      }
+    });
+  } catch {
+    // unavailable — return whatever we already found (likely nothing);
+    // callers treat missing entries as "fetch from network"
+  }
+  return results;
+}
+
 let writeCount = 0;
 export async function putTileCache(z, tx, ty, water, landuse, buildings) {
   try {
