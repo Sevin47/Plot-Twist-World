@@ -406,11 +406,19 @@ export default function PlotTwistWorld() {
       setSession(s);
       if (s) await loadProfile(s); else setAuthState("signedOut");
     })();
-    const unsub = onAuthStateChange((sess) => {
+    const unsub = onAuthStateChange((event, sess) => {
       if (cancelled) return;
       setSession(sess);
-      if (sess) loadProfile(sess);
-      else { G.current = null; setAuthState("signedOut"); }
+      if (!sess) { G.current = null; setAuthState("signedOut"); return; }
+      // TOKEN_REFRESHED fires routinely in the background (Supabase renews
+      // the access token roughly hourly) — it is NOT a new sign-in. Treating
+      // it as one re-fetched only the profile (not tiles) into a brand new
+      // G.current, discarding the real one's owned tiles/rent on the next
+      // render. Only (re)load the profile for an actual new session, and
+      // only if we don't already have one loaded for this exact account.
+      if (event === "TOKEN_REFRESHED" || event === "USER_UPDATED") return;
+      if (G.current && G.current.uid === sess.user.id) return;
+      loadProfile(sess);
     });
     return () => { cancelled = true; unsub(); };
   }, []);

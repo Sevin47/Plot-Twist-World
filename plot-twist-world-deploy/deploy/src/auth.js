@@ -25,10 +25,14 @@ export async function getSession() {
   return data.session;
 }
 
-// Returns an unsubscribe function.
+// Returns an unsubscribe function. cb receives (event, session) — callers
+// MUST check event, not just session: this fires for TOKEN_REFRESHED (a
+// routine background token renewal, not a new login) as well as real
+// sign-in/sign-out, and treating a refresh as a fresh sign-in will blow
+// away any in-memory game state built up since the real sign-in.
 export function onAuthStateChange(cb) {
   if (!supabase) return () => {};
-  const { data } = supabase.auth.onAuthStateChange((_event, session) => cb(session));
+  const { data } = supabase.auth.onAuthStateChange((event, session) => cb(event, session));
   return () => data.subscription.unsubscribe();
 }
 
