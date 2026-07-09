@@ -21,14 +21,19 @@ create table if not exists tile_class (
   rps numeric not null,
   sellable boolean not null default true
 );
+-- Tuned for a ~45-70 minute payback period per tier (was ~3.5 minutes) and
+-- roughly 35-40x less revenue per tile — with 300m+ tiles on the planet,
+-- the old numbers let income snowball into buying the whole world in an
+-- afternoon; the limiting factor should be how fast someone can click buy,
+-- not how fast money compounds. MUST match CLS in PlotTwistWorld.jsx exactly.
 insert into tile_class (cls, price, rps, sellable) values
-  ('downtown',   2500, 12,  true),
-  ('waterfront', 1500, 7,   true),
-  ('urban',      1200, 5.5, true),
-  ('coast',      600,  2.8, true),
-  ('suburbs',    450,  2,   true),
-  ('rural',      150,  0.7, true),
-  ('water',      150,  0.5, false)
+  ('downtown',   800, 0.3,   true),
+  ('waterfront', 500, 0.18,  true),
+  ('urban',      400, 0.14,  true),
+  ('coast',      200, 0.07,  true),
+  ('suburbs',    150, 0.05,  true),
+  ('rural',      50,  0.018, true),
+  ('water',      50,  0.012, false)
 on conflict (cls) do update set price = excluded.price, rps = excluded.rps, sellable = excluded.sellable;
 
 -- ── accounts ──
