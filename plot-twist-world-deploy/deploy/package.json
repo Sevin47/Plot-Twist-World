@@ -7,24 +7,21 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "smoke:bundle": "esbuild smoke.jsx --bundle --format=esm --jsx=automatic --loader:.jsx=jsx --define:import.meta.env.VITE_PROTOMAPS_KEY=\\\"\\\" --define:import.meta.env.VITE_SUPABASE_URL=\\\"\\\" --define:import.meta.env.VITE_SUPABASE_ANON_KEY=\\\"\\\" --outfile=smoke-bundle.mjs --log-level=error",
+    "smoke:bundle": "node smoke-build.mjs",
     "smoke": "npm run smoke:bundle && node smoke-run.mjs"
   },
   "dependencies": {
     "@mapbox/vector-tile": "^3.0.0",
     "@supabase/supabase-js": "^2.45.0",
-    "jsdom": "^29.1.1",
     "pbf": "^5.1.0",
-    "pngjs": "^7.0.0",
     "react": "^18.3.1",
-    "react-dom": "^18.3.1",
-    "topojson-client": "^3.1.0",
-    "world-atlas": "^2.0.2"
+    "react-dom": "^18.3.1"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.0.0",
     "@vitejs/plugin-react": "^4.3.0",
     "esbuild": "^0.28.1",
+    "jsdom": "^29.1.1",
     "tailwindcss": "^4.0.0",
     "vite": "^5.4.0"
   }
