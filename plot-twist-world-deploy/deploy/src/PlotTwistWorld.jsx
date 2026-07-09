@@ -83,16 +83,23 @@ const C = {
   amber: "#FFC24B", text: "#E8EDF5", dim: "#8DA0B8",
 };
 
+// Tuned for a ~45-70 minute payback period per tier (was ~3.5 minutes) and
+// roughly 35-40x less revenue per tile — with 300m+ tiles on the planet,
+// the old numbers let a player's income snowball into buying the whole
+// world in an afternoon; the limiting factor should be how fast someone can
+// click buy, not how fast money compounds. MUST match tile_class in
+// supabase.sql exactly — the server is authoritative for real transactions,
+// this copy only drives client-side display (rentOf/upCost/netWorth).
 const CLS = {
-  downtown:   { name: "Downtown",   price: 2500, rps: 12,  color: "#F0784E" },
-  waterfront: { name: "Waterfront", price: 1500, rps: 7,   color: "#3FB8AF" },
-  urban:      { name: "Urban",      price: 1200, rps: 5.5, color: "#9B7BF5" },
-  coast:      { name: "Coast",      price: 600,  rps: 2.8, color: "#4FA3C7" },
-  suburbs:    { name: "Suburbs",    price: 450,  rps: 2,   color: "#6E8F7C" },
-  rural:      { name: "Rural",      price: 150,  rps: 0.7, color: "#B08D57" },
-  water:      { name: "Open water", price: 150,  rps: 0.5, color: "#4A7FA5", sale: false },
-  land:       { name: "Inland",     price: 400,  rps: 1.6, color: "#7BA88A" }, // legacy saves only
-  pending:    { name: "Surveying…", price: 0,    rps: 0,   color: "#5A6472", sale: false }, // real vector data hasn't loaded for this spot yet
+  downtown:   { name: "Downtown",   price: 800, rps: 0.3,   color: "#F0784E" },
+  waterfront: { name: "Waterfront", price: 500, rps: 0.18,  color: "#3FB8AF" },
+  urban:      { name: "Urban",      price: 400, rps: 0.14,  color: "#9B7BF5" },
+  coast:      { name: "Coast",      price: 200, rps: 0.07,  color: "#4FA3C7" },
+  suburbs:    { name: "Suburbs",    price: 150, rps: 0.05,  color: "#6E8F7C" },
+  rural:      { name: "Rural",      price: 50,  rps: 0.018, color: "#B08D57" },
+  water:      { name: "Open water", price: 50,  rps: 0.012, color: "#4A7FA5", sale: false },
+  land:       { name: "Inland",     price: 400, rps: 1.6,   color: "#7BA88A" }, // legacy saves only
+  pending:    { name: "Surveying…", price: 0,   rps: 0,     color: "#5A6472", sale: false }, // real vector data hasn't loaded for this spot yet
 };
 const LEGEND = ["downtown", "waterfront", "urban", "coast", "suburbs", "rural"];
 
@@ -246,7 +253,9 @@ function fmt(n) {
   if (n < 1e9) return (n / 1e6).toFixed(2) + "m";
   return (n / 1e9).toFixed(2) + "b";
 }
-const fmt1 = (n) => (n < 100 ? n.toFixed(1) : fmt(n));
+// rps values now go well under 1 (see CLS) — 1 decimal alone would round
+// e.g. 0.018 down to a meaningless "0.0", so sub-1 values get 3 decimals.
+const fmt1 = (n) => (n < 1 ? n.toFixed(3) : n < 100 ? n.toFixed(1) : fmt(n));
 
 /* ── in-memory game state ──────────────────────────────────────
    No localStorage save anymore: `profiles`/`tiles` in Postgres (via the
@@ -374,8 +383,15 @@ export default function PlotTwistWorld() {
     if (!MULTIPLAYER) return;
     let cancelled = false;
     const loadProfile = async (sess) => {
-      const { data } = await supabase.from("profiles").select("*").eq("user_id", sess.user.id).maybeSingle();
+      const { data, error } = await supabase.from("profiles").select("*").eq("user_id", sess.user.id).maybeSingle();
       if (cancelled) return;
+      if (error) {
+        // transient failure (network blip, cold connection, etc.) — do NOT
+        // send an existing player through the username-claim screen, which
+        // would look like account loss. Just retry shortly.
+        setTimeout(() => loadProfile(sess), 2000);
+        return;
+      }
       if (data) {
         G.current = gameFromProfile(sess.user.id, data);
         setInGame(true);
@@ -591,8 +607,8 @@ function Game({ G, onExit }) {
         if (gain > 0) pendings.current.push({ kind: "welcome", gain });
       }
 
-      const { data: dailyRows } = await supabase.rpc("claim_daily");
-      const daily = dailyRows && dailyRows[0];
+      const { data: dailyRows, error: dailyErr } = await supabase.rpc("claim_daily");
+      const daily = !dailyErr && dailyRows && dailyRows[0];
       if (daily) {
         g.streak = daily.streak;
         if (!daily.already_claimed) {
@@ -601,12 +617,28 @@ function Game({ G, onExit }) {
         }
       }
 
-      const { data: tileRows } = await supabase
-        .from("tiles").select("qk,cls,level,rarity,paid,list_price").eq("owner", g.uid);
-      g.own = (tileRows || []).map((t) => ({
-        qk: t.qk, cls: t.cls, l: t.level, r: t.rarity, pd: t.paid,
-        ...(t.list_price != null ? { p: t.list_price } : {}),
-      }));
+      // Fetch owned tiles with a couple of retries — this must NEVER fall
+      // through to an empty g.own on a transient failure, or a real owner
+      // would see their tiles (and rent) vanish from the UI even though the
+      // `tiles` table itself never changed. An actual zero-tiles account
+      // just returns an empty array here with no error, which is fine.
+      let tileRows = null, tilesErr = null;
+      for (let attempt = 0; attempt < 3 && !tileRows; attempt++) {
+        const res = await supabase
+          .from("tiles").select("qk,cls,level,rarity,paid,list_price").eq("owner", g.uid);
+        if (!res.error) { tileRows = res.data || []; break; }
+        tilesErr = res.error;
+        await new Promise((r) => setTimeout(r, 500 * (attempt + 1)));
+      }
+      if (tileRows) {
+        g.own = tileRows.map((t) => ({
+          qk: t.qk, cls: t.cls, l: t.level, r: t.rarity, pd: t.paid,
+          ...(t.list_price != null ? { p: t.list_price } : {}),
+        }));
+      } else {
+        toast("Couldn't load your tiles — check your connection and reopen the app.");
+        console.error("tiles fetch failed after retries", tilesErr);
+      }
       rebuildOwn();
 
       // silently pre-populate already-earned achievement flags so they
