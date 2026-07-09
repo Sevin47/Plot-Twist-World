@@ -81,20 +81,27 @@ create table if not exists bank_ledger (
 create index if not exists idx_bank_ledger_recipient on bank_ledger(recipient) where claimed = false;
 
 -- ── RLS: public read everywhere it matters, NO direct writes anywhere.
---    All mutation happens through the security-definer functions below. ──
+--    All mutation happens through the security-definer functions below.
+--    (drop-then-create because CREATE POLICY has no IF NOT EXISTS — this
+--    makes the whole script safe to re-run any time, e.g. after a price
+--    change like this one.) ──
 alter table tile_class enable row level security;
+drop policy if exists "read tile_class" on tile_class;
 create policy "read tile_class" on tile_class for select using (true);
 grant select on tile_class to anon, authenticated;
 
 alter table profiles enable row level security;
+drop policy if exists "read profiles" on profiles;
 create policy "read profiles" on profiles for select using (true);
 grant select on profiles to anon, authenticated;
 
 alter table tiles enable row level security;
+drop policy if exists "read tiles" on tiles;
 create policy "read tiles" on tiles for select using (true);
 grant select on tiles to anon, authenticated;
 
 alter table bank_ledger enable row level security;
+drop policy if exists "read own bank_ledger" on bank_ledger;
 create policy "read own bank_ledger" on bank_ledger for select using (auth.uid() = recipient);
 grant select on bank_ledger to authenticated;
 
