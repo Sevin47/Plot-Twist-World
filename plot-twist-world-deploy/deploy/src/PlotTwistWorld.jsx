@@ -20,7 +20,7 @@ import VectorWorker from "./vectorWorker.js?worker&inline";
 // Bumped by hand alongside any fix worth confirming actually shipped —
 // shows in the debug panel so a stale cached bundle is immediately obvious
 // instead of looking like the bug is still unfixed.
-const BUILD_TAG = "2026-07-09.1-owned-cls-fix";
+const BUILD_TAG = "2026-07-09.2-remove-cls-migration-effect";
 
 const Z = 17;                 // parcel zoom: ~306m tiles at the equator
 const N = 1 << Z;             // tiles per axis
@@ -1098,18 +1098,17 @@ function Game({ G, onExit }) {
   /* ── real basemap tiles (CARTO Dark Matter, © OpenStreetMap contributors
      © CARTO) — crisp raster imagery with built-in place labels at every
      zoom, replacing the single static planet image for visuals. ── */
-  /* migrate tile classes from older builds once terrain data is ready */
-  useEffect(() => {
-    if (!ready) return;
-    let changed = false;
-    for (const t of g.own) {
-      if (t.cls === "water") continue; // grandfathered ocean deeds keep working
-      const c = classify(t.qk).c;
-      if (t.cls !== c) { t.cls = c; changed = true; }
-    }
-    if (changed) { rebuildOwn(); dirty.current = true; save(); }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ready]);
+  // Removed: an old "migrate tile classes from older builds" effect used to
+  // live here, re-deriving each owned tile's cls via classify(t.qk) once
+  // ready flipped true. That made sense in the pre-accounts era, where cls
+  // was a locally-cached value that could go stale if the classification
+  // algorithm changed between app versions. Now cls is server-authoritative
+  // and permanent (set once, at purchase, in the tiles table) — but
+  // classify() depends on the *local* vector-tile cache, which is empty on
+  // every fresh page load. This effect was overwriting a freshly-fetched
+  // real district (e.g. "coast") with "pending" (rps 0) on almost every
+  // boot, simply because the player hadn't zoomed into that spot yet in the
+  // current session — a real, confirmed bug, not a hypothetical one.
 
   /* ── shared world regions ── */
   // Real ownership/rarity/level/listing data straight from the `tiles`
