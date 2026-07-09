@@ -10,11 +10,35 @@
 // the plan for the one-time `supabase login` / `supabase link` setup).
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
+// Supabase's edge runtime does NOT add CORS headers automatically — every
+// response (including the OPTIONS preflight and every error path) needs
+// these explicitly, or the browser blocks the whole request before our code
+// even gets to run. Skipping the OPTIONS check specifically is what caused
+// the real bug here: the browser's preflight (no Authorization header) fell
+// through to the "missing authorization" 401 path, and a non-2xx preflight
+// response fails CORS outright regardless of headers.
+const corsHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
+};
+
+function json(body, status = 200) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { ...corsHeaders, "Content-Type": "application/json" },
+  });
+}
+
 Deno.serve(async (req) => {
+  if (req.method === "OPTIONS") {
+    return new Response("ok", { headers: corsHeaders });
+  }
+
   try {
     const authHeader = req.headers.get("Authorization");
     if (!authHeader) {
-      return new Response(JSON.stringify({ error: "missing authorization" }), { status: 401 });
+      return json({ error: "missing authorization" }, 401);
     }
 
     const supabaseUrl = Deno.env.get("SUPABASE_URL");
@@ -28,7 +52,7 @@ Deno.serve(async (req) => {
     });
     const { data: userData, error: userErr } = await callerClient.auth.getUser();
     if (userErr || !userData?.user) {
-      return new Response(JSON.stringify({ error: "invalid session" }), { status: 401 });
+      return json({ error: "invalid session" }, 401);
     }
     const uid = userData.user.id;
 
@@ -41,20 +65,17 @@ Deno.serve(async (req) => {
     // permanently block anyone else from ever buying that tile again.
     const { error: tilesErr } = await admin.from("tiles").delete().eq("owner", uid);
     if (tilesErr) {
-      return new Response(JSON.stringify({ error: tilesErr.message }), { status: 500 });
+      return json({ error: tilesErr.message }, 500);
     }
 
     // Deletes the profiles row too, via `on delete cascade` from auth.users.
     const { error: delErr } = await admin.auth.admin.deleteUser(uid);
     if (delErr) {
-      return new Response(JSON.stringify({ error: delErr.message }), { status: 500 });
+      return json({ error: delErr.message }, 500);
     }
 
-    return new Response(JSON.stringify({ ok: true }), {
-      status: 200,
-      headers: { "Content-Type": "application/json" },
-    });
+    return json({ ok: true });
   } catch (e) {
-    return new Response(JSON.stringify({ error: String(e) }), { status: 500 });
+    return json({ error: String(e) }, 500);
   }
 });
