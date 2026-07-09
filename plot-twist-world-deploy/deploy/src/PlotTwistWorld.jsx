@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback, useReducer } from "react";
 import { supabase, MULTIPLAYER } from "./storage.js";
-import { signInWithGoogle, signOut, getSession, onAuthStateChange } from "./auth.js";
+import { signInWithGoogle, signOut, onAuthStateChange } from "./auth.js";
 // Inlined rather than referenced by URL: Vite's separate-chunk worker
 // resolution (new Worker(new URL(...), import.meta.url)) has documented
 // failure modes specifically with a relative build base ("./", which this
@@ -382,8 +382,15 @@ export default function PlotTwistWorld() {
   useEffect(() => {
     if (!MULTIPLAYER) return;
     let cancelled = false;
+    // Guards against calling loadProfile twice concurrently — belt-and-
+    // suspenders on top of removing the redundant getSession() call below,
+    // which is what actually caused the race (see comment further down).
+    const loading = { current: false };
     const loadProfile = async (sess) => {
+      if (loading.current) return;
+      loading.current = true;
       const { data, error } = await supabase.from("profiles").select("*").eq("user_id", sess.user.id).maybeSingle();
+      loading.current = false;
       if (cancelled) return;
       if (error) {
         // transient failure (network blip, cold connection, etc.) — do NOT
@@ -400,12 +407,14 @@ export default function PlotTwistWorld() {
         setAuthState("needsUsername");
       }
     };
-    (async () => {
-      const s = await getSession();
-      if (cancelled) return;
-      setSession(s);
-      if (s) await loadProfile(s); else setAuthState("signedOut");
-    })();
+    // Deliberately NOT also calling getSession() here — onAuthStateChange
+    // fires an INITIAL_SESSION event immediately upon subscribing, which is
+    // the same information. Calling both raced two independent loadProfile
+    // calls against each other; whichever resolved last silently overwrote
+    // G.current with a fresh, empty game-state object, discarding a real
+    // player's already-loaded tiles/rent on the very next render (map
+    // rendering and the leaderboard stayed correct because those read
+    // straight from the server on every use, not from this cached object).
     const unsub = onAuthStateChange((event, sess) => {
       if (cancelled) return;
       setSession(sess);
