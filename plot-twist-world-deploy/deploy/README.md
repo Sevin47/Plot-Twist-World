@@ -12,24 +12,54 @@ npm install
 npm run dev
 ```
 
-Open the printed URL. With no configuration the game runs in **single-player
-mode**: your save and your copy of the world live in this browser's
-localStorage.
+Accounts are mandatory — there is no single-player/local-only mode. Without
+Supabase configured (below), the game shows an "unconfigured" screen instead
+of a menu.
 
-## Enable multiplayer (free, ~5 minutes)
+## Set up accounts + the shared world (Supabase, free)
 
-The shared world (global tile ownership, the market, offline sale payouts, the
-leaderboard) needs one tiny database table.
+Every player signs in with Google; their wallet, tiles, streak and username
+live in one Supabase Postgres project — the server, not the browser, is the
+source of truth (see "Server-validated economy" below for why that matters).
 
 1. Create a free project at https://supabase.com
 2. In the Supabase dashboard, open **SQL Editor**, paste the contents of
-   `supabase.sql`, and run it.
-3. In **Project Settings → API**, copy the Project URL and the `anon` public
+   `supabase.sql`, and run it. This creates the `profiles`/`tiles` tables and
+   every economy function (buy/sell/upgrade/abandon/etc.) as locked-down
+   `security definer` RPCs — no table accepts a direct write from the client.
+3. **Enable Google sign-in:** Authentication → Providers → Google. You'll
+   need an OAuth 2.0 Client ID from https://console.cloud.google.com (APIs &
+   Services → Credentials → Create Credentials → OAuth client ID → Web
+   application). Set its **Authorized redirect URI** to
+   `https://<your-project-ref>.supabase.co/auth/v1/callback`, and its
+   **Authorized JavaScript origins** to your deployed site's origin plus
+   `http://localhost:5173` for local dev. Paste the resulting Client ID +
+   Secret into the Supabase Google provider settings.
+4. Authentication → URL Configuration: add your deployed origin and
+   `http://localhost:5173` to the allowed redirect URLs.
+5. In **Project Settings → API**, copy the Project URL and the `anon` public
    key.
-4. Copy `.env.example` to `.env` and fill in both values. For deployed sites,
+6. Copy `.env.example` to `.env` and fill in both values. For deployed sites,
    set the same two variables in your host's environment settings instead.
+7. **Deploy the account-deletion function** (needed for the "Delete account &
+   data" button — it uses the service-role key, which never touches the
+   client): install the Supabase CLI, then from this directory run
+   `supabase login`, `supabase link`, `supabase functions deploy delete-account`.
 
-That's it — every visitor to your deployed site now plays on the same planet.
+That's it — every visitor to your deployed site signs in with their own
+Google account and plays on the same shared planet.
+
+## Server-validated economy
+
+Every economic action (buying, selling, upgrading, abandoning a tile,
+claiming rent, the daily streak, the ad-boost) is a Postgres RPC that
+computes price, rarity and balance itself from `auth.uid()` — never from
+anything the client sends. Row-level security blocks direct table writes
+entirely, so a modified client can display whatever it wants locally, but the
+next real transaction is always checked against the actual server balance.
+The one thing still client-supplied is *which district tier* a tile is (real
+OpenStreetMap data the server doesn't independently re-derive) — see "Honest
+limitations" below.
 
 ## Enable real geography (free, ~3 minutes)
 
@@ -46,9 +76,9 @@ approximate built-in model.
 3. Add `VITE_PROTOMAPS_KEY=your-key` to `.env` (or your host's environment
    variables, same as the Supabase ones above).
 
-Without this, the game falls back to a coarser procedural model (a low-res
-embedded coastline mask plus population-distance rings) — it still works,
-just less accurately.
+Without this, every tile just shows "Surveying…" forever and can't be
+bought — there's no procedural fallback anymore; the game would rather say
+"we don't know yet" than guess.
 
 ## Deploy
 
@@ -73,31 +103,30 @@ or repo Action secrets referenced by the workflow.
 ## Honest limitations
 
 - **Vector classification has a fixed reference resolution (~2.4km tiles).**
-  This fixes the old "grid resolution vs. display zoom" mismatch, but a
-  single deed still gets one classification for its whole ~306m footprint,
+  A single deed still gets one classification for its whole ~306m footprint,
   so land right at a complex coastline or a landuse boundary can occasionally
-  read as the wrong side — smaller than the old raster-based error, not zero.
+  read as the wrong side.
 - **Building-density fallback is a rough estimate.** Where OSM has no
   explicit landuse tag, district tier comes from sampling how much of a
   cell's footprint is covered by real building polygons — a genuine
   measurement, but the specific thresholds (what counts as "downtown" vs.
   "suburbs") are a first pass, not carefully tuned.
-- **Trust-based multiplayer.** Writes go straight from browsers to the shared
-  table with the public anon key, so a motivated cheater could edit world
-  state. Fine for friends and demos; a production version should move buy/
-  trade logic into server-side functions (Supabase Edge Functions) that
-  validate every transaction.
-- **Last-write-wins races.** Two players buying the same tile in the same
-  instant can conflict; the game detects this and refunds the loser, but a
-  real database transaction would eliminate it entirely.
-- **Approximate coastlines.** Terrain comes from Natural Earth 1:50m data
-  rasterized to a 2048×1024 mask, so land/coast/water classification is
-  kilometer-scale, not parcel-scale.
-- **Personal saves are per-browser.** There are no passworded accounts; your
-  save lives in localStorage. Real accounts would use Supabase Auth.
+- **Tile tier is still client-reported.** The server validates balance,
+  ownership and rarity for every transaction, but *which district tier* a
+  spot is comes from the buyer's own real-time OSM read — fully verifying
+  that server-side would mean re-fetching and parsing vector tiles in
+  Postgres/an edge function, a much bigger undertaking. A malicious client
+  could at most mis-tier its own purchase to pay a cheaper listed price;
+  it can't fabricate balance, ownership, or rarity.
+- **Protomaps free tier is a shared 1M-request/month soft cap** across every
+  player using your deployment's key.
 
 ## Project layout
 
 - `src/PlotTwistWorld.jsx` — the entire game (map engine, economy, trading, UI)
-- `src/storage.js` — storage adapter: localStorage and/or Supabase
-- `supabase.sql` — one-time database setup for multiplayer
+- `src/storage.js` — the shared Supabase client
+- `src/auth.js` — Google sign-in / sign-out / session helpers
+- `supabase.sql` — one-time database setup: tables, RLS, and every economy
+  RPC (buy/sell/upgrade/abandon/rent/daily/boost/leaderboard)
+- `supabase/functions/delete-account/` — edge function for account deletion
+  (needs the service-role key, so it can't be a client-callable RPC)
