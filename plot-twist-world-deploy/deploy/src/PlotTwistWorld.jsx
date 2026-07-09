@@ -1120,14 +1120,14 @@ function Game({ G, onExit }) {
     setSyncing(true);
     const { data, error } = await supabase
       .from("tiles")
-      .select("qk,owner,rarity,level,paid,list_price,profiles(username)")
+      .select("qk,owner,cls,rarity,level,paid,list_price,profiles(username)")
       .like("qk", `${prefix}%`);
     const t = {};
     if (!error) {
       for (const row of data || []) {
         t[row.qk] = {
           o: row.owner, n: row.profiles?.username, r: row.rarity, l: row.level,
-          pd: row.paid, ...(row.list_price != null ? { p: row.list_price } : {}),
+          cls: row.cls, pd: row.paid, ...(row.list_price != null ? { p: row.list_price } : {}),
         };
       }
     }
@@ -1139,7 +1139,13 @@ function Game({ G, onExit }) {
     for (const [qk, rec] of Object.entries(obj.t)) {
       const mine = ownMap.current.get(qk);
       if (rec.o === g.uid && !mine) {
-        g.own.push({ qk, l: rec.l || 0, r: rec.r || 0, cls: classify(qk).c, pd: rec.pd || 0, ...(rec.p != null ? { p: rec.p } : {}) });
+        // Use the tile's real, permanently-stored cls (rec.cls) — NOT a
+        // fresh classify(qk).c re-derivation. classify() depends on the
+        // local vector-tile cache, which may not have loaded yet for this
+        // spot; a live "pending" read here would get baked into g.own as a
+        // real district, silently zeroing that tile's rent (pending has
+        // rps 0) even though the account genuinely owns a real, priced tile.
+        g.own.push({ qk, l: rec.l || 0, r: rec.r || 0, cls: rec.cls, pd: rec.pd || 0, ...(rec.p != null ? { p: rec.p } : {}) });
         changed = true;
       } else if (mine) {
         if (rec.o !== g.uid) { g.own.splice(g.own.findIndex((t2) => t2.qk === qk), 1); changed = true; }
@@ -1150,7 +1156,7 @@ function Game({ G, onExit }) {
     busyRegions.current.delete(prefix);
     setSyncing(busyRegions.current.size > 0);
     return obj;
-  }, [g, classify, rebuildOwn]);
+  }, [g, rebuildOwn]);
 
   const recOf = (qk) => {
     const r = regions.current.get(regionOf(qk));
