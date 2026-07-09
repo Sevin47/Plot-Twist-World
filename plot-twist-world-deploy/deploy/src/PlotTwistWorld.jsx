@@ -17,6 +17,11 @@ import VectorWorker from "./vectorWorker.js?worker&inline";
    Virtual money only. Parody ads. No real anything.
    ───────────────────────────────────────────────────────────── */
 
+// Bumped by hand alongside any fix worth confirming actually shipped —
+// shows in the debug panel so a stale cached bundle is immediately obvious
+// instead of looking like the bug is still unfixed.
+const BUILD_TAG = "2026-07-09.1-owned-cls-fix";
+
 const Z = 17;                 // parcel zoom: ~306m tiles at the equator
 const N = 1 << Z;             // tiles per axis
 
@@ -1747,6 +1752,7 @@ function Game({ G, onExit }) {
   const copyDbg = () => {
     const D = dbgRef.current;
     const data = JSON.stringify({
+      buildTag: BUILD_TAG,
       ua: navigator.userAgent, dpr: size.current.dpr,
       view: { w: size.current.w, h: size.current.h }, cam: cam.current,
       fps: D.fps, drawAvgMs: D.avg, drawMaxMs: D.max, tilePx: D.tilePx, tiles: D.cnt, gridOn: D.gridOn,
@@ -1755,7 +1761,11 @@ function Game({ G, onExit }) {
       vtTuning: vtTuning.current, connectionEffectiveType: typeof navigator !== "undefined" && navigator.connection ? navigator.connection.effectiveType : null, connectionSaveData: typeof navigator !== "undefined" && navigator.connection ? !!navigator.connection.saveData : null,
       pointers: ptrs.current.size, gesture: gesture.current && gesture.current.kind,
       supabaseConfigured: MULTIPLAYER, regions: regions.current.size, clsCache: clsCache.current.size,
-      longtasks: D.long, longtaskMaxMs: D.longMax, errors: D.errs, lastInput: D.lastEvt, owned: g.own.length,
+      longtasks: D.long, longtaskMaxMs: D.longMax, errors: D.errs, lastInput: D.lastEvt,
+      // full per-tile breakdown — this is what actually shows whether a
+      // tile's district/rent is wrong, and if so what cls it's stuck at
+      owned: g.own.length, rps: g.rps,
+      ownTiles: g.own.map((t) => ({ qk: t.qk, cls: t.cls, rarity: t.r, level: t.l, rps: CLS[t.cls] ? rentOf(t) : "UNKNOWN_CLS" })),
     }, null, 1);
     try { navigator.clipboard.writeText(data); toast("Diagnostics copied"); }
     catch { window.prompt("Copy diagnostics:", data); }
@@ -1891,6 +1901,13 @@ function Game({ G, onExit }) {
 
           {dbg && (() => { const D = dbgRef.current; return (
             <div className="pt10 absolute bottom-8 left-3 rounded-lg p-2 leading-relaxed" style={{ ...mono, color: C.text, background: C.panel + "f0", border: `1px solid ${C.hair}`, maxWidth: 240 }}>
+              <div>build {BUILD_TAG}</div>
+              <div>
+                own {g.own.length} · rps {g.rps.toFixed(3)}
+                {g.own.some((t) => !CLS[t.cls] || CLS[t.cls].rps === 0) && (
+                  <span style={{ color: "#F08A8A" }}> · {g.own.filter((t) => !CLS[t.cls] || CLS[t.cls].rps === 0).length} zero-rent!</span>
+                )}
+              </div>
               <div>fps {D.fps} · draw {D.avg}ms · max {D.max}ms</div>
               <div>tilePx {D.tilePx.toFixed(2)} · grid {String(D.gridOn)} · tiles {D.cnt}</div>
               <div>preview z{D.pz || 0} · {D.ptile.toFixed(1)}px · cells {D.pcnt}</div>
