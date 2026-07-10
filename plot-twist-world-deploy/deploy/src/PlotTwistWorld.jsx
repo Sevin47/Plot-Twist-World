@@ -20,7 +20,7 @@ import VectorWorker from "./vectorWorker.js?worker&inline";
 // Bumped by hand alongside any fix worth confirming actually shipped —
 // shows in the debug panel so a stale cached bundle is immediately obvious
 // instead of looking like the bug is still unfixed.
-const BUILD_TAG = "2026-07-09.3-indexeddb-timeout";
+const BUILD_TAG = "2026-07-09.4-concurrency-and-margin-tuning";
 
 const Z = 17;                 // parcel zoom: ~306m tiles at the equator
 const N = 1 << Z;             // tiles per axis
@@ -845,12 +845,24 @@ function Game({ G, onExit }) {
   // stale-closure risk if the connection changes mid-session. margin/cap
   // are used here on the main thread (viewport prefetch math); maxInflight
   // is relayed to the worker, which does its own fetch throttling.
+  //
+  // "fast" tier's maxInflight was measured directly against the real
+  // Protomaps endpoint (fetch+decode+IndexedDB, not just raw network): 150
+  // real tiles took 2.4s at the old maxInflight=16, 0.8s at 64-96, zero
+  // errors observed up to 128 concurrent. This is a latency-bound workload
+  // (small payloads, ~150ms/request even warm) — more concurrency is a
+  // direct, close-to-linear win here, unlike a bandwidth-constrained mobile
+  // link where it backfires. margin also dropped from 0.6x to 0.35x viewport
+  // (matching "medium"): at a typical viewport that was fetching ~7x the
+  // visible area on every camera jump — real anticipatory buffer for
+  // panning, but far more than a first paint needs, and the now-much-faster
+  // concurrency easily keeps the buffer topped up during actual panning.
   const vtTuning = useRef({ maxInflight: 6, margin: 0.35, cap: 900 }); // moderate default until measured
   useEffect(() => {
     const tuningFor = (tier) => ({
       slow:   { maxInflight: 3,  margin: 0.15, cap: 250 },
       medium: { maxInflight: 5,  margin: 0.3,  cap: 600 },
-      fast:   { maxInflight: 16, margin: 0.6,  cap: 1800 },
+      fast:   { maxInflight: 64, margin: 0.35, cap: 1800 },
       unknown:{ maxInflight: 6,  margin: 0.35, cap: 900 }, // e.g. iOS Safari, which has no Network Information API at all
     }[tier]);
     const conn = typeof navigator !== "undefined" ? navigator.connection : null;
