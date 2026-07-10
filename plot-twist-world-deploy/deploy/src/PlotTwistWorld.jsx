@@ -80,6 +80,21 @@ function pointInDecoded(feat, x, y) {
   if (x < feat.minX || x > feat.maxX || y < feat.minY || y > feat.maxY) return false;
   return pointInFeatureGeom(feat.geom, x, y);
 }
+
+// squared distance from point (px,py) to segment (ax,ay)-(bx,by) — used for
+// real coastal-proximity testing (see classifyFromVector), since a water
+// feature's bounding box alone hugely overclaims "near water" on any
+// concave shoreline (bays, inlets, river bends): the bbox can extend far
+// past the water itself, tagging inland land as coastal.
+function distToSegSq(px, py, ax, ay, bx, by) {
+  const dx = bx - ax, dy = by - ay;
+  const len2 = dx * dx + dy * dy;
+  let t = len2 > 0 ? ((px - ax) * dx + (py - ay) * dy) / len2 : 0;
+  t = Math.max(0, Math.min(1, t));
+  const cx = ax + t * dx, cy = ay + t * dy;
+  const ex = px - cx, ey = py - cy;
+  return ex * ex + ey * ey;
+}
 const REGION_LEN = 8;         // shared-storage shard prefix (~150km regions)
 
 const C = {
@@ -963,15 +978,29 @@ function Game({ G, onExit }) {
     const buildingFrac = hits / BUILD_SAMPLES.length;
 
     // Coastal proximity, from the SAME decoded water polygons — "is any
-    // water within ~150m" via a cheap bbox-expansion check. Without this,
-    // waterfront/coast were unreachable: nothing else in the real classifier
-    // ever produces them, since landuse tags and building density alone
-    // don't encode "near the shore."
+    // water within ~150m," tested as real distance to the polygon's edges
+    // (feature bbox is only a cheap pre-filter to skip most features, NOT
+    // the proximity test itself — a bbox alone overclaims badly on concave
+    // shapes like bays/inlets/river bends, tagging land far from any actual
+    // shoreline as coastal). Without this upgrade step at all, waterfront/
+    // coast would be unreachable: nothing else in the real classifier ever
+    // produces them, since landuse tags and building density alone don't
+    // encode "near the shore."
     const COASTAL_BUFFER = 256; // ~150m in VECTOR_EXTENT units at z14
+    const COASTAL_BUFFER_SQ = COASTAL_BUFFER * COASTAL_BUFFER;
     let coastal = false;
+    coastalCheck:
     for (const feat of e.water) {
-      if (lx >= feat.minX - COASTAL_BUFFER && lx <= feat.maxX + COASTAL_BUFFER &&
-          ly >= feat.minY - COASTAL_BUFFER && ly <= feat.maxY + COASTAL_BUFFER) { coastal = true; break; }
+      if (lx < feat.minX - COASTAL_BUFFER || lx > feat.maxX + COASTAL_BUFFER ||
+          ly < feat.minY - COASTAL_BUFFER || ly > feat.maxY + COASTAL_BUFFER) continue;
+      for (const ring of feat.geom) {
+        for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+          if (distToSegSq(lx, ly, ring[j].x, ring[j].y, ring[i].x, ring[i].y) <= COASTAL_BUFFER_SQ) {
+            coastal = true;
+            break coastalCheck;
+          }
+        }
+      }
     }
 
     const dbg = { landuseKind, buildingFrac: +buildingFrac.toFixed(2), hits, coastal };
