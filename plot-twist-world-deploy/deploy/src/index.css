@@ -1,2 +1,65 @@
 @import "tailwindcss";
+
 html, body, #root { height: 100%; }
+
+body {
+  font-family: 'Space Grotesk', ui-sans-serif, system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+::selection { background: #FFC24B44; color: #E8EDF5; }
+
+/* thin, unobtrusive scrollbars for the overlay panels (assets/market/hq
+   lists, city search) — the default browser scrollbar reads cheap against
+   a glass panel */
+* { scrollbar-width: thin; scrollbar-color: #FFC24B55 transparent; }
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #FFC24B55; border-radius: 999px; }
+::-webkit-scrollbar-thumb:hover { background: #FFC24B88; }
+
+@keyframes ptFadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes ptSlideUp {
+  from { opacity: 0; transform: translateY(10px) scale(0.99); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+@keyframes ptSheetUp {
+  from { opacity: 0; transform: translateY(16px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes ptPopIn {
+  from { opacity: 0; transform: translateY(8px) scale(0.96); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+@keyframes ptShimmer {
+  from { background-position: -200% 0; }
+  to { background-position: 200% 0; }
+}
+@keyframes ptGlowPulse {
+  0%, 100% { opacity: 0.55; }
+  50% { opacity: 1; }
+}
+@keyframes ptSpin {
+  to { transform: rotate(360deg); }
+}
+@keyframes ptCoinFloat {
+  0% { opacity: 0; transform: translateY(0) scale(0.9); }
+  15% { opacity: 1; transform: translateY(-4px) scale(1); }
+  100% { opacity: 0; transform: translateY(-22px) scale(1); }
+}
+@keyframes ptWorldDrift {
+  from { transform: scale(1) translate(0, 0); }
+  to { transform: scale(1.035) translate(-6px, -4px); }
+}
+.pt-anim-worldDrift { animation: ptWorldDrift 40s ease-in-out infinite alternate; }
+
+.pt-anim-fadeIn { animation: ptFadeIn 0.18s ease-out both; }
+.pt-anim-slideUp { animation: ptSlideUp 0.22s cubic-bezier(0.16,1,0.3,1) both; }
+.pt-anim-sheetUp { animation: ptSheetUp 0.28s cubic-bezier(0.16,1,0.3,1) both; }
+.pt-anim-popIn { animation: ptPopIn 0.32s cubic-bezier(0.16,1,0.3,1) both; }
+.pt-anim-glowPulse { animation: ptGlowPulse 2.2s ease-in-out infinite; }
+.pt-anim-spin { animation: ptSpin 1s linear infinite; }

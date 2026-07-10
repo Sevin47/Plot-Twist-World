@@ -101,7 +101,27 @@ const C = {
   ink: "#0A1622", panel: "#111C2B", hair: "#243146",
   ocean: "#0A2233", oceanDeep: "#081B2A", landFill: "#22384A",
   amber: "#FFC24B", text: "#E8EDF5", dim: "#8DA0B8",
+
+  // ── premium-pass additions (purely additive — nothing above this line
+  // changed, so every existing usage keeps rendering exactly as before) ──
+  amberDeep: "#E29A2E",  // shadowed edge of the amber gradient (buttons, glows)
+  amberSoft: "#FFD98A",  // lit edge of the amber gradient / hover highlight
+  panelHi: "#16233570",  // panel-tinted glass highlight (top edge of cards/sheets)
+  hairLit: "#33445E",    // brighter hairline for hover/focus states
+  glow: "rgba(255,194,75,0.30)",
+  glowStrong: "rgba(255,194,75,0.5)",
+  shadowSm: "0 2px 10px rgba(2,7,14,0.35)",
+  shadowMd: "0 10px 28px rgba(2,7,14,0.45)",
+  shadowLg: "0 20px 56px rgba(2,7,14,0.55)",
+  amberGrad: "linear-gradient(180deg, #FFD98A 0%, #FFC24B 45%, #E29A2E 100%)",
+  panelGrad: "linear-gradient(180deg, #14213380 0%, #0F1A2900 60%)",
 };
+const blur = (px) => ({ backdropFilter: `blur(${px}px)`, WebkitBackdropFilter: `blur(${px}px)` });
+// shared card surface (assets/market rows, HQ panels+stat tiles) — one
+// gradient+shadow treatment so every list/panel in the app reads as the
+// same material instead of each screen inventing its own flat rectangle
+const cardSty = { background: `${C.panel}cc`, backgroundImage: C.panelGrad, border: `1px solid ${C.hairLit}`, boxShadow: C.shadowSm };
+const inputSty = { background: `${C.ink}b3`, color: C.text, border: `1px solid ${C.hairLit}`, outlineColor: C.amber };
 
 // Tuned for a ~45-70 minute payback period per tier (was ~3.5 minutes) and
 // roughly 35-40x less revenue per tile — with 300m+ tiles on the planet,
@@ -299,22 +319,74 @@ const gameFromProfile = (uid, profile) => ({
 
 /* ── UI atoms ───────────────────────────────────────────────── */
 
-const mono = { fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" };
+const mono = { fontFamily: "'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" };
+const display = { fontFamily: "'Space Grotesk', ui-sans-serif, system-ui, sans-serif" };
+
+/* ── minimal line-icon set — replaces emoji glyphs in the persistent map
+   HUD (zoom/globe/cities/debug/basemap toggle). Emoji render inconsistently
+   across platforms and read as placeholder art; a single stroke weight/size
+   here reads as one deliberate icon system instead. */
+function Icon({ children, size = 18 }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      {children}
+    </svg>
+  );
+}
+const IconPlus = (p) => <Icon {...p}><path d="M12 5v14M5 12h14" /></Icon>;
+const IconMinus = (p) => <Icon {...p}><path d="M5 12h14" /></Icon>;
+const IconGlobe = (p) => (
+  <Icon {...p}>
+    <circle cx="12" cy="12" r="8.5" />
+    <path d="M3.5 12h17" />
+    <path d="M12 3.5c3 3 3 14 0 17M12 3.5c-3 3-3 14 0 17" />
+  </Icon>
+);
+const IconPlane = (p) => (
+  <Icon {...p}>
+    <path d="M3 13.2 20 6.5c1-.4 1.8.5 1.3 1.4l-6.9 12.4c-.4.7-1.5.6-1.8-.2L10.5 14 3.9 12.9c-.8-.1-1.1-1.2-.4-1.6Z" />
+    <path d="M10.5 14 15 9.5" />
+  </Icon>
+);
+const IconBug = (p) => (
+  <Icon {...p}>
+    <rect x="8" y="8.5" width="8" height="10" rx="4" />
+    <path d="M12 8.5V6M9 6.8 7.3 5M15 6.8 16.7 5M8 12H4.5M16 12h3.5M8.3 16.5 5 18.5M15.7 16.5 19 18.5M10 6.2a2 2 0 0 1 4 0" />
+  </Icon>
+);
+const IconGrid = (p) => (
+  <Icon {...p}>
+    <rect x="3.5" y="3.5" width="17" height="17" rx="1.5" />
+    <path d="M3.5 9.5h17M3.5 14.5h17M9.5 3.5v17M14.5 3.5v17" />
+  </Icon>
+);
+const IconLayers = (p) => (
+  <Icon {...p}>
+    <path d="M12 3.5 21 8l-9 4.5L3 8Z" />
+    <path d="m3 12.5 9 4.5 9-4.5M3 16.5l9 4.5 9-4.5" />
+  </Icon>
+);
 
 function Btn({ children, onClick, disabled, tone = "amber", full, small }) {
   const tones = {
-    amber: { background: C.amber, color: "#221A05" },
-    ghost: { background: "transparent", color: C.text, border: `1px solid ${C.hair}` },
-    danger: { background: "transparent", color: "#F08A8A", border: "1px solid #4A2A33" },
+    amber: {
+      backgroundImage: C.amberGrad,
+      color: "#2B1B03",
+      border: "1px solid #E8A430",
+      boxShadow: disabled ? "none" : "0 1px 0 rgba(255,255,255,.4) inset, 0 -3px 6px rgba(0,0,0,.14) inset, 0 8px 18px -6px rgba(226,154,46,.55)",
+    },
+    ghost: { background: `${C.panel}b3`, color: C.text, border: `1px solid ${C.hairLit}`, ...blur(8) },
+    danger: { background: "#2A1013b3", color: "#F08A8A", border: "1px solid #5A2A33" },
   };
   return (
     <button
       onClick={onClick}
       disabled={disabled}
-      className={`rounded-lg font-semibold tracking-wide transition-opacity focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 ${
+      className={`rounded-xl font-semibold tracking-wide transition-all duration-150 ease-out focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 ${
         small ? "px-3 py-1.5 text-xs" : "px-4 py-2.5 text-sm"
-      } ${full ? "w-full" : ""} ${disabled ? "opacity-35" : "active:opacity-70"}`}
-      style={{ ...mono, ...tones[tone], outlineColor: C.amber }}
+      } ${full ? "w-full" : ""} ${disabled ? "opacity-35" : "hover:brightness-110 active:scale-[0.97] active:brightness-95"}`}
+      style={{ ...display, fontWeight: 600, ...tones[tone], outlineColor: C.amber }}
     >
       {children}
     </button>
@@ -323,15 +395,15 @@ function Btn({ children, onClick, disabled, tone = "amber", full, small }) {
 
 function Chip({ color, children }) {
   return (
-    <span className="pt10 rounded px-1.5 py-0.5 font-bold uppercase tracking-widest"
-      style={{ ...mono, color, background: color + "1f", border: `1px solid ${color}55` }}>
+    <span className="pt10 rounded-full px-2 py-0.5 font-bold uppercase tracking-widest"
+      style={{ ...display, color, background: color + "22", border: `1px solid ${color}66`, boxShadow: `0 0 10px ${color}33` }}>
       {children}
     </span>
   );
 }
 
 function Eyebrow({ children }) {
-  return <div className="pt10 trk uppercase" style={{ ...mono, color: C.dim }}>{children}</div>;
+  return <div className="pt10 trk uppercase font-semibold" style={{ ...display, color: C.dim }}>{children}</div>;
 }
 
 /* ═════════════════════════════════════════════════════════════
@@ -346,27 +418,40 @@ function Eyebrow({ children }) {
 function WorldMap() {
   return (
     <svg viewBox="0 0 1000 500" preserveAspectRatio="xMidYMid meet" aria-hidden="true"
-      className="pointer-events-none absolute inset-0 h-full w-full" style={{ opacity: 0.16 }} fill={C.amber}>
+      className="pt-anim-worldDrift pointer-events-none absolute inset-0 h-full w-full" style={{ opacity: 0.14 }}>
+      <defs>
+        <linearGradient id="wmGrad" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor={C.amberSoft} />
+          <stop offset="100%" stopColor={C.amber} stopOpacity="0.35" />
+        </linearGradient>
+      </defs>
       {/* decorative, deliberately simplified continent silhouettes — not navigational data */}
-      <path d="M130,70 Q180,40 240,55 Q300,45 330,90 Q350,120 310,140 Q330,170 300,190 Q280,230 240,250 Q220,270 200,255 Q180,270 190,290 Q170,310 150,290 Q130,250 140,210 Q100,190 110,150 Q90,110 130,70 Z" />
-      <path d="M220,300 Q260,290 280,310 Q300,340 290,380 Q300,410 270,440 Q250,460 230,440 Q210,410 215,380 Q195,350 210,320 Q200,305 220,300 Z" />
-      <path d="M470,90 Q500,75 530,85 Q550,95 540,120 Q555,140 530,150 Q505,160 485,145 Q465,130 470,90 Z" />
-      <path d="M480,160 Q520,150 550,165 Q570,190 560,220 Q575,260 555,300 Q545,340 520,360 Q500,345 495,310 Q480,280 490,250 Q470,210 480,160 Z" />
-      <path d="M560,60 Q620,40 690,50 Q760,45 820,70 Q860,90 850,120 Q830,140 800,135 Q780,160 750,155 Q730,190 700,210 Q680,250 650,270 Q630,240 620,210 Q600,220 590,190 Q570,170 575,140 Q555,100 560,60 Z" />
-      <path d="M800,340 Q840,330 870,345 Q890,365 875,390 Q850,405 820,395 Q795,385 790,365 Q790,350 800,340 Z" />
+      <g fill="url(#wmGrad)">
+        <path d="M130,70 Q180,40 240,55 Q300,45 330,90 Q350,120 310,140 Q330,170 300,190 Q280,230 240,250 Q220,270 200,255 Q180,270 190,290 Q170,310 150,290 Q130,250 140,210 Q100,190 110,150 Q90,110 130,70 Z" />
+        <path d="M220,300 Q260,290 280,310 Q300,340 290,380 Q300,410 270,440 Q250,460 230,440 Q210,410 215,380 Q195,350 210,320 Q200,305 220,300 Z" />
+        <path d="M470,90 Q500,75 530,85 Q550,95 540,120 Q555,140 530,150 Q505,160 485,145 Q465,130 470,90 Z" />
+        <path d="M480,160 Q520,150 550,165 Q570,190 560,220 Q575,260 555,300 Q545,340 520,360 Q500,345 495,310 Q480,280 490,250 Q470,210 480,160 Z" />
+        <path d="M560,60 Q620,40 690,50 Q760,45 820,70 Q860,90 850,120 Q830,140 800,135 Q780,160 750,155 Q730,190 700,210 Q680,250 650,270 Q630,240 620,210 Q600,220 590,190 Q570,170 575,140 Q555,100 560,60 Z" />
+        <path d="M800,340 Q840,330 870,345 Q890,365 875,390 Q850,405 820,395 Q795,385 790,365 Q790,350 800,340 Z" />
+      </g>
     </svg>
   );
 }
 
 function MenuShell({ children }) {
   return (
-    <div className="relative flex h-screen w-full flex-col items-center justify-center overflow-hidden p-6" style={{ background: C.ink, color: C.text }}>
+    <div className="relative flex h-screen w-full flex-col items-center justify-center overflow-hidden p-6" style={{ color: C.text,
+      background: `radial-gradient(60% 46% at 50% 20%, #1C2E46 0%, ${C.ink} 62%), radial-gradient(90% 60% at 50% 100%, #0E1A2A 0%, ${C.ink} 55%), ${C.ink}` }}>
       <style>{`.pt9{font-size:9px}.pt10{font-size:10px}.pt11{font-size:11px}.trk{letter-spacing:.22em}`}</style>
       <WorldMap />
-      <div className="relative text-center">
+      <div aria-hidden className="pt-anim-glowPulse pointer-events-none absolute rounded-full"
+        style={{ width: 440, height: 440, top: "10%", background: `radial-gradient(circle, ${C.glow} 0%, transparent 72%)`, filter: "blur(18px)" }} />
+      <div className="pt-anim-slideUp relative text-center">
         <Eyebrow>One shared Earth · ~300 m tiles</Eyebrow>
-        <h1 className="mb-1 mt-2 text-4xl font-bold" style={{ ...mono, color: C.amber, letterSpacing: ".04em" }}>PLOT TWIST</h1>
-        <div className="pt11 trk mb-8 uppercase" style={{ ...mono, color: C.dim }}>World Deed Edition</div>
+        <h1 className="mb-1 mt-2 text-5xl font-bold" style={{ ...display, letterSpacing: ".01em",
+          backgroundImage: C.amberGrad, WebkitBackgroundClip: "text", backgroundClip: "text", color: "transparent",
+          filter: `drop-shadow(0 4px 28px ${C.glow})` }}>PLOT TWIST</h1>
+        <div className="pt11 trk mb-8 uppercase font-semibold" style={{ ...display, color: C.dim }}>World Deed Edition</div>
         {children}
       </div>
     </div>
@@ -505,8 +590,8 @@ export default function PlotTwistWorld() {
             Pick a name to claim tiles and trade. This is permanent for this account.
           </div>
           <input value={nameDraft} onChange={(e) => setNameDraft(e.target.value)} maxLength={16} placeholder="e.g. DirtBaron"
-            className="mb-2 w-full rounded-lg px-3 py-2 text-sm focus-visible:outline focus-visible:outline-2"
-            style={{ ...mono, background: C.ink, color: C.text, border: `1px solid ${C.hair}`, outlineColor: C.amber }} />
+            className="mb-2 w-full rounded-xl px-3 py-2.5 text-sm focus-visible:outline focus-visible:outline-2"
+            style={{ ...display, ...inputSty }} />
           {nameErr && <div className="pt10 mb-2" style={{ ...mono, color: "#F08A8A" }}>{nameErr}</div>}
           <Btn full onClick={claimName} disabled={!nameDraft.trim() || nameBusy}>{nameBusy ? "Claiming…" : "Claim name"}</Btn>
         </div>
@@ -533,8 +618,9 @@ export default function PlotTwistWorld() {
 
 function Modal({ children, onClose }) {
   return (
-    <div className="absolute inset-0 z-20 flex items-center justify-center p-6" style={{ background: "rgba(4,9,16,0.85)" }} onClick={onClose}>
-      <div className="w-full max-w-sm rounded-2xl p-5" style={{ background: C.panel, border: `1px solid ${C.hair}` }} onClick={(e) => e.stopPropagation()}>
+    <div className="absolute inset-0 z-20 flex items-center justify-center p-6 pt-anim-fadeIn" style={{ background: "rgba(4,9,16,0.72)", ...blur(6) }} onClick={onClose}>
+      <div className="w-full max-w-sm rounded-2xl p-5 pt-anim-popIn" onClick={(e) => e.stopPropagation()}
+        style={{ background: `${C.panel}f5`, backgroundImage: C.panelGrad, border: `1px solid ${C.hairLit}`, boxShadow: C.shadowLg }}>
         {children}
       </div>
     </div>
@@ -1836,18 +1922,19 @@ function Game({ G, onExit }) {
       <style>{`.pt9{font-size:9px}.pt10{font-size:10px}.pt11{font-size:11px}.trk{letter-spacing:.22em}`}</style>
 
       {/* ticker */}
-      <div className="flex items-center justify-between gap-3 px-4 pb-2 pt-3" style={{ borderBottom: `1px solid ${C.hair}`, background: C.panel }}>
+      <div className="relative z-10 flex items-center justify-between gap-3 px-4 pb-2.5 pt-3"
+        style={{ borderBottom: `1px solid ${C.hair}`, background: C.panel, backgroundImage: `linear-gradient(180deg, #16233a 0%, ${C.panel} 100%)`, boxShadow: C.shadowSm }}>
         <div className="min-w-0">
-          <button onClick={() => { save(); onExit(); }} className="pt9 trk uppercase focus-visible:outline focus-visible:outline-2" style={{ ...mono, color: C.dim, outlineColor: C.amber }}>
+          <button onClick={() => { save(); onExit(); }} className="pt9 trk flex items-center gap-1 uppercase font-semibold focus-visible:outline focus-visible:outline-2" style={{ ...display, color: C.dim, outlineColor: C.amber }}>
             ‹ Plot Twist · World Deed
           </button>
           <div className="flex items-baseline gap-2">
-            <div className="text-2xl font-bold" style={{ ...mono, color: C.amber, fontVariantNumeric: "tabular-nums" }}>₲{fmt(g.bal)}</div>
+            <div className="text-2xl font-bold" style={{ ...mono, color: C.amber, fontVariantNumeric: "tabular-nums", textShadow: `0 0 18px ${C.glow}` }}>₲{fmt(g.bal)}</div>
             <div className="text-xs" style={{ ...mono, color: C.dim }}>+{fmt1(g.rps * (boostOn ? 2 : 1))}/s{boostOn ? " ⚡" : ""}</div>
           </div>
         </div>
         {boostOn ? (
-          <div className="rounded-lg px-3 py-2 text-xs font-bold" style={{ ...mono, color: C.amber, border: `1px solid ${C.amber}66`, fontVariantNumeric: "tabular-nums" }}>
+          <div className="pt-anim-glowPulse rounded-xl px-3 py-2 text-xs font-bold" style={{ ...mono, color: C.amber, border: `1px solid ${C.amber}66`, background: `${C.amber}14`, fontVariantNumeric: "tabular-nums" }}>
             2× {mmss(boostLeft)}
           </div>
         ) : (
@@ -1864,70 +1951,72 @@ function Game({ G, onExit }) {
             onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp} onPointerCancel={onUp} onLostPointerCapture={onLost}
           />
           {/* controls */}
-          <div className="absolute right-3 top-3 flex flex-col gap-1.5">
+          <div className="absolute right-3 top-3 flex flex-col overflow-hidden rounded-2xl"
+            style={{ background: `${C.panel}d9`, border: `1px solid ${C.hairLit}`, boxShadow: C.shadowMd, ...blur(14) }}>
             {[
-              ["+", () => { zoomAt(size.current.w / 2, size.current.h / 2, cam.current.s * 1.6); prefetchVectorTiles(); }],
-              ["−", () => { zoomAt(size.current.w / 2, size.current.h / 2, cam.current.s * 0.62); prefetchVectorTiles(); }],
-              ["🌐", fitWorld],
-              ["✈", () => setCities((c) => !c)],
-              ["🐞", () => setDbg((v) => !v)],
-            ].map(([t, fn]) => (
-              <button key={t} onClick={fn} className="h-9 w-9 rounded-lg text-sm focus-visible:outline focus-visible:outline-2"
-                style={{ ...mono, background: C.panel + "e6", color: C.text, border: `1px solid ${C.hair}`, outlineColor: C.amber }}>
-                {t}
+              [IconPlus, () => { zoomAt(size.current.w / 2, size.current.h / 2, cam.current.s * 1.6); prefetchVectorTiles(); }, "Zoom in"],
+              [IconMinus, () => { zoomAt(size.current.w / 2, size.current.h / 2, cam.current.s * 0.62); prefetchVectorTiles(); }, "Zoom out"],
+              [IconGlobe, fitWorld, "Fit whole world"],
+              [IconPlane, () => setCities((c) => !c), "Search cities"],
+              [IconBug, () => setDbg((v) => !v), "Debug overlay"],
+            ].map(([IconC, fn, label], i) => (
+              <button key={label} onClick={fn} title={label} aria-label={label}
+                className="flex h-10 w-10 items-center justify-center transition-colors hover:bg-white/[0.06] active:scale-90 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[-2px]"
+                style={{ color: C.text, borderTop: i ? `1px solid ${C.hair}` : "none", outlineColor: C.amber }}>
+                <IconC size={16} />
               </button>
             ))}
             <button
               onClick={() => setShowBasemap((v) => !v)}
               title={showBasemap ? "Hide basemap — grid only" : "Show basemap"}
-              className="h-9 w-9 rounded-lg text-sm focus-visible:outline focus-visible:outline-2"
+              aria-label="Toggle basemap"
+              className="flex h-10 w-10 items-center justify-center transition-colors active:scale-90 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[-2px]"
               style={{
-                ...mono,
-                background: showBasemap ? C.panel + "e6" : C.amber,
-                color: showBasemap ? C.text : "#221A05",
-                border: `1px solid ${showBasemap ? C.hair : C.amber}`,
+                color: showBasemap ? C.text : "#2B1B03",
+                backgroundImage: showBasemap ? "none" : C.amberGrad,
+                borderTop: `1px solid ${showBasemap ? C.hair : "transparent"}`,
                 outlineColor: C.amber,
               }}
             >
-              {showBasemap ? "🗺" : "▦"}
+              {showBasemap ? <IconLayers size={16} /> : <IconGrid size={16} />}
             </button>
           </div>
           {cities && (
-            <div className="absolute right-14 top-3 w-48 rounded-xl p-2" style={{ background: C.panel + "f2", border: `1px solid ${C.hair}` }}>
+            <div className="pt-anim-popIn absolute right-14 top-3 w-48 rounded-2xl p-2" style={{ background: `${C.panel}f2`, border: `1px solid ${C.hairLit}`, boxShadow: C.shadowMd, ...blur(14) }}>
               <input
                 autoFocus
                 value={citySearch}
                 onChange={(e) => setCitySearch(e.target.value)}
                 placeholder="Search cities…"
-                className="mb-1 w-full rounded px-2 py-1.5 text-xs focus-visible:outline focus-visible:outline-2"
-                style={{ ...mono, background: C.ink, color: C.text, border: `1px solid ${C.hair}`, outlineColor: C.amber }}
+                className="mb-1 w-full rounded-lg px-2 py-1.5 text-xs focus-visible:outline focus-visible:outline-2"
+                style={{ ...display, ...inputSty }}
               />
               <div className="max-h-64 overflow-y-auto">
                 {TOP_CITIES.filter(([name]) => name.toLowerCase().includes(citySearch.trim().toLowerCase())).slice(0, 60).map(([name, lat, lon]) => (
-                  <button key={name} onClick={() => flyTo(lat, lon)} className="block w-full rounded px-2 py-1.5 text-left text-xs focus-visible:outline focus-visible:outline-2"
-                    style={{ ...mono, color: C.text, outlineColor: C.amber }}>
+                  <button key={name} onClick={() => flyTo(lat, lon)} className="block w-full rounded-lg px-2 py-1.5 text-left text-xs transition-colors hover:bg-white/[0.06] focus-visible:outline focus-visible:outline-2"
+                    style={{ ...display, color: C.text, outlineColor: C.amber }}>
                     {name}
                   </button>
                 ))}
               </div>
             </div>
           )}
-          <div className="absolute left-3 top-3 rounded-lg px-2.5 py-2" style={{ background: C.panel + "e6", border: `1px solid ${C.hair}` }}>
+          <div className="absolute left-3 top-3 rounded-2xl px-2.5 py-2" style={{ background: `${C.panel}d9`, border: `1px solid ${C.hairLit}`, boxShadow: C.shadowSm, ...blur(14) }}>
             {LEGEND.map((k) => (
-              <div key={k} className="pt9 flex items-center gap-1.5 py-0.5" style={{ ...mono, color: C.dim }}>
-                <span className="h-2 w-2 rounded-sm" style={{ background: CLS[k].color }} />
+              <div key={k} className="pt9 flex items-center gap-1.5 py-0.5 font-medium" style={{ ...display, color: C.dim }}>
+                <span className="h-2 w-2 rounded-full" style={{ background: CLS[k].color, boxShadow: `0 0 6px ${CLS[k].color}99` }} />
                 {CLS[k].name}
               </div>
             ))}
           </div>
 
           {syncing && (
-            <div className="pt10 absolute left-32 top-3 rounded-full px-2.5 py-1" style={{ ...mono, color: C.dim, background: C.panel + "e6", border: `1px solid ${C.hair}` }}>
+            <div className="pt-anim-fadeIn pt10 absolute left-32 top-3 rounded-full px-2.5 py-1 font-medium" style={{ ...display, color: C.dim, background: `${C.panel}e6`, border: `1px solid ${C.hair}`, ...blur(10) }}>
               syncing deeds…
             </div>
           )}
           {tilePxNow < 8 && !sel && (
-            <div className="pt10 pointer-events-none absolute inset-x-0 top-3 text-center" style={{ ...mono, color: C.dim }}>
+            <div className="pt10 pointer-events-none absolute inset-x-0 top-3 text-center font-medium" style={{ ...display, color: C.dim }}>
               {(() => {
                 const { s: cs } = cam.current;
                 const { w: vw, h: vh } = size.current;
@@ -1940,7 +2029,7 @@ function Game({ G, onExit }) {
           )}
 
           {dbg && (() => { const D = dbgRef.current; return (
-            <div className="pt10 absolute bottom-8 left-3 rounded-lg p-2 leading-relaxed" style={{ ...mono, color: C.text, background: C.panel + "f0", border: `1px solid ${C.hair}`, maxWidth: 240 }}>
+            <div className="pt-anim-popIn pt10 absolute bottom-8 left-3 rounded-xl p-2 leading-relaxed" style={{ ...mono, color: C.text, background: `${C.panel}f5`, border: `1px solid ${C.hairLit}`, boxShadow: C.shadowMd, maxWidth: 240, ...blur(10) }}>
               <div>build {BUILD_TAG}</div>
               <div>
                 own {g.own.length} · rps {g.rps.toFixed(3)}
@@ -1976,7 +2065,9 @@ function Game({ G, onExit }) {
 
           {/* tile sheet */}
           {sel && (
-            <div className="absolute inset-x-0 bottom-0 rounded-t-2xl p-4" style={{ background: C.panel, borderTop: `1px solid ${C.hair}` }}>
+            <div className="pt-anim-sheetUp absolute inset-x-0 bottom-0 rounded-t-2xl p-4"
+              style={{ background: `${C.panel}f7`, backgroundImage: C.panelGrad, borderTop: `1px solid ${C.hairLit}`, boxShadow: C.shadowLg, ...blur(16) }}>
+              <div aria-hidden className="mx-auto mb-3 h-1 w-9 rounded-full" style={{ background: C.hairLit }} />
               <div className="mb-2 flex items-start justify-between">
                 <div>
                   <Eyebrow>{CLS[selCls].name}{selInfo.n ? ` · near ${selInfo.n} (${selInfo.d} km)` : selCls !== "water" && selCls !== "pending" ? " · remote" : ""}</Eyebrow>
@@ -1987,11 +2078,14 @@ function Game({ G, onExit }) {
               </div>
 
               {roll && roll.qk === sel && roll.phase === "spin" && (
-                <div className="py-3 text-center text-sm font-bold" style={{ ...mono, color: C.amber }}>Recording deed… rolling rarity</div>
+                <div className="flex items-center justify-center gap-2.5 py-3 text-sm font-bold" style={{ ...display, color: C.amber }}>
+                  <span className="pt-anim-spin inline-block h-3.5 w-3.5 rounded-full" style={{ border: `2px solid ${C.amber}44`, borderTopColor: C.amber }} />
+                  Recording deed… rolling rarity
+                </div>
               )}
               {roll && roll.qk === sel && roll.phase === "done" && (
-                <div className="py-2 text-center">
-                  <div className="text-xl font-bold" style={{ ...mono, color: RAR[roll.r].color }}>{RAR[roll.r].name}!</div>
+                <div className="pt-anim-popIn py-2 text-center">
+                  <div className="text-2xl font-bold" style={{ ...display, color: RAR[roll.r].color, textShadow: `0 0 22px ${RAR[roll.r].color}88` }}>{RAR[roll.r].name}!</div>
                   <div className="mt-1 text-xs" style={{ color: C.dim }}>Rent ×{RAR[roll.r].m} on this tile, forever.</div>
                 </div>
               )}
@@ -2076,11 +2170,11 @@ function Game({ G, onExit }) {
               </div>
             )}
             {g.own.slice().sort((a, b) => rentOf(b) - rentOf(a)).map((t) => (
-              <div key={t.qk} className="mb-2 rounded-xl p-3" style={{ background: C.panel, border: `1px solid ${C.hair}` }}>
+              <div key={t.qk} className="mb-2 rounded-xl p-3 transition-transform duration-150 hover:-translate-y-0.5" style={cardSty}>
                 <button className="flex w-full items-center justify-between text-left focus-visible:outline focus-visible:outline-2" style={{ outlineColor: C.amber }}
                   onClick={() => { setTab("map"); setSel(t.qk); const [wx, wy] = centerOfQk(t.qk); const { w, h } = size.current; const s = N * 16; cam.current = { s, x: w / 2 - wx * s, y: h / 2 - wy * s, init: true }; ensureRegion(regionOf(t.qk), true); }}>
                   <div className="flex min-w-0 items-center gap-2">
-                    <span className="h-2.5 w-2.5 shrink-0 rounded-sm" style={{ background: CLS[t.cls].color }} />
+                    <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: CLS[t.cls].color, boxShadow: `0 0 6px ${CLS[t.cls].color}99` }} />
                     <span className="truncate text-sm font-bold" style={mono}>{coordLabel(t.qk)}</span>
                     <Chip color={RAR[t.r].color}>{RAR[t.r].name}</Chip>
                   </div>
@@ -2118,11 +2212,11 @@ function Game({ G, onExit }) {
               </div>
             )}
             {market.rows && market.rows.map((e) => (
-              <div key={e.qk} className="mb-2 flex items-center justify-between rounded-xl p-3" style={{ background: C.panel, border: `1px solid ${C.hair}` }}>
+              <div key={e.qk} className="mb-2 flex items-center justify-between rounded-xl p-3 transition-transform duration-150 hover:-translate-y-0.5" style={cardSty}>
                 <button className="min-w-0 text-left focus-visible:outline focus-visible:outline-2" style={{ outlineColor: C.amber }}
                   onClick={() => { setTab("map"); setSel(e.qk); const [wx, wy] = centerOfQk(e.qk); const { w, h } = size.current; const s = N * 16; cam.current = { s, x: w / 2 - wx * s, y: h / 2 - wy * s, init: true }; ensureRegion(regionOf(e.qk), true); }}>
                   <div className="flex items-center gap-2">
-                    <span className="h-2.5 w-2.5 shrink-0 rounded-sm" style={{ background: (CLS[e.cls] || CLS.land).color }} />
+                    <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: (CLS[e.cls] || CLS.land).color, boxShadow: `0 0 6px ${(CLS[e.cls] || CLS.land).color}99` }} />
                     <span className="truncate text-sm font-bold" style={mono}>{coordLabel(e.qk)}</span>
                   </div>
                   <div className="pt11 mt-0.5" style={{ ...mono, color: C.dim }}>by {e.n || "a player"}{e.n === g.name ? " (you)" : ""}</div>
@@ -2151,14 +2245,14 @@ function Game({ G, onExit }) {
                 ["Tiles", g.own.length],
                 ["Visit streak", (g.streak || 0) + "d"],
               ].map(([k, v]) => (
-                <div key={k} className="rounded-xl p-3" style={{ background: C.panel, border: `1px solid ${C.hair}` }}>
-                  <div className="pt9 trk uppercase" style={{ ...mono, color: C.dim }}>{k}</div>
+                <div key={k} className="rounded-xl p-3" style={cardSty}>
+                  <div className="pt9 trk uppercase font-semibold" style={{ ...display, color: C.dim }}>{k}</div>
                   <div className="text-lg font-bold" style={{ ...mono, fontVariantNumeric: "tabular-nums" }}>{v}</div>
                 </div>
               ))}
             </div>
 
-            <div className="mb-3 rounded-xl p-3" style={{ background: C.panel, border: `1px solid ${C.hair}` }}>
+            <div className="mb-3 rounded-xl p-3" style={cardSty}>
               <div className="mb-2"><Eyebrow>Landlord identity</Eyebrow></div>
               {g.name ? (
                 <div className="flex items-center justify-between">
@@ -2176,19 +2270,26 @@ function Game({ G, onExit }) {
               </div>
             </div>
 
-            <div className="mb-3 rounded-xl p-3" style={{ background: C.panel, border: `1px solid ${C.hair}` }}>
+            <div className="mb-3 rounded-xl p-3" style={cardSty}>
               <div className="mb-2"><Eyebrow>Commendations</Eyebrow></div>
               <div className="flex flex-wrap gap-1.5">
                 {ACH.map((a) => (
-                  <span key={a.k} title={a.desc} className="pt10 rounded px-2 py-1 font-bold"
-                    style={{ ...mono, color: g.ach[a.k] ? "#221A05" : C.dim, background: g.ach[a.k] ? C.amber : "transparent", border: `1px solid ${g.ach[a.k] ? C.amber : C.hair}` }}>
+                  <span key={a.k} title={a.desc} className="pt10 rounded-full px-2.5 py-1 font-bold"
+                    style={{
+                      ...display,
+                      color: g.ach[a.k] ? "#2B1B03" : C.dim,
+                      backgroundImage: g.ach[a.k] ? C.amberGrad : "none",
+                      background: g.ach[a.k] ? undefined : `${C.ink}80`,
+                      border: `1px solid ${g.ach[a.k] ? "#E8A430" : C.hair}`,
+                      boxShadow: g.ach[a.k] ? `0 0 12px ${C.glow}` : "none",
+                    }}>
                     {a.name}
                   </span>
                 ))}
               </div>
             </div>
 
-            <div className="mb-3 rounded-xl p-3" style={{ background: C.panel, border: `1px solid ${C.hair}` }}>
+            <div className="mb-3 rounded-xl p-3" style={cardSty}>
               <div className="mb-2 flex items-center justify-between">
                 <Eyebrow>World register · top landlords</Eyebrow>
                 <button onClick={refreshLB} className="pt11 focus-visible:outline focus-visible:outline-2" style={{ ...mono, color: C.amber, outlineColor: C.amber }}>Refresh</button>
@@ -2212,7 +2313,7 @@ function Game({ G, onExit }) {
               )}
             </div>
 
-            <div className="mb-3 rounded-xl p-3" style={{ background: C.panel, border: `1px solid ${C.hair}` }}>
+            <div className="mb-3 rounded-xl p-3" style={cardSty}>
               <div className="mb-2"><Eyebrow>Account</Eyebrow></div>
               <div className="flex gap-2">
                 <Btn small tone="ghost" onClick={() => { save(); onExit(); signOut(); }}>Sign out</Btn>
@@ -2233,15 +2334,22 @@ function Game({ G, onExit }) {
       {/* toasts */}
       <div className="pointer-events-none absolute inset-x-0 bottom-20 z-10 flex flex-col items-center gap-1.5">
         {toasts.map((t) => (
-          <div key={t.id} className="rounded-full px-4 py-1.5 text-xs font-bold" style={{ ...mono, background: C.amber, color: "#221A05" }}>{t.text}</div>
+          <div key={t.id} className="pt-anim-popIn rounded-full px-4 py-2 text-xs font-bold"
+            style={{ ...display, backgroundImage: C.amberGrad, color: "#2B1B03", boxShadow: `${C.shadowMd}, 0 0 20px ${C.glow}` }}>{t.text}</div>
         ))}
       </div>
 
       {/* nav */}
-      <div className="flex" style={{ background: C.panel, borderTop: `1px solid ${C.hair}` }}>
+      <div className="flex gap-1 p-1.5" style={{ background: C.panel, borderTop: `1px solid ${C.hair}` }}>
         {[["map", "Map"], ["assets", "Assets"], ["market", "Market"], ["hq", "HQ"]].map(([k, label]) => (
-          <button key={k} onClick={() => setTab(k)} className="pt11 trk flex-1 py-3.5 font-bold uppercase focus-visible:outline focus-visible:outline-2"
-            style={{ ...mono, color: tab === k ? C.amber : C.dim, boxShadow: tab === k ? `inset 0 2px 0 ${C.amber}` : "none", outlineColor: C.amber }}>
+          <button key={k} onClick={() => setTab(k)} className="pt11 trk flex-1 rounded-xl py-2.5 font-bold uppercase transition-all duration-150 focus-visible:outline focus-visible:outline-2"
+            style={{
+              ...display,
+              color: tab === k ? "#2B1B03" : C.dim,
+              backgroundImage: tab === k ? C.amberGrad : "none",
+              boxShadow: tab === k ? "0 4px 14px -4px rgba(226,154,46,.55)" : "none",
+              outlineColor: C.amber,
+            }}>
             {label}
           </button>
         ))}
@@ -2253,7 +2361,7 @@ function Game({ G, onExit }) {
           {modal.kind === "welcome" && (
             <>
               <Eyebrow>While you were away</Eyebrow>
-              <div className="my-2 text-2xl font-bold" style={{ ...mono, color: C.amber }}>+₲{fmt(modal.gain)}</div>
+              <div className="my-2 text-3xl font-bold" style={{ ...mono, color: C.amber, textShadow: `0 0 26px ${C.glow}` }}>+₲{fmt(modal.gain)}</div>
               <div className="mb-4 text-xs" style={{ color: C.dim }}>Your tenants kept paying (half rate, capped at 8h — even fake landlords need limits).</div>
               <Btn full onClick={closeModal}>Collect</Btn>
             </>
@@ -2261,7 +2369,7 @@ function Game({ G, onExit }) {
           {modal.kind === "daily" && (
             <>
               <Eyebrow>Daily stipend · day {modal.streak}</Eyebrow>
-              <div className="my-2 text-2xl font-bold" style={{ ...mono, color: C.amber }}>+₲{fmt(modal.reward)}</div>
+              <div className="my-2 text-3xl font-bold" style={{ ...mono, color: C.amber, textShadow: `0 0 26px ${C.glow}` }}>+₲{fmt(modal.reward)}</div>
               <div className="mb-4 text-xs" style={{ color: C.dim }}>The World Deed Office pays you for showing up. Streak grows the stipend, up to day 7.</div>
               <Btn full onClick={closeModal}>Accept</Btn>
             </>
@@ -2274,8 +2382,8 @@ function Game({ G, onExit }) {
               </div>
               <div className="flex gap-2">
                 <input value={nameDraft} onChange={(e) => setNameDraft(e.target.value)} maxLength={16} placeholder="e.g. DirtBaron"
-                  className="min-w-0 flex-1 rounded-lg px-3 py-2 text-sm focus-visible:outline focus-visible:outline-2"
-                  style={{ ...mono, background: C.ink, color: C.text, border: `1px solid ${C.hair}`, outlineColor: C.amber }} />
+                  className="min-w-0 flex-1 rounded-xl px-3 py-2.5 text-sm focus-visible:outline focus-visible:outline-2"
+                  style={{ ...display, ...inputSty }} />
                 <Btn small onClick={setName} disabled={!nameDraft.trim()}>Save</Btn>
               </div>
             </>
@@ -2288,8 +2396,8 @@ function Game({ G, onExit }) {
               </div>
               <div className="flex gap-2">
                 <input value={priceDraft} onChange={(e) => setPriceDraft(e.target.value.replace(/[^0-9]/g, ""))} inputMode="numeric" placeholder="Price in ₲"
-                  className="min-w-0 flex-1 rounded-lg px-3 py-2 text-sm focus-visible:outline focus-visible:outline-2"
-                  style={{ ...mono, background: C.ink, color: C.text, border: `1px solid ${C.hair}`, outlineColor: C.amber }} />
+                  className="min-w-0 flex-1 rounded-xl px-3 py-2.5 text-sm focus-visible:outline focus-visible:outline-2"
+                  style={{ ...mono, ...inputSty }} />
                 <Btn small onClick={() => { const p = parseInt(priceDraft, 10); if (p > 0) { listTile(modal.qk, p); closeModal(); } }} disabled={!(parseInt(priceDraft, 10) > 0)}>List</Btn>
               </div>
             </>
@@ -2330,12 +2438,18 @@ function AdModal({ ad, reduced, onClaim, onClose }) {
         <Eyebrow>Paid promotion · parody, not a real ad</Eyebrow>
         <button onClick={onClose} className="px-1 text-lg focus-visible:outline focus-visible:outline-2" style={{ color: C.dim, outlineColor: C.amber }}>✕</button>
       </div>
-      <div className="my-4 rounded-xl p-5 text-center" style={{ background: C.ink, border: `1px dashed ${C.hair}` }}>
-        <div className="text-lg font-bold" style={mono}>{ad.brand}</div>
+      <div className="my-4 rounded-xl p-5 text-center" style={{ background: C.ink, border: `1px dashed ${C.hairLit}` }}>
+        <div className="text-lg font-bold" style={display}>{ad.brand}</div>
         <div className="mt-1 text-sm italic" style={{ color: C.dim }}>“{ad.line}”</div>
       </div>
       <div className="mb-3 h-1.5 overflow-hidden rounded-full" style={{ background: C.hair }}>
-        <div className="h-full rounded-full transition-all" style={{ width: `${(t / DUR) * 100}%`, background: C.amber }} />
+        <div className="h-full rounded-full transition-all"
+          style={{
+            width: `${(t / DUR) * 100}%`,
+            backgroundImage: `linear-gradient(90deg, ${C.amberDeep}, ${C.amber}, ${C.amberSoft}, ${C.amber}, ${C.amberDeep})`,
+            backgroundSize: "200% 100%",
+            animation: "ptShimmer 1.4s linear infinite",
+          }} />
       </div>
       <Btn full disabled={!done} onClick={onClaim}>
         {done ? "Claim 2× rent (5:00)" : `Enjoying this fine message… ${Math.ceil(DUR - t)}s`}
