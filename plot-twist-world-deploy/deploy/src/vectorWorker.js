@@ -61,10 +61,15 @@ function decodePolyLayer(layer, withKind) {
 let maxInflight = 6;
 let inflight = 0;
 const queue = [];
-const MAX_QUEUE = 800; // hard backlog cap — without this, panning across many
-// areas without waiting for each to finish loading can queue up tens of
-// thousands of requests for places the player has long since left, which
-// then sit ahead of whatever's actually on screen right now
+// Hard backlog cap — without this, panning across many areas without
+// waiting for each to finish loading can queue up tens of thousands of
+// requests for places the player has long since left, which then sit ahead
+// of whatever's actually on screen right now. Must stay >= the main
+// thread's own per-prefetch tile cap (fast tier: 1800) — it was previously
+// 800, silently dropping the stalest queued tiles as genuinely-needed
+// (not stale) requests for a single large, dense view before they were
+// ever attempted.
+const MAX_QUEUE = 2000;
 
 function drainQueue() {
   // LIFO on purpose: the most recently requested tile is the one most likely
