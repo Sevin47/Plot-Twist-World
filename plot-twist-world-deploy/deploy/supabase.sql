@@ -80,6 +80,25 @@ create table if not exists bank_ledger (
 );
 create index if not exists idx_bank_ledger_recipient on bank_ledger(recipient) where claimed = false;
 
+-- ── land economy: repossession of inactive-owner tiles + energy-limited
+--    claims (see repossess_stale_tiles / regen_energy / buy_unowned_tile
+--    below). Additive only — safe to re-run against a live database. ──
+alter table bank_ledger add column if not exists kind text not null default 'sale';
+-- distinguishes "someone bought your listing" from "a tile was repossessed
+-- for inactivity" in the one shared notification pipe (claim_bank_ledger);
+-- no CHECK constraint — RLS already blocks any insert except through the
+-- security-definer functions below, which are the only two writers.
+
+alter table profiles add column if not exists energy int not null default 20;
+alter table profiles add column if not exists energy_at timestamptz not null default now();
+-- lazy-regen resource (same "compute on read" pattern as accrue_rent's rent
+-- accrual, not a background job): 1 point per 60s, cap 20. Throttles how
+-- fast *new unowned land* can be claimed, independent of wallet size — the
+-- actual anti-sprawl lever, not just a speed bump.
+
+create index if not exists idx_profiles_last_seen on profiles(last_seen);
+-- backs repossess_stale_tiles()'s inactivity scan below
+
 -- ── RLS: public read everywhere it matters, NO direct writes anywhere.
 --    All mutation happens through the security-definer functions below.
 --    (drop-then-create because CREATE POLICY has no IF NOT EXISTS — this
@@ -148,9 +167,93 @@ begin
   end if;
 
   update profiles set balance = balance + floor(v_gain), last_seen = now() where user_id = p_uid;
+
+  perform regen_energy(p_uid);
+  -- rate-limited to a quarter of calls, not every one — repossess_stale_tiles
+  -- does real writes (balance credit + ledger insert + delete) per row, so
+  -- there's no need to run it on literally every RPC round-trip; any active
+  -- player's ordinary traffic still drives it constantly enough with no
+  -- cron/extension required.
+  if random() < 0.25 then perform repossess_stale_tiles(); end if;
 end;
 $$;
 revoke all on function accrue_rent(uuid) from public;
+
+-- ── regen_energy: lazy leaky-bucket regen for buy_unowned_tile's energy
+--    gate, same "compute on read" idea as accrue_rent above. Advances
+--    energy_at by whole consumed 60s ticks (never snaps to now()) so partial
+--    progress toward the next point is never lost — that would let frequent
+--    syncing quietly reset the regen clock. ──
+create or replace function regen_energy(p_uid uuid)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_profile profiles;
+  v_ticks int;
+begin
+  select * into v_profile from profiles where user_id = p_uid for update;
+  if not found or v_profile.energy >= 20 then return; end if;
+
+  v_ticks := floor(greatest(0, extract(epoch from (now() - v_profile.energy_at))) / 60);
+  if v_ticks <= 0 then return; end if;
+
+  update profiles
+  set energy = least(20, energy + v_ticks),
+      energy_at = energy_at + (v_ticks * interval '60 seconds')
+  where user_id = p_uid;
+end;
+$$;
+revoke all on function regen_energy(uuid) from public;
+
+-- ── repossess_stale_tiles: land decay. An owner absent 60+ days (profiles.
+--    last_seen — already tracked by accrue_rent for every player, no new
+--    activity column needed) has their tiles returned to the unclaimed pool
+--    a few at a time, with a 30% refund of what they paid credited to their
+--    balance and logged so they see it next time they do return. Mirrors
+--    abandon_tile's delete-the-row semantics below (unowned tiles simply
+--    aren't rows in `tiles`), just system-initiated with a smaller refund
+--    and a notification since the owner isn't there to see it happen.
+--
+--    Also sweeps up a separate pre-existing gap noticed while building this:
+--    `tiles.owner references profiles(user_id) on delete set null` means a
+--    deleted account leaves its tiles behind as permanently-stuck `owner is
+--    null` rows — buy_unowned_tile can never reclaim them (primary-key
+--    conflict on qk) and nobody owns them to ever call abandon_tile. Left
+--    join (not the original inner join) so those rows are found too; no
+--    refund/notification for them since there's no one left to receive one. ──
+create or replace function repossess_stale_tiles()
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_tile record;
+  v_refund bigint;
+begin
+  for v_tile in
+    select t.qk, t.owner, t.paid
+    from tiles t
+    left join profiles p on p.user_id = t.owner
+    where t.owner is null or p.last_seen < now() - interval '60 days'
+    order by coalesce(p.last_seen, 'epoch'::timestamptz) asc
+    limit 5
+    for update of t skip locked
+  loop
+    if v_tile.owner is not null then
+      v_refund := round(v_tile.paid * 0.3);
+      update profiles set balance = balance + v_refund where user_id = v_tile.owner;
+      insert into bank_ledger (recipient, amount, from_username, qk, kind)
+      values (v_tile.owner, v_refund, 'World Deed Office', v_tile.qk, 'repossession');
+    end if;
+    delete from tiles where qk = v_tile.qk;
+  end loop;
+end;
+$$;
+revoke all on function repossess_stale_tiles() from public;
 
 -- ── claim_username: first-login setup, also used for rename ──
 create or replace function claim_username(p_username text)
@@ -288,11 +391,18 @@ begin
   if (select balance from profiles where user_id = v_uid) < v_class.price then
     raise exception 'insufficient balance';
   end if;
+  -- energy gates claiming NEW unowned land specifically — the actual sprawl
+  -- vector (zoom anywhere, buy instantly). buy_listed_tile (trading with
+  -- another player) and upgrade_tile (investing in what you already own)
+  -- are deliberately left energy-free.
+  if (select energy from profiles where user_id = v_uid) < 1 then
+    raise exception 'no energy left — recharges 1/min, max 20';
+  end if;
 
   v_roll := random();
   v_rarity := case when v_roll < 0.02 then 3 when v_roll < 0.10 then 2 when v_roll < 0.30 then 1 else 0 end;
 
-  update profiles set balance = balance - v_class.price where user_id = v_uid;
+  update profiles set balance = balance - v_class.price, energy = energy - 1 where user_id = v_uid;
   insert into tiles (qk, owner, cls, level, rarity, paid, updated_at)
   values (p_qk, v_uid, p_cls, 0, v_rarity, v_class.price, now())
   returning * into v_row;
@@ -462,27 +572,38 @@ $$;
 revoke all on function abandon_tile(text) from public;
 grant execute on function abandon_tile(text) to authenticated;
 
--- ── claim_bank_ledger: surfaces "while you were away, N sales earned ₲X"
---    notifications. Money already moved instantly in buy_listed_tile above —
---    this only reports + marks rows seen, it must never credit balance again. ──
+-- ── claim_bank_ledger: surfaces "while you were away, N sales earned ₲X" /
+--    "M tiles were repossessed for inactivity, here's a refund" notifications.
+--    Money already moved instantly in buy_listed_tile / repossess_stale_tiles
+--    above — this only reports + marks rows seen, never credits balance again.
+--    Return shape changed (sale_count/repo_count replace a single count), so
+--    the old signature must be dropped first — CREATE OR REPLACE can't change
+--    a function's return type. ──
+drop function if exists claim_bank_ledger();
 create or replace function claim_bank_ledger()
-returns table("total" bigint, "count" int)
+returns table("sale_total" bigint, "sale_count" int, "repo_total" bigint, "repo_count" int)
 language plpgsql
 security definer
 set search_path = public
 as $$
 declare
   v_uid uuid := auth.uid();
-  v_total bigint;
-  v_count int;
+  v_sale_total bigint;
+  v_sale_count int;
+  v_repo_total bigint;
+  v_repo_count int;
 begin
   if v_uid is null then raise exception 'not authenticated'; end if;
-  select coalesce(sum(amount), 0), count(*) into v_total, v_count
+  select coalesce(sum(amount) filter (where kind = 'sale'), 0),
+         coalesce(sum((kind = 'sale')::int), 0),
+         coalesce(sum(amount) filter (where kind = 'repossession'), 0),
+         coalesce(sum((kind = 'repossession')::int), 0)
+  into v_sale_total, v_sale_count, v_repo_total, v_repo_count
   from bank_ledger where recipient = v_uid and claimed = false;
 
   update bank_ledger set claimed = true where recipient = v_uid and claimed = false;
 
-  return query select v_total, v_count;
+  return query select v_sale_total, v_sale_count, v_repo_total, v_repo_count;
 end;
 $$;
 revoke all on function claim_bank_ledger() from public;
