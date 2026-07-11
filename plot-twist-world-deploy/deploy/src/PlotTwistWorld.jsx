@@ -1242,32 +1242,6 @@ function Game({ G, onExit }) {
     return classifyTxy(tx, ty);
   }, [classifyTxy]);
 
-  /* coarser grid for visual district context at mid zoom, before individual
-     ~306m deeds are close enough to tap — resolution varies continuously
-     with zoom (see previewLevelFor). Backed by the SAME real vector data as
-     the fine grid (a fixed VECTOR_Z reference tile serves many preview
-     cells at once, so this is cheap despite covering a much wider view than
-     the deed grid does). Cells with no vector data yet render as pending
-     (no tint) rather than a guessed color. */
-  const previewCache = useRef(new Map());
-  const classifyPreviewAt = useCallback((pz, tx, ty) => {
-    const cc = previewCache.current;
-    const key = `${pz}_${tx}_${ty}`;
-    const cached = cc.get(key);
-    if (cached) return cached;
-    const pn = 1 << pz;
-    const wx = (tx + 0.5) / pn, wy = (ty + 0.5) / pn;
-
-    const vec = classifyFromVector(pz, wx, wy);
-    if (vec) {
-      const v = { c: vec.c, src: "vector" };
-      if (cc.size > 24000) cc.clear();
-      cc.set(key, v);
-      return v;
-    }
-    return { c: "pending", src: "pending" }; // not cached — retried each call
-  }, [classifyFromVector]);
-
   /* ── real basemap tiles (CARTO Dark Matter, © OpenStreetMap contributors
      © CARTO) — crisp raster imagery with built-in place labels at every
      zoom, replacing the single static planet image for visuals. ── */
@@ -1745,29 +1719,31 @@ function Game({ G, onExit }) {
         }
       }
     } else {
-      /* district preview: land-use-tinted cells at a zoom-appropriate
-         resolution (~20km down to ~600m), bridging "whole planet" and the
-         tappable ~306m deed grid with no gap in coverage */
-      const pz = previewLevelFor(s);
-      const pn = 1 << pz;
-      const ptile = s / pn;
-      const px0 = Math.max(0, Math.floor(-ox / ptile));
-      const py0 = Math.max(0, Math.floor(-oy / ptile));
-      const px1 = Math.min(pn - 1, Math.ceil((w - ox) / ptile));
-      const py1 = Math.min(pn - 1, Math.ceil((h - oy) / ptile));
-      const pcnt = Math.max(0, px1 - px0 + 1) * Math.max(0, py1 - py0 + 1);
-      D.pcnt = pcnt; D.ptile = ptile; D.pz = pz;
-      if (pcnt > 0 && pcnt <= 8000) {
-        for (let ty = py0; ty <= py1; ty++) {
-          for (let tx = px0; tx <= px1; tx++) {
-            const cc = classifyPreviewAt(pz, tx, ty);
-            if (cc.c === "pending") continue; // no data yet — no guessed color
-            const col = cc.c === "water" ? CLS.water.color : CLS[cc.c].color;
-            ctx.fillStyle = hexA(col, cc.c === "water" ? 0.18 : 0.26);
-            ctx.fillRect(ox + tx * ptile, oy + ty * ptile, ptile + 0.6, ptile + 0.6);
-          }
-        }
+      /* territory outlines: at this zoom we no longer tint every visible
+         cell by district (that was a lot of visual noise disconnected from
+         what's actually yours, and expensive to classify over a huge
+         viewport) — just the real basemap, plus a glowing outline around
+         each unlocked region's actual boundary. A region is a REGION_LEN=8
+         quadkey tile, i.e. already a plain rectangle, so no geometry work
+         (turf/polygon tracing) is needed to draw it. */
+      D.pz = previewLevelFor(s); D.pcnt = 0; D.ptile = 0;
+
+      const REGION_N = 1 << REGION_LEN;
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = C.amber;
+      ctx.shadowColor = C.amber;
+      ctx.shadowBlur = 10;
+      for (const region of unlockedRegions.current) {
+        const [rtx, rty] = txyOf(region);
+        const rpx0 = ox + (rtx / REGION_N) * s, rpy0 = oy + (rty / REGION_N) * s;
+        const rpx1 = ox + ((rtx + 1) / REGION_N) * s, rpy1 = oy + ((rty + 1) / REGION_N) * s;
+        if (rpx1 < 0 || rpy1 < 0 || rpx0 > w || rpy0 > h) continue; // off-screen
+        ctx.strokeRect(rpx0, rpy0, rpx1 - rpx0, rpy1 - rpy0);
       }
+      // canvas shadow/lineWidth state persists across draw calls — reset or
+      // it silently leaks onto whatever's drawn next this frame
+      ctx.shadowBlur = 0;
+      ctx.lineWidth = 1;
 
       // your deeds as glowing dots, layered on top regardless of preview state
       ctx.fillStyle = C.amber;
@@ -1817,7 +1793,7 @@ function Game({ G, onExit }) {
       ctx.fillText("\u00A9 OpenStreetMap \u00A9 CARTO", w - 8, h - 6);
       ctx.textAlign = "left";
     }
-  }, [g, sel, classifyTxy, classifyPreviewAt, reduced, getTile, showBasemap]);
+  }, [g, sel, classifyTxy, reduced, getTile, showBasemap]);
 
   useEffect(() => {
     if (!ready || tab !== "map") return;
