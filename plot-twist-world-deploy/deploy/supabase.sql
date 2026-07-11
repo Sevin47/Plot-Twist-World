@@ -99,6 +99,46 @@ alter table profiles add column if not exists energy_at timestamptz not null def
 create index if not exists idx_profiles_last_seen on profiles(last_seen);
 -- backs repossess_stale_tiles()'s inactivity scan below
 
+-- ── territory: a player's fine-deed-grid interaction is gated to regions
+--    they've unlocked (see unlock_region / buy_unowned_tile below) — the
+--    same REGION_LEN=8 quadkey-prefix "region" (~150km) the client already
+--    uses for ownership-sync sharding, reused here as the unlock unit so no
+--    new geometry/distance logic is needed anywhere, client or server. ──
+create table if not exists unlocked_regions (
+  owner uuid not null references profiles(user_id) on delete cascade,
+  region text not null,
+  is_home boolean not null default false,
+  unlocked_at timestamptz not null default now(),
+  primary key (owner, region)
+);
+create index if not exists idx_unlocked_regions_owner on unlocked_regions(owner);
+
+-- one-time grandfathering: anyone who already owns tiles today keeps free
+-- access to every region they're already established in — this feature
+-- must never retroactively lock an existing player out of their own
+-- territory. Idempotent (on conflict do nothing), safe to re-run.
+insert into unlocked_regions (owner, region, is_home)
+select owner, left(qk, 8) as region, false
+from tiles
+where owner is not null
+group by owner, left(qk, 8)
+on conflict (owner, region) do nothing;
+
+-- mark each owner's single earliest-acquired region as home (only among
+-- rows this migration itself just inserted as non-home, so re-running
+-- never clobbers a home already chosen via real gameplay afterward)
+with earliest as (
+  select distinct on (owner) owner, left(qk, 8) as region
+  from tiles
+  where owner is not null
+  order by owner, updated_at asc
+)
+update unlocked_regions ur
+set is_home = true
+from earliest e
+where ur.owner = e.owner and ur.region = e.region
+  and not exists (select 1 from unlocked_regions where owner = e.owner and is_home = true);
+
 -- ── RLS: public read everywhere it matters, NO direct writes anywhere.
 --    All mutation happens through the security-definer functions below.
 --    (drop-then-create because CREATE POLICY has no IF NOT EXISTS — this
@@ -123,6 +163,11 @@ alter table bank_ledger enable row level security;
 drop policy if exists "read own bank_ledger" on bank_ledger;
 create policy "read own bank_ledger" on bank_ledger for select using (auth.uid() = recipient);
 grant select on bank_ledger to authenticated;
+
+alter table unlocked_regions enable row level security;
+drop policy if exists "read own unlocked_regions" on unlocked_regions;
+create policy "read own unlocked_regions" on unlocked_regions for select using (auth.uid() = owner);
+grant select on unlocked_regions to authenticated;
 
 -- ═════════════════════════════════════════════════════════════
 -- Internal helper: credit real elapsed-time rent onto a profile.
@@ -367,6 +412,50 @@ $$;
 revoke all on function claim_daily() from public;
 grant execute on function claim_daily() to authenticated;
 
+-- ── unlock_region: pays to extend a player's fine-deed-grid territory
+--    beyond their free home region (see buy_unowned_tile below for how home
+--    itself gets set, and the unlocked_regions table comment for why a
+--    "region" is just a REGION_LEN=8 quadkey prefix). ──
+create or replace function unlock_region(p_qk text)
+returns unlocked_regions
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_uid uuid := auth.uid();
+  v_region text := left(p_qk, 8);
+  v_cost bigint;
+  v_row unlocked_regions;
+begin
+  if v_uid is null then raise exception 'not authenticated'; end if;
+  perform accrue_rent(v_uid);
+
+  if exists (select 1 from unlocked_regions where owner = v_uid and region = v_region) then
+    raise exception 'already unlocked';
+  end if;
+
+  -- the free home region is excluded from this count, so the first PAID
+  -- unlock is exactly 1000, the second 2000, the third 4000, and so on
+  v_cost := round(1000 * power(2, (
+    select count(*) from unlocked_regions where owner = v_uid and is_home = false
+  )))::bigint;
+
+  if (select balance from profiles where user_id = v_uid) < v_cost then
+    raise exception 'insufficient balance';
+  end if;
+
+  update profiles set balance = balance - v_cost where user_id = v_uid;
+  insert into unlocked_regions (owner, region, is_home)
+  values (v_uid, v_region, false)
+  returning * into v_row;
+
+  return v_row;
+end;
+$$;
+revoke all on function unlock_region(text) from public;
+grant execute on function unlock_region(text) to authenticated;
+
 -- ── buy_unowned_tile: price/rarity are both server-decided, never client-supplied ──
 create or replace function buy_unowned_tile(p_qk text, p_cls text)
 returns tiles
@@ -380,6 +469,8 @@ declare
   v_roll numeric;
   v_rarity int;
   v_row tiles;
+  v_region text := left(p_qk, 8);
+  v_is_first_tile boolean;
 begin
   if v_uid is null then raise exception 'not authenticated'; end if;
   if not exists (select 1 from profiles where user_id = v_uid) then raise exception 'no profile'; end if;
@@ -399,6 +490,19 @@ begin
     raise exception 'no energy left — recharges 1/min, max 20';
   end if;
 
+  -- a player's very first tile anywhere is always allowed regardless of
+  -- unlocked territory — that purchase itself is what sets their free home
+  -- region (see the unlocked_regions upsert below). Every purchase after
+  -- that requires the target region to already be unlocked (see
+  -- unlock_region above); this is the actual anti-sprawl/locality lever —
+  -- energy only throttles rate, this throttles reach.
+  v_is_first_tile := not exists (select 1 from tiles where owner = v_uid);
+  if not v_is_first_tile and not exists (
+    select 1 from unlocked_regions where owner = v_uid and region = v_region
+  ) then
+    raise exception 'region not unlocked — travel here first';
+  end if;
+
   v_roll := random();
   v_rarity := case when v_roll < 0.02 then 3 when v_roll < 0.10 then 2 when v_roll < 0.30 then 1 else 0 end;
 
@@ -406,6 +510,12 @@ begin
   insert into tiles (qk, owner, cls, level, rarity, paid, updated_at)
   values (p_qk, v_uid, p_cls, 0, v_rarity, v_class.price, now())
   returning * into v_row;
+
+  if v_is_first_tile then
+    insert into unlocked_regions (owner, region, is_home)
+    values (v_uid, v_region, true)
+    on conflict (owner, region) do nothing;
+  end if;
 
   return v_row;
 exception

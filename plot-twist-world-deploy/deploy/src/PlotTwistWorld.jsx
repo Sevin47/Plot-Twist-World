@@ -691,6 +691,11 @@ function Game({ G, onExit }) {
   /* ── derived ── */
   const g = G.current;
   const ownMap = useRef(new Map());
+  // regions this player has paid (or bootstrapped) to unlock — gates the
+  // fine deed grid's interactivity/classification, NOT the basemap or
+  // preview grid, both of which stay fully visible everywhere regardless
+  const unlockedRegions = useRef(new Set());
+  const homeRegionRef = useRef(null);
   const rebuildOwn = useCallback(() => {
     ownMap.current = new Map(g.own.map((t) => [t.qk, t]));
     g.rps = g.own.reduce((s, t) => s + rentOf(t), 0);
@@ -793,6 +798,17 @@ function Game({ G, onExit }) {
         console.error("tiles fetch failed after retries", tilesErr);
       }
       rebuildOwn();
+
+      // territory: which regions this player can buy/interact with on the
+      // fine deed grid. A fetch failure here just leaves the set empty —
+      // worst case the fine grid reads as all-locked until the next sync,
+      // never a false "unlocked" that could bypass the server-side check.
+      const { data: regionRows } = await supabase
+        .from("unlocked_regions").select("region,is_home").eq("owner", g.uid);
+      for (const r of regionRows || []) {
+        unlockedRegions.current.add(r.region);
+        if (r.is_home) homeRegionRef.current = r.region;
+      }
 
       // silently pre-populate already-earned achievement flags so they
       // don't re-toast every login — checkAch()'s unlock() only toasts
@@ -1377,9 +1393,38 @@ function Game({ G, onExit }) {
     g.energyAt = Date.now();
     const r = data.rarity;
     g.own.push({ qk, l: data.level, r, cls, pd: data.paid });
+    // if this was the player's very first tile anywhere, the server just
+    // set it as their free home region (see buy_unowned_tile) — mirror
+    // that locally so it doesn't render as freshly-fogged before the next
+    // full resync. Harmless no-op for every later purchase (region is
+    // already unlocked, or the check above wouldn't have allowed it).
+    const region = regionOf(qk);
+    unlockedRegions.current.add(region);
+    if (!homeRegionRef.current) homeRegionRef.current = region;
     rebuildOwn(); checkAch(); dirty.current = true; save();
     setTimeout(() => setRoll({ qk, phase: "done", r }), reduced ? 50 : 900);
     if (r === 3) toast("Legendary deed!");
+  };
+
+  // mirrors unlock_region()'s pricing in supabase.sql exactly — display/
+  // disabled-state only, the RPC is what actually decides and charges.
+  // The free home region is excluded from the count, matching the server.
+  const nextUnlockCost = () => {
+    const paid = unlockedRegions.current.size - (homeRegionRef.current ? 1 : 0);
+    return 1000 * Math.pow(2, Math.max(0, paid));
+  };
+
+  const unlockRegion = async (qk) => {
+    const region = regionOf(qk);
+    if (unlockedRegions.current.has(region)) return;
+    const cost = nextUnlockCost();
+    if (g.bal < cost) return;
+    const { data, error } = await supabase.rpc("unlock_region", { p_qk: qk });
+    if (error || !data) { toast(error?.message || "Couldn't unlock that region — try again."); return; }
+    g.bal -= cost;
+    unlockedRegions.current.add(region);
+    dirty.current = true; save();
+    toast("New territory unlocked");
   };
 
   const buyListed = async (qk) => {
@@ -1629,18 +1674,31 @@ function Game({ G, onExit }) {
          when the viewport holds too many tiles */
       if (cnt <= 6500) {
         for (let ty = ty0; ty <= ty1; ty++) for (let tx = tx0; tx <= tx1; tx++) {
+          const px0 = ox + tx * tilePx, py0 = oy + ty * tilePx;
+          // territory check FIRST, before classification — this is the
+          // actual perf win (skips point-in-polygon + building-density
+          // sampling entirely for locked cells), not just a visual gate.
+          // Basemap/preview-grid exploration is untouched by this; only
+          // the tappable fine grid is gated. g.own.length === 0 means this
+          // player hasn't bought a first tile yet — buy_unowned_tile lets
+          // that happen anywhere unconditionally (it's what sets home), so
+          // nothing should read as fogged until after that first purchase.
+          if (g.own.length > 0 && !unlockedRegions.current.has(qkOf(tx, ty).slice(0, REGION_LEN))) {
+            ctx.fillStyle = hexA(C.ink, 0.62);
+            ctx.fillRect(px0, py0, tilePx, tilePx);
+            continue;
+          }
           const cc = classifyTxy(tx, ty);
           if (cc.c === "pending") continue; // no data yet — leave the raw basemap showing, no guessed color
-          const px = ox + tx * tilePx, py = oy + ty * tilePx;
           if (cc.c === "water") {
             // explicit, unmistakable water treatment — never leave it as
             // blank passthrough, which reads as "uncertain" rather than
             // "not for sale"
             ctx.fillStyle = hexA(CLS.water.color, 0.3);
-            ctx.fillRect(px, py, tilePx, tilePx);
+            ctx.fillRect(px0, py0, tilePx, tilePx);
           } else {
             ctx.fillStyle = hexA(CLS[cc.c].color, 0.34);
-            ctx.fillRect(px, py, tilePx, tilePx);
+            ctx.fillRect(px0, py0, tilePx, tilePx);
           }
         }
       }
@@ -1660,6 +1718,14 @@ function Game({ G, onExit }) {
         for (const [qk, rec] of Object.entries(reg.t)) {
           const [tx, ty] = txyOf(qk);
           if (tx < tx0 || tx > tx1 || ty < ty0 || ty > ty1) continue;
+          // same territory gate as the tint loop above — without this, any
+          // tile still sitting in the shared `tiles` table for this region
+          // (someone else's, or an orphaned owner=null row awaiting the
+          // decay sweep) would render its real ownership marker straight
+          // through the fog, defeating it visually. A player's own tiles
+          // are never affected — grandfathering/bootstrap guarantees their
+          // own regions are always unlocked.
+          if (g.own.length > 0 && rec.o !== g.uid && !unlockedRegions.current.has(regionOf(qk))) continue;
           const px = ox + tx * tilePx, py = oy + ty * tilePx;
           const mine = rec.o === g.uid;
           ctx.fillStyle = hexA(mine ? C.amber : CLS[classifyTxy(tx, ty).c].color, mine ? 0.28 : 0.3);
@@ -1955,6 +2021,13 @@ function Game({ G, onExit }) {
   const selMine = sel ? ownMap.current.get(sel) : undefined;
   const selInfo = sel ? classify(sel) : null;
   const selCls = selInfo ? selInfo.c : null;
+  // grandfathering/bootstrap guarantee any tile a player actually owns is
+  // always in an unlocked region, so this only ever gates unclaimed land.
+  // Before a player's first-ever purchase, buy_unowned_tile allows it
+  // anywhere unconditionally (that purchase is what sets home) — mirror
+  // that exemption here so a brand-new player sees their first claim as a
+  // normal buy, not an "unlock this region for ₲1000" prompt.
+  const selLocked = sel && g.own.length > 0 ? !unlockedRegions.current.has(regionOf(sel)) : false;
   const tilePxNow = cam.current.s / N;
 
   return (
@@ -2086,6 +2159,7 @@ function Game({ G, onExit }) {
                 )}
               </div>
               <div>energy {energyNow(g)}/{ENERGY_CAP} · raw {g.energy} @ +{ENERGY_REGEN_S}s ticks · next in {energySecsToNext(g)}s</div>
+              <div>territory: {unlockedRegions.current.size} region(s){homeRegionRef.current ? ` · home ${homeRegionRef.current}` : ""}{sel ? ` · sel ${regionOf(sel)} locked=${String(selLocked)}` : ""}</div>
               <div>fps {D.fps} · draw {D.avg}ms · max {D.max}ms</div>
               <div>tilePx {D.tilePx.toFixed(2)} · grid {String(D.gridOn)} · tiles {D.cnt}</div>
               <div>preview z{D.pz || 0} · {D.ptile.toFixed(1)}px · cells {D.pcnt}</div>
@@ -2139,19 +2213,30 @@ function Game({ G, onExit }) {
                 </div>
               )}
 
-              {!selRec && selCls === "water" && (
+              {selLocked && !(roll && roll.qk === sel) && (
+                <div>
+                  <div className="mb-3 text-sm leading-relaxed" style={{ color: C.dim }}>
+                    This region hasn't been scouted yet — unlock it to claim land here.
+                  </div>
+                  <Btn full onClick={() => unlockRegion(sel)} disabled={g.bal < nextUnlockCost()}>
+                    {g.bal < nextUnlockCost() ? "Not enough ₲" : `Unlock region — ₲${fmt(nextUnlockCost())}`}
+                  </Btn>
+                </div>
+              )}
+
+              {!selLocked && !selRec && selCls === "water" && (
                 <div className="pb-1 text-sm" style={{ color: C.dim }}>
                   International waters — not for sale. The fish hold the deed.
                 </div>
               )}
 
-              {!selRec && selCls === "pending" && (
+              {!selLocked && !selRec && selCls === "pending" && (
                 <div className="pb-1 text-sm" style={{ color: C.dim }}>
                   Still surveying this spot — hang tight a moment, real map data is on its way.
                 </div>
               )}
 
-              {!selRec && CLS[selCls].sale !== false && !(roll && roll.qk === sel) && (
+              {!selLocked && !selRec && CLS[selCls].sale !== false && !(roll && roll.qk === sel) && (
                 <div>
                   <div className="mb-3 flex items-center justify-between text-sm" style={mono}>
                     <span style={{ color: C.dim }}>Unclaimed · deed price</span>
@@ -2163,7 +2248,7 @@ function Game({ G, onExit }) {
                 </div>
               )}
 
-              {selRec && !selMine && !(roll && roll.qk === sel && roll.phase === "spin") && (
+              {!selLocked && selRec && !selMine && !(roll && roll.qk === sel && roll.phase === "spin") && (
                 <div>
                   <div className="mb-2 flex items-center gap-2">
                     <Chip color={RAR[selRec.r || 0].color}>{RAR[selRec.r || 0].name}</Chip>
@@ -2316,6 +2401,32 @@ function Game({ G, onExit }) {
               )}
               <div className="pt10 mt-2" style={{ ...mono, color: C.dim }}>
                 Your name appears publicly on tiles you own, market listings and the leaderboard.
+              </div>
+            </div>
+
+            <div className="mb-3 rounded-xl p-3" style={cardSty}>
+              <div className="mb-2"><Eyebrow>Territory · {unlockedRegions.current.size} region{unlockedRegions.current.size === 1 ? "" : "s"}</Eyebrow></div>
+              {unlockedRegions.current.size === 0 ? (
+                <div className="text-xs" style={{ color: C.dim }}>Buy your first tile anywhere to set your home region — it's free.</div>
+              ) : (
+                [...unlockedRegions.current]
+                  .sort((a, b) => (b === homeRegionRef.current ? 1 : 0) - (a === homeRegionRef.current ? 1 : 0))
+                  .map((region) => {
+                    const [wx, wy] = centerOfQk(region);
+                    const lat = wyToLat(wy), lon = wx * 360 - 180;
+                    const { n } = nearestCity(lat, lon);
+                    const isHome = region === homeRegionRef.current;
+                    return (
+                      <button key={region} className="flex w-full items-center justify-between py-1.5 text-left focus-visible:outline focus-visible:outline-2" style={{ outlineColor: C.amber }}
+                        onClick={() => { setTab("map"); flyTo(lat, lon); }}>
+                        <span className="text-sm font-bold" style={display}>{n || "Unnamed territory"}</span>
+                        {isHome && <Chip color={C.amber}>Home</Chip>}
+                      </button>
+                    );
+                  })
+              )}
+              <div className="pt10 mt-2" style={{ ...display, color: C.dim }}>
+                The fine deed grid only shows/interacts within unlocked territory — next region costs ₲{fmt(nextUnlockCost())}, doubling each time.
               </div>
             </div>
 
