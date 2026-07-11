@@ -152,6 +152,13 @@ const RAR = [
 const LVL = ["Vacant tile", "Cottage", "Duplex", "Apartments", "Tower"];
 const MAX_LVL = 4;
 
+// Mirrors regen_energy()/buy_unowned_tile's energy gate in supabase.sql —
+// display-only, the server is the sole authority on the real value. Gates
+// claiming NEW unowned land specifically (not trading or upgrading), so
+// wealth/click-speed alone can't sprawl across the whole map instantly.
+const ENERGY_CAP = 20;
+const ENERGY_REGEN_S = 60;
+
 const ADS = [
   { brand: "Bolder Boulders", line: "Rocks, but bolder." },
   { brand: "Grandma's Artisanal Gravel", line: "Chew responsibly." },
@@ -297,6 +304,17 @@ function fmt(n) {
 // e.g. 0.018 down to a meaningless "0.0", so sub-1 values get 3 decimals.
 const fmt1 = (n) => (n < 1 ? n.toFixed(3) : n < 100 ? n.toFixed(1) : fmt(n));
 
+// Client-side projection of regen_energy()'s lazy-regen formula in
+// supabase.sql — purely for a smoothly-ticking meter between server syncs
+// (same spirit as the 250ms local rent tick below). Never gates anything
+// itself; the server re-derives and enforces the real value independently.
+const energyNow = (g) => Math.min(ENERGY_CAP, g.energy + Math.floor((Date.now() - g.energyAt) / 1000 / ENERGY_REGEN_S));
+const energySecsToNext = (g) => {
+  if (energyNow(g) >= ENERGY_CAP) return 0;
+  const sinceLastTick = ((Date.now() - g.energyAt) / 1000) % ENERGY_REGEN_S;
+  return Math.ceil(ENERGY_REGEN_S - sinceLastTick);
+};
+
 /* ── in-memory game state ──────────────────────────────────────
    No localStorage save anymore: `profiles`/`tiles` in Postgres (via the
    RPCs in supabase.sql, keyed by auth.uid()) are the only source of truth.
@@ -314,6 +332,8 @@ const gameFromProfile = (uid, profile) => ({
   streak: profile.streak || 0,
   boostUntil: profile.boost_until ? new Date(profile.boost_until).getTime() : 0,
   lastSeen: profile.last_seen ? new Date(profile.last_seen).getTime() : Date.now(),
+  energy: profile.energy ?? ENERGY_CAP,
+  energyAt: profile.energy_at ? new Date(profile.energy_at).getTime() : Date.now(),
   rps: 0,
 });
 
@@ -704,10 +724,16 @@ function Game({ G, onExit }) {
   const collectBank = useCallback(async () => {
     const { data, error } = await supabase.rpc("claim_bank_ledger");
     if (error || !data || !data.length) return;
-    const { total, count } = data[0];
-    if (!count) return;
-    if (!g.ach.trader) { g.ach.trader = 1; toast("Unlocked — Trader"); }
-    toast(`+₲${fmt(total)} from ${count} tile sale${count === 1 ? "" : "s"}`);
+    const { sale_total, sale_count, repo_total, repo_count } = data[0];
+    if (sale_count) {
+      if (!g.ach.trader) { g.ach.trader = 1; toast("Unlocked — Trader"); }
+      toast(`+₲${fmt(sale_total)} from ${sale_count} tile sale${sale_count === 1 ? "" : "s"}`);
+    }
+    if (repo_count) {
+      // a tile going stale isn't "trading" — kept separate from the sale
+      // toast/achievement above on purpose
+      toast(`+₲${fmt(repo_total)} refunded — ${repo_count} tile${repo_count === 1 ? "" : "s"} repossessed for inactivity (60+ days)`);
+    }
   }, [g, toast]);
 
   // Reconciles the optimistic local tick against the real server balance —
@@ -718,6 +744,8 @@ function Game({ G, onExit }) {
     if (error || !data) return;
     g.bal = Number(data.balance);
     g.boostUntil = data.boost_until ? new Date(data.boost_until).getTime() : 0;
+    if (data.energy != null) g.energy = data.energy;
+    if (data.energy_at) g.energyAt = new Date(data.energy_at).getTime();
     return data;
   }, [g]);
 
@@ -1329,6 +1357,14 @@ function Game({ G, onExit }) {
     if (CLS[cls].sale === false) return;
     const price = CLS[cls].price;
     if (g.bal < price) return;
+    // claiming NEW unowned land costs energy (see buy_unowned_tile in
+    // supabase.sql) — trading/upgrading tiles you already have doesn't.
+    // Client-side check just saves a round-trip; the server enforces this
+    // independently and for real.
+    if (energyNow(g) < 1) {
+      toast(`Out of energy — recharges 1/min (max ${ENERGY_CAP}), next in ${energySecsToNext(g)}s`);
+      return;
+    }
     setRoll({ qk, phase: "spin" });
     const { data, error } = await supabase.rpc("buy_unowned_tile", { p_qk: qk, p_cls: cls });
     if (error || !data) {
@@ -1337,6 +1373,8 @@ function Game({ G, onExit }) {
       return;
     }
     g.bal -= price;
+    g.energy = Math.max(0, energyNow(g) - 1);
+    g.energyAt = Date.now();
     const r = data.rarity;
     g.own.push({ qk, l: data.level, r, cls, pd: data.paid });
     rebuildOwn(); checkAch(); dirty.current = true; save();
@@ -1892,7 +1930,7 @@ function Game({ G, onExit }) {
       longtasks: D.long, longtaskMaxMs: D.longMax, errors: D.errs, lastInput: D.lastEvt,
       // full per-tile breakdown — this is what actually shows whether a
       // tile's district/rent is wrong, and if so what cls it's stuck at
-      owned: g.own.length, rps: g.rps,
+      owned: g.own.length, rps: g.rps, energy: energyNow(g), energyCap: ENERGY_CAP, energySecsToNext: energySecsToNext(g),
       ownTiles: g.own.map((t) => ({ qk: t.qk, cls: t.cls, rarity: t.r, level: t.l, rps: CLS[t.cls] ? rentOf(t) : "UNKNOWN_CLS" })),
     }, null, 1);
     try { navigator.clipboard.writeText(data); toast("Diagnostics copied"); }
@@ -1933,6 +1971,14 @@ function Game({ G, onExit }) {
           <div className="flex items-baseline gap-2">
             <div className="text-2xl font-bold" style={{ ...mono, color: C.amber, fontVariantNumeric: "tabular-nums", textShadow: `0 0 18px ${C.glow}` }}>₲{fmt(g.bal)}</div>
             <div className="text-xs" style={{ ...mono, color: C.dim }}>+{fmt1(g.rps * (boostOn ? 2 : 1))}/s{boostOn ? " ⚡" : ""}</div>
+          </div>
+          <div className="mt-0.5 flex items-center gap-1.5" title="Energy — spent claiming unowned land, recharges 1/min">
+            <span className="pt10 font-bold" style={{ ...mono, color: energyNow(g) > 0 ? C.amber : "#F08A8A", fontVariantNumeric: "tabular-nums" }}>
+              ⚡{energyNow(g)}/{ENERGY_CAP}
+            </span>
+            {energyNow(g) < ENERGY_CAP && (
+              <span className="pt10" style={{ ...mono, color: C.dim }}>+1 in {energySecsToNext(g)}s</span>
+            )}
           </div>
         </div>
         {boostOn ? (
@@ -2039,6 +2085,7 @@ function Game({ G, onExit }) {
                   <span style={{ color: "#F08A8A" }}> · {g.own.filter((t) => !CLS[t.cls] || CLS[t.cls].rps === 0).length} zero-rent!</span>
                 )}
               </div>
+              <div>energy {energyNow(g)}/{ENERGY_CAP} · raw {g.energy} @ +{ENERGY_REGEN_S}s ticks · next in {energySecsToNext(g)}s</div>
               <div>fps {D.fps} · draw {D.avg}ms · max {D.max}ms</div>
               <div>tilePx {D.tilePx.toFixed(2)} · grid {String(D.gridOn)} · tiles {D.cnt}</div>
               <div>preview z{D.pz || 0} · {D.ptile.toFixed(1)}px · cells {D.pcnt}</div>
