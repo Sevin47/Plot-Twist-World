@@ -1719,15 +1719,29 @@ function Game({ G, onExit }) {
         }
       }
     } else {
-      /* territory outlines: at this zoom we no longer tint every visible
-         cell by district (that was a lot of visual noise disconnected from
-         what's actually yours, and expensive to classify over a huge
-         viewport) — just the real basemap, plus a glowing outline around
-         each unlocked region's actual boundary. A region is a REGION_LEN=8
-         quadkey tile, i.e. already a plain rectangle, so no geometry work
-         (turf/polygon tracing) is needed to draw it. */
       D.pz = previewLevelFor(s); D.pcnt = 0; D.ptile = 0;
 
+      // your deeds as glowing dots, layered on top regardless of preview state
+      ctx.fillStyle = C.amber;
+      let i = 0;
+      for (const t of g.own) {
+        if (i++ > 800) break;
+        const [wx, wy] = centerOfQk(t.qk);
+        const px = ox + wx * s, py = oy + wy * s;
+        if (px < -4 || py < -4 || px > w + 4 || py > h + 4) continue;
+        ctx.beginPath(); ctx.arc(px, py, Math.max(1.6, tilePx * 2), 0, 7); ctx.fill();
+      }
+    }
+
+    /* territory outlines: a glowing outline around each unlocked region's
+       actual boundary, at EVERY zoom — not just the wide preview level.
+       Drawn unconditionally here (outside the gridOn/preview branches)
+       so the same "wall of light" marking the edge of your unlocked
+       territory is visible whether you're looking at the whole planet or
+       standing right on the boundary at deed-grid zoom. A region is a
+       REGION_LEN=8 quadkey tile, i.e. already a plain rectangle, so this
+       needs no polygon geometry — just a coordinate transform. */
+    {
       const REGION_N = 1 << REGION_LEN;
       ctx.lineWidth = 2;
       ctx.strokeStyle = C.amber;
@@ -1741,20 +1755,11 @@ function Game({ G, onExit }) {
         ctx.strokeRect(rpx0, rpy0, rpx1 - rpx0, rpy1 - rpy0);
       }
       // canvas shadow/lineWidth state persists across draw calls — reset or
-      // it silently leaks onto whatever's drawn next this frame
+      // it silently leaks onto whatever's drawn next this frame (the
+      // selection outline right below explicitly sets its own, but don't
+      // rely on that — reset here regardless)
       ctx.shadowBlur = 0;
       ctx.lineWidth = 1;
-
-      // your deeds as glowing dots, layered on top regardless of preview state
-      ctx.fillStyle = C.amber;
-      let i = 0;
-      for (const t of g.own) {
-        if (i++ > 800) break;
-        const [wx, wy] = centerOfQk(t.qk);
-        const px = ox + wx * s, py = oy + wy * s;
-        if (px < -4 || py < -4 || px > w + 4 || py > h + 4) continue;
-        ctx.beginPath(); ctx.arc(px, py, Math.max(1.6, tilePx * 2), 0, 7); ctx.fill();
-      }
     }
 
     if (sel) {
