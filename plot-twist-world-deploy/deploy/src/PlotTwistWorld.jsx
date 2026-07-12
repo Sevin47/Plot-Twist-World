@@ -673,6 +673,7 @@ function Game({ G, onExit }) {
   const [showBasemap, setShowBasemap] = useState(true);
   const [dbg, setDbg] = useState(() => typeof location !== "undefined" && location.hash.includes("debug"));
   const [market, setMarket] = useState({ loading: false, rows: null });
+  const [flips, setFlips] = useState({ loading: false, rows: null });
   const [lb, setLb] = useState({ loading: false, rows: null });
   const [nameDraft, setNameDraft] = useState(G.current.name || "");
   const [priceDraft, setPriceDraft] = useState("");
@@ -1369,7 +1370,25 @@ function Game({ G, onExit }) {
     if (error) { setMarket({ loading: false, rows: [] }); return; }
     setMarket({ loading: false, rows: (data || []).map((r) => ({ qk: r.qk, cls: r.cls, p: r.list_price, n: r.profiles?.username })) });
   }, []);
-  useEffect(() => { if (tab === "market") refreshMarket(); }, [tab, refreshMarket]);
+
+  // Flipped tiles (owner null, flip_price set — see flip_tile/buy_flipped_tile
+  // in supabase.sql) are otherwise only discoverable by literally panning to
+  // that exact tile on the map, same as raw unclaimed land — which means
+  // most would probably never sell. Surfaced here as their own section so a
+  // flip is actually likely to find a buyer. Deliberately doesn't fetch/show
+  // who flipped it (keeps this query simple — flip_royalty_to is a second FK
+  // into profiles and embedding it would need its own qualified hint, same
+  // issue list_price's owner embed hit above).
+  const refreshFlips = useCallback(async () => {
+    setFlips({ loading: true, rows: null });
+    const { data, error } = await supabase
+      .from("tiles").select("qk,cls,flip_price")
+      .not("flip_price", "is", null).order("updated_at", { ascending: false }).limit(40);
+    if (error) { setFlips({ loading: false, rows: [] }); return; }
+    setFlips({ loading: false, rows: (data || []).map((r) => ({ qk: r.qk, cls: r.cls, p: r.flip_price })) });
+  }, []);
+
+  useEffect(() => { if (tab === "market") { refreshMarket(); refreshFlips(); } }, [tab, refreshMarket, refreshFlips]);
 
   /* ── leaderboard: real joined data (see the `leaderboard` view) ── */
   const refreshLB = useCallback(async () => {
@@ -2485,7 +2504,7 @@ function Game({ G, onExit }) {
           <div className="absolute inset-0 overflow-y-auto p-4">
             <div className="mb-3 flex items-center justify-between">
               <Eyebrow>Open market · player listings</Eyebrow>
-              <button onClick={refreshMarket} className="pt11 focus-visible:outline focus-visible:outline-2" style={{ ...mono, color: C.amber, outlineColor: C.amber }}>Refresh</button>
+              <button onClick={() => { refreshMarket(); refreshFlips(); }} className="pt11 focus-visible:outline focus-visible:outline-2" style={{ ...mono, color: C.amber, outlineColor: C.amber }}>Refresh</button>
             </div>
             {market.loading && <div className="pt11 py-2" style={{ ...mono, color: C.dim }}>Checking the register…</div>}
             {market.rows && market.rows.length === 0 && (
@@ -2511,8 +2530,36 @@ function Game({ G, onExit }) {
                 </div>
               </div>
             ))}
-            <div className="pt10 mt-2 text-center" style={{ ...mono, color: C.dim }}>
+            <div className="pt10 mt-2 mb-4 text-center" style={{ ...mono, color: C.dim }}>
               Listings are public to all players. Sales pay the seller even while they're offline.
+            </div>
+
+            <Eyebrow>Flipped · fresh deeds available</Eyebrow>
+            <div className="mb-3" />
+            {flips.loading && <div className="pt11 py-2" style={{ ...mono, color: C.dim }}>Checking flipped deeds…</div>}
+            {flips.rows && flips.rows.length === 0 && (
+              <div className="rounded-xl p-6 text-center text-sm" style={{ background: C.panel, color: C.dim }}>
+                No flipped tiles available right now.
+              </div>
+            )}
+            {flips.rows && flips.rows.map((e) => (
+              <div key={e.qk} className="mb-2 flex items-center justify-between rounded-xl p-3 transition-transform duration-150 hover:-translate-y-0.5" style={cardSty}>
+                <button className="min-w-0 text-left focus-visible:outline focus-visible:outline-2" style={{ outlineColor: C.amber }}
+                  onClick={() => { setTab("map"); setSel(e.qk); const [wx, wy] = centerOfQk(e.qk); const { w, h } = size.current; const s = N * 16; cam.current = { s, x: w / 2 - wx * s, y: h / 2 - wy * s, init: true }; ensureRegion(regionOf(e.qk), true); }}>
+                  <div className="flex items-center gap-2">
+                    <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: (CLS[e.cls] || CLS.land).color, boxShadow: `0 0 6px ${(CLS[e.cls] || CLS.land).color}99` }} />
+                    <span className="truncate text-sm font-bold" style={mono}>{coordLabel(e.qk)}</span>
+                  </div>
+                  <div className="pt11 mt-0.5" style={{ ...mono, color: C.dim }}>fresh deed · rarity rolled on purchase</div>
+                </button>
+                <div className="flex shrink-0 items-center gap-2">
+                  <span className="text-sm font-bold" style={{ ...mono, color: RAR[1].color }}>₲{fmt(e.p)}</span>
+                  <Btn small onClick={async () => { await ensureRegion(regionOf(e.qk), true); buyFlipped(e.qk); }} disabled={g.bal < e.p}>Buy</Btn>
+                </div>
+              </div>
+            ))}
+            <div className="pt10 mt-2 text-center" style={{ ...mono, color: C.dim }}>
+              Flipped tiles reset to Vacant with a freshly-rolled rarity — the previous owner gets a cut when one sells.
             </div>
           </div>
         )}
