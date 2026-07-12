@@ -674,6 +674,8 @@ function Game({ G, onExit, startFresh }) {
   // spot. Doesn't affect returning players — startFresh is only ever true
   // right after claim_username creates a brand-new profile row.
   const [pickingHome, setPickingHome] = useState(!!startFresh);
+  const [homeBusy, setHomeBusy] = useState(false);
+  const [homeErr, setHomeErr] = useState("");
   const [ready, setReady] = useState(false);
   const [tab, setTab] = useState("map");
   const [sel, setSel] = useState(null);          // quadkey or null
@@ -2200,17 +2202,47 @@ function Game({ G, onExit, startFresh }) {
 
   // Reads whatever world coordinate is currently centered under the fixed
   // pin (the map pans underneath it, not the other way around — same
-  // pattern as most map-based location pickers) and lands normal gameplay
-  // there at a real gameplay zoom via the existing flyTo helper, instead of
-  // wherever they happened to leave the camera while picking.
-  const confirmStartLocation = () => {
+  // pattern as most map-based location pickers), resolves REAL
+  // classification for just that one spot (prefetch is fully off during
+  // picking — see pickingHome gates elsewhere — so nothing is cached yet;
+  // this is one deliberate fetch at the moment of commitment, not a return
+  // to scanning the viewport), then hands off to the existing buyUnowned
+  // flow so it's a real purchase with the normal roll/rarity animation,
+  // not a separate purchase path to keep in sync.
+  const confirmStartLocation = async () => {
     const { x, y, s } = cam.current;
     const { w, h } = size.current;
     if (!w || !h || s <= 0) return;
     const wx = (w / 2 - x) / s, wy = (h / 2 - y) / s;
+    const tx = Math.max(0, Math.min(N - 1, Math.floor(wx * N)));
+    const ty = Math.max(0, Math.min(N - 1, Math.floor(wy * N)));
+    const qk = qkOf(tx, ty);
+
+    setHomeBusy(true); setHomeErr("");
+    const vn = 1 << VECTOR_Z;
+    getVectorTile(VECTOR_Z, Math.floor(wx * vn), Math.floor(wy * vn));
+    let cc = classifyTxy(tx, ty);
+    for (let i = 0; i < 20 && cc.c === "pending"; i++) {
+      await new Promise((r) => setTimeout(r, 150));
+      cc = classifyTxy(tx, ty);
+    }
+    if (cc.c === "pending") {
+      setHomeBusy(false);
+      setHomeErr("Couldn't verify this spot — check your connection and try again.");
+      return;
+    }
+    if (CLS[cc.c].sale === false) {
+      setHomeBusy(false);
+      setHomeErr("That's open water — pan to a spot on land and try again.");
+      return;
+    }
+
     const lat = wyToLat(wy), lon = wx * 360 - 180;
     setPickingHome(false);
+    setSel(qk);
     flyTo(lat, lon, 16);
+    buyUnowned(qk);
+    setHomeBusy(false);
   };
 
   if (pickingHome) {
@@ -2220,7 +2252,7 @@ function Game({ G, onExit, startFresh }) {
           <Eyebrow>Welcome, {g.name}</Eyebrow>
           <div className="mt-1 text-base font-bold" style={display}>Pick your starting area</div>
           <div className="pt10 mx-auto mt-1 max-w-xs leading-relaxed" style={{ ...mono, color: C.dim }}>
-            Pan the map to find your home turf, then drop your pin. You can explore and claim land anywhere in the world once you're in.
+            Pan the map to find your home turf, then drop your pin — that's the tile you'll claim first. You can explore and claim more anywhere in the world once you're in.
           </div>
         </div>
         <div className="relative flex-1 overflow-hidden">
@@ -2254,7 +2286,8 @@ function Game({ G, onExit, startFresh }) {
           </div>
         </div>
         <div className="relative z-10 p-4" style={{ borderTop: `1px solid ${C.hair}`, background: C.panel }}>
-          <Btn full onClick={confirmStartLocation}>Start here</Btn>
+          {homeErr && <div className="pt10 mb-2 text-center" style={{ ...mono, color: "#F08A8A" }}>{homeErr}</div>}
+          <Btn full onClick={confirmStartLocation} disabled={homeBusy}>{homeBusy ? "Surveying…" : "Claim this spot"}</Btn>
         </div>
       </div>
     );
