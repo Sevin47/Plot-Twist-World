@@ -26,14 +26,18 @@ create table if not exists tile_class (
 -- the old numbers let income snowball into buying the whole world in an
 -- afternoon; the limiting factor should be how fast someone can click buy,
 -- not how fast money compounds. MUST match CLS in PlotTwistWorld.jsx exactly.
+-- rps cut a further 25% (multiply by 0.75) on top of the tuning above —
+-- lengthens per-tile payback from ~45-50min to ~60-67min to slow the whole
+-- economy down and stretch out how many sessions it takes to reach any
+-- given net worth, a deliberate retention lever, not a bug.
 insert into tile_class (cls, price, rps, sellable) values
-  ('downtown',   800, 0.3,   true),
-  ('waterfront', 500, 0.18,  true),
-  ('urban',      400, 0.14,  true),
-  ('coast',      200, 0.07,  true),
-  ('suburbs',    150, 0.05,  true),
-  ('rural',      50,  0.018, true),
-  ('water',      50,  0.012, false)
+  ('downtown',   800, 0.225,  true),
+  ('waterfront', 500, 0.135,  true),
+  ('urban',      400, 0.105,  true),
+  ('coast',      200, 0.0525, true),
+  ('suburbs',    150, 0.0375, true),
+  ('rural',      50,  0.0135, true),
+  ('water',      50,  0.009,  false)
 on conflict (cls) do update set price = excluded.price, rps = excluded.rps, sellable = excluded.sellable;
 
 -- ── accounts ──
@@ -44,9 +48,14 @@ create table if not exists profiles (
   streak int not null default 0,
   last_daily date,
   boost_until timestamptz,
+  boost_ready_at timestamptz,
   last_seen timestamptz not null default now(),
   created_at timestamptz not null default now()
 );
+-- Adds boost_ready_at to a profiles table created before the boost cooldown
+-- existed — create table if not exists above is a no-op on an already-live
+-- table, so this is what actually lands the column on a running database.
+alter table profiles add column if not exists boost_ready_at timestamptz;
 
 -- ── the world ──
 -- owner references profiles (not auth.users directly) so PostgREST can
@@ -361,7 +370,12 @@ grant execute on function sync_rent() to authenticated;
 
 -- ── activate_boost: 2x rent for 5 minutes (fake "watch an ad" reward).
 --    Server-side because boost_until directly doubles accrue_rent's output —
---    a client-set value would let anyone grant themselves permanent 2x. ──
+--    a client-set value would let anyone grant themselves permanent 2x.
+--    Gated by boost_ready_at (30 min between activations = 5 min active +
+--    25 min cooldown) so it's a thing to catch, not a timer to babysit —
+--    without a cooldown a rational player would re-click it every 5 minutes
+--    to avoid leaving free rent on the table. Checked server-side for the
+--    same reason boost_until is: a client-only cooldown is not a cooldown. ──
 create or replace function activate_boost()
 returns profiles
 language plpgsql
@@ -374,9 +388,16 @@ declare
 begin
   if v_uid is null then raise exception 'not authenticated'; end if;
   perform accrue_rent(v_uid);
-  update profiles set boost_until = now() + interval '5 minutes' where user_id = v_uid
-  returning * into v_row;
+  select * into v_row from profiles where user_id = v_uid;
   if not found then raise exception 'no profile'; end if;
+  if v_row.boost_ready_at is not null and v_row.boost_ready_at > now() then
+    raise exception 'boost on cooldown for % more seconds', ceil(extract(epoch from (v_row.boost_ready_at - now())));
+  end if;
+  update profiles
+    set boost_until = now() + interval '5 minutes',
+        boost_ready_at = now() + interval '30 minutes'
+    where user_id = v_uid
+  returning * into v_row;
   return v_row;
 end;
 $$;
