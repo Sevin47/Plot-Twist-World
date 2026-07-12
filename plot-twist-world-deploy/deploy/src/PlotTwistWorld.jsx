@@ -761,6 +761,26 @@ function Game({ G, onExit }) {
     return data;
   }, [g]);
 
+  // Re-pulls the real owned-tile list straight from the server, independent
+  // of viewport/tab (unlike ensureRegion's per-prefix reconcile, which only
+  // touches whatever region the map camera happens to be looking at). Used
+  // to catch up a tab/device that's been sitting backgrounded while another
+  // device bought/sold/upgraded tiles on the same account — see the
+  // regainFocus effect below. Deliberately no retry loop (unlike the boot
+  // fetch this mirrors): a failure here just means the next resync trigger
+  // tries again, not a real player watching an empty portfolio.
+  const refreshOwnedTiles = useCallback(async () => {
+    const { data, error } = await supabase
+      .from("tiles").select("qk,cls,level,rarity,paid,list_price,prestige").eq("owner", g.uid);
+    if (error || !data) return;
+    g.own = data.map((t) => ({
+      qk: t.qk, cls: t.cls, l: t.level, r: t.rarity, pd: t.paid, pr: t.prestige || 0,
+      ...(t.list_price != null ? { p: t.list_price } : {}),
+    }));
+    rebuildOwn();
+    dirty.current = true;
+  }, [g, rebuildOwn]);
+
   /* ── boot: pull real state from Supabase (profile was already fetched to
      get here; this fills in tiles + reconciles rent/streak) ── */
   useEffect(() => {
@@ -1997,6 +2017,35 @@ function Game({ G, onExit }) {
     document.addEventListener("visibilitychange", onVis);
     return () => document.removeEventListener("visibilitychange", onVis);
   }, []);
+
+  // Resync the instant this tab/device is looked at again, instead of
+  // waiting for the next ~20s interval tick (which browsers throttle hard
+  // in a backgrounded tab anyway). This is what actually fixes "looked
+  // stale/mismatched after switching devices" — the server was always
+  // right, the display just hadn't caught up yet. visibilitychange covers
+  // phones/tab-switches; focus covers alt-tabbing between two desktop
+  // windows that are both technically "visible". Both can fire for the
+  // same switch, so they're deduped against a short cooldown.
+  useEffect(() => {
+    if (!ready) return;
+    let last = 0;
+    const resync = () => {
+      const now = Date.now();
+      if (now - last < 2000) return;
+      last = now;
+      syncRent();
+      refreshOwnedTiles();
+      collectBank();
+      if (tab === "map") for (const q of prefixesFor(cam.current, size.current)) ensureRegion(q, true);
+    };
+    const onVis = () => { if (!document.hidden) resync(); };
+    document.addEventListener("visibilitychange", onVis);
+    window.addEventListener("focus", resync);
+    return () => {
+      document.removeEventListener("visibilitychange", onVis);
+      window.removeEventListener("focus", resync);
+    };
+  }, [ready, tab, syncRent, refreshOwnedTiles, collectBank, ensureRegion]);
 
   useEffect(() => {
     const onE = (e) => {
