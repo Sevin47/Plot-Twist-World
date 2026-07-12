@@ -510,6 +510,11 @@ export default function PlotTwistWorld() {
   const [nameErr, setNameErr] = useState("");
   const [nameBusy, setNameBusy] = useState(false);
   const [inGame, setInGame] = useState(true);
+  // Set true only by claimName() below — that's the one moment we know for
+  // certain this is a brand-new account (a profile row didn't exist yet),
+  // as opposed to loadProfile() restoring an existing session. Seeds Game's
+  // internal pickingHome state on mount; Game owns the rest of that flow.
+  const [freshAccount, setFreshAccount] = useState(false);
   const G = useRef(null);
 
   useEffect(() => {
@@ -572,6 +577,7 @@ export default function PlotTwistWorld() {
       const { data, error } = await supabase.rpc("claim_username", { p_username: nameDraft.trim() });
       if (error) throw error;
       G.current = gameFromProfile(session.user.id, data);
+      setFreshAccount(true);
       setInGame(true);
       setAuthState("ready");
     } catch (e) {
@@ -641,7 +647,7 @@ export default function PlotTwistWorld() {
     );
   }
 
-  return <Game key={session.user.id} G={G} onExit={() => setInGame(false)} />;
+  return <Game key={session.user.id} G={G} onExit={() => setInGame(false)} startFresh={freshAccount} />;
 }
 
 function Modal({ children, onClose }) {
@@ -659,8 +665,15 @@ function Modal({ children, onClose }) {
    GAME
    ═════════════════════════════════════════════════════════════ */
 
-function Game({ G, onExit }) {
+function Game({ G, onExit, startFresh }) {
   const [, force] = useReducer((x) => x + 1, 0);
+  // Brand-new accounts (startFresh, seeded once from the mount-time prop —
+  // see claimName in PlotTwistWorld) start on a basemap-only "pick your
+  // starting area" screen instead of the normal HUD: no fine grid, no
+  // preview mosaic, no vector-tile fetches at all until they confirm a
+  // spot. Doesn't affect returning players — startFresh is only ever true
+  // right after claim_username creates a brand-new profile row.
+  const [pickingHome, setPickingHome] = useState(!!startFresh);
   const [ready, setReady] = useState(false);
   const [tab, setTab] = useState("map");
   const [sel, setSel] = useState(null);          // quadkey or null
@@ -1191,7 +1204,7 @@ function Game({ G, onExit }) {
        tens of thousands. This mode mirrors the render loop's own preview
        cell math and requests exactly what it will actually sample. */
   const prefetchVectorTiles = useCallback(() => {
-    if (!PROTOMAPS_KEY) return;
+    if (!PROTOMAPS_KEY || pickingHome) return;
     const { s, x: ox, y: oy } = cam.current;
     const { w, h } = size.current;
     if (!w || !h || s <= 0) return;
@@ -1209,8 +1222,23 @@ function Game({ G, onExit }) {
       const vy1 = Math.min(vn - 1, Math.floor((h - oy + margin) / vtile));
       const cnt = Math.max(0, vx1 - vx0 + 1) * Math.max(0, vy1 - vy0 + 1);
       if (cnt > cap) return;
+      // Mirror the render loop's fog gate (line ~1772): the fine grid is
+      // only ever painted inside unlocked territory (or unconditionally
+      // before a player's first-ever purchase — see that comment), but
+      // prefetch didn't know that and kept fetching+decoding+caching real
+      // vector data for whatever the camera happened to be panned over,
+      // regardless of whether any of it could ever be drawn. qkOf is fixed
+      // to Z (fine-parcel zoom); shifting these VECTOR_Z-scale coords left
+      // by (Z - VECTOR_Z) aligns them to the same bit-space before slicing
+      // out the REGION_LEN-digit prefix — the trailing zero digits from the
+      // shift don't affect the region prefix since REGION_LEN < VECTOR_Z.
+      const gated = g.own.length > 0;
+      const shift = Z - VECTOR_Z;
       for (let ty = vy0; ty <= vy1; ty++) {
-        for (let tx = vx0; tx <= vx1; tx++) getVectorTile(VECTOR_Z, tx, ty);
+        for (let tx = vx0; tx <= vx1; tx++) {
+          if (gated && !unlockedRegions.current.has(qkOf(tx << shift, ty << shift).slice(0, REGION_LEN))) continue;
+          getVectorTile(VECTOR_Z, tx, ty);
+        }
       }
       return;
     }
@@ -1239,7 +1267,7 @@ function Game({ G, onExit }) {
         getVectorTile(VECTOR_Z, vtx, vty);
       }
     }
-  }, [getVectorTile]);
+  }, [getVectorTile, g, pickingHome]);
 
   const clsCache = useRef(new Map());
   const classifyTxy = useCallback((tx, ty) => {
@@ -1748,6 +1776,14 @@ function Game({ G, onExit }) {
     D.s = s; D.tilePx = tilePx; D.gridOn = gridOn; D.cnt = 0; D.pcnt = 0; D.ptile = 0;
     D.tileOk = tileStats.current.ok; D.tileFail = tileStats.current.fail;
 
+    // The new-player start-location picker reuses this same draw() for its
+    // basemap + pan/zoom (see pickingHome below) but must never touch the
+    // fine grid, preview mosaic, or vector-tile pipeline at all — that's
+    // the whole performance point of a basemap-only picker. Scale bar and
+    // attribution below stay unconditional either way (CARTO/OSM require
+    // the attribution regardless of what else is drawn — see Hard-won
+    // lessons #10 in HANDOFF.md).
+    if (!pickingHome) {
     if (gridOn) {
       const tx0 = Math.max(0, Math.floor(-ox / tilePx));
       const ty0 = Math.max(0, Math.floor(-oy / tilePx));
@@ -1888,6 +1924,7 @@ function Game({ G, onExit }) {
       ctx.strokeRect(px + 0.5, py + 0.5, tilePx - 1, tilePx - 1);
       ctx.lineWidth = 1;
     }
+    } // !pickingHome
 
     /* scale bar (real scale at screen-centre latitude) */
     const midWy = (h / 2 - oy) / s;
@@ -1917,7 +1954,7 @@ function Game({ G, onExit }) {
       ctx.fillText("\u00A9 OpenStreetMap \u00A9 CARTO", w - 8, h - 6);
       ctx.textAlign = "left";
     }
-  }, [g, sel, classifyTxy, reduced, getTile, showBasemap]);
+  }, [g, sel, classifyTxy, reduced, getTile, showBasemap, pickingHome]);
 
   useEffect(() => {
     if (!ready || tab !== "map") return;
@@ -2160,6 +2197,68 @@ function Game({ G, onExit }) {
   // normal buy, not an "unlock this region for ₲1000" prompt.
   const selLocked = sel && g.own.length > 0 ? !unlockedRegions.current.has(regionOf(sel)) : false;
   const tilePxNow = cam.current.s / N;
+
+  // Reads whatever world coordinate is currently centered under the fixed
+  // pin (the map pans underneath it, not the other way around — same
+  // pattern as most map-based location pickers) and lands normal gameplay
+  // there at a real gameplay zoom via the existing flyTo helper, instead of
+  // wherever they happened to leave the camera while picking.
+  const confirmStartLocation = () => {
+    const { x, y, s } = cam.current;
+    const { w, h } = size.current;
+    if (!w || !h || s <= 0) return;
+    const wx = (w / 2 - x) / s, wy = (h / 2 - y) / s;
+    const lat = wyToLat(wy), lon = wx * 360 - 180;
+    setPickingHome(false);
+    flyTo(lat, lon, 16);
+  };
+
+  if (pickingHome) {
+    return (
+      <div className="relative flex h-screen w-full flex-col overflow-hidden select-none" style={{ background: C.ink, color: C.text }}>
+        <div className="relative z-10 px-4 pb-3 pt-4 text-center" style={{ borderBottom: `1px solid ${C.hair}`, background: C.panel, backgroundImage: `linear-gradient(180deg, #16233a 0%, ${C.panel} 100%)`, boxShadow: C.shadowSm }}>
+          <Eyebrow>Welcome, {g.name}</Eyebrow>
+          <div className="mt-1 text-base font-bold" style={display}>Pick your starting area</div>
+          <div className="pt10 mx-auto mt-1 max-w-xs leading-relaxed" style={{ ...mono, color: C.dim }}>
+            Pan the map to find your home turf, then drop your pin. You can explore and claim land anywhere in the world once you're in.
+          </div>
+        </div>
+        <div className="relative flex-1 overflow-hidden">
+          <div ref={wrapRef} className="absolute inset-0">
+            <canvas
+              ref={canvasRef}
+              className="h-full w-full touch-none"
+              onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp} onPointerCancel={onUp} onLostPointerCapture={onLost}
+            />
+            {/* fixed center pin — you pan the map under it, not the pin over the map */}
+            <div className="pointer-events-none absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-full">
+              <svg width="30" height="40" viewBox="0 0 30 40" style={{ filter: "drop-shadow(0 2px 6px rgba(0,0,0,0.5))" }}>
+                <path d="M15 0C6.7 0 0 6.7 0 15c0 10.5 15 25 15 25s15-14.5 15-25C30 6.7 23.3 0 15 0z" fill={C.amber} />
+                <circle cx="15" cy="15" r="6" fill={C.ink} />
+              </svg>
+            </div>
+            <div className="absolute right-3 top-3 flex flex-col overflow-hidden rounded-2xl"
+              style={{ background: `${C.panel}d9`, border: `1px solid ${C.hairLit}`, boxShadow: C.shadowMd, ...blur(14) }}>
+              {[
+                [IconPlus, () => zoomAt(size.current.w / 2, size.current.h / 2, cam.current.s * 1.6), "Zoom in"],
+                [IconMinus, () => zoomAt(size.current.w / 2, size.current.h / 2, cam.current.s * 0.62), "Zoom out"],
+                [IconGlobe, fitWorld, "Fit whole world"],
+              ].map(([IconC, fn, label], i) => (
+                <button key={label} onClick={fn} title={label} aria-label={label}
+                  className="flex h-10 w-10 items-center justify-center transition-colors hover:bg-white/[0.06] active:scale-90 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[-2px]"
+                  style={{ color: C.text, borderTop: i ? `1px solid ${C.hair}` : "none", outlineColor: C.amber }}>
+                  <IconC size={16} />
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+        <div className="relative z-10 p-4" style={{ borderTop: `1px solid ${C.hair}`, background: C.panel }}>
+          <Btn full onClick={confirmStartLocation}>Start here</Btn>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="relative flex h-screen w-full flex-col overflow-hidden select-none" style={{ background: C.ink, color: C.text }}>
