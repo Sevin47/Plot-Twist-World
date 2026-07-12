@@ -131,13 +131,13 @@ const inputSty = { background: `${C.ink}b3`, color: C.text, border: `1px solid $
 // supabase.sql exactly — the server is authoritative for real transactions,
 // this copy only drives client-side display (rentOf/upCost/netWorth).
 const CLS = {
-  downtown:   { name: "Downtown",   price: 800, rps: 0.3,   color: "#F0784E" },
-  waterfront: { name: "Waterfront", price: 500, rps: 0.18,  color: "#3FB8AF" },
-  urban:      { name: "Urban",      price: 400, rps: 0.14,  color: "#9B7BF5" },
-  coast:      { name: "Coast",      price: 200, rps: 0.07,  color: "#4FA3C7" },
-  suburbs:    { name: "Suburbs",    price: 150, rps: 0.05,  color: "#6E8F7C" },
-  rural:      { name: "Rural",      price: 50,  rps: 0.018, color: "#B08D57" },
-  water:      { name: "Open water", price: 50,  rps: 0.012, color: "#4A7FA5", sale: false },
+  downtown:   { name: "Downtown",   price: 800, rps: 0.225,  color: "#F0784E" },
+  waterfront: { name: "Waterfront", price: 500, rps: 0.135,  color: "#3FB8AF" },
+  urban:      { name: "Urban",      price: 400, rps: 0.105,  color: "#9B7BF5" },
+  coast:      { name: "Coast",      price: 200, rps: 0.0525, color: "#4FA3C7" },
+  suburbs:    { name: "Suburbs",    price: 150, rps: 0.0375, color: "#6E8F7C" },
+  rural:      { name: "Rural",      price: 50,  rps: 0.0135, color: "#B08D57" },
+  water:      { name: "Open water", price: 50,  rps: 0.009,  color: "#4A7FA5", sale: false },
   land:       { name: "Inland",     price: 400, rps: 1.6,   color: "#7BA88A" }, // legacy saves only
   pending:    { name: "Surveying…", price: 0,   rps: 0,     color: "#5A6472", sale: false }, // real vector data hasn't loaded for this spot yet
 };
@@ -336,6 +336,7 @@ const gameFromProfile = (uid, profile) => ({
   ach: {},
   streak: profile.streak || 0,
   boostUntil: profile.boost_until ? new Date(profile.boost_until).getTime() : 0,
+  boostReadyAt: profile.boost_ready_at ? new Date(profile.boost_ready_at).getTime() : 0,
   lastSeen: profile.last_seen ? new Date(profile.last_seen).getTime() : Date.now(),
   energy: profile.energy ?? ENERGY_CAP,
   energyAt: profile.energy_at ? new Date(profile.energy_at).getTime() : Date.now(),
@@ -754,6 +755,7 @@ function Game({ G, onExit }) {
     if (error || !data) return;
     g.bal = Number(data.balance);
     g.boostUntil = data.boost_until ? new Date(data.boost_until).getTime() : 0;
+    g.boostReadyAt = data.boost_ready_at ? new Date(data.boost_ready_at).getTime() : 0;
     if (data.energy != null) g.energy = data.energy;
     if (data.energy_at) g.energyAt = new Date(data.energy_at).getTime();
     return data;
@@ -1476,8 +1478,13 @@ function Game({ G, onExit }) {
 
   const claimBoost = async () => {
     const { data, error } = await supabase.rpc("activate_boost");
-    if (error || !data) { toast("Couldn't activate boost — try again."); return; }
+    if (error || !data) {
+      toast(/cooldown/i.test(error?.message || "") ? "Boost still on cooldown." : "Couldn't activate boost — try again.");
+      setModal(null);
+      return;
+    }
     g.boostUntil = data.boost_until ? new Date(data.boost_until).getTime() : 0;
+    g.boostReadyAt = data.boost_ready_at ? new Date(data.boost_ready_at).getTime() : 0;
     dirty.current = true; save(); setModal(null);
     toast("2× rent for 5 minutes");
   };
@@ -2011,6 +2018,8 @@ function Game({ G, onExit }) {
 
   const boostLeft = Math.max(0, g.boostUntil - Date.now());
   const boostOn = boostLeft > 0;
+  const boostCooldownLeft = Math.max(0, (g.boostReadyAt || 0) - Date.now());
+  const boostOnCooldown = !boostOn && boostCooldownLeft > 0;
   const mmss = (ms) => { const s = Math.ceil(ms / 1000); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`; };
 
   const selRec = sel ? recOf(sel) : undefined;
@@ -2054,6 +2063,10 @@ function Game({ G, onExit }) {
         {boostOn ? (
           <div className="pt-anim-glowPulse rounded-xl px-3 py-2 text-xs font-bold" style={{ ...mono, color: C.amber, border: `1px solid ${C.amber}66`, background: `${C.amber}14`, fontVariantNumeric: "tabular-nums" }}>
             2× {mmss(boostLeft)}
+          </div>
+        ) : boostOnCooldown ? (
+          <div className="rounded-xl px-3 py-2 text-xs font-bold" style={{ ...mono, color: C.dim, border: `1px solid ${C.hair}`, fontVariantNumeric: "tabular-nums" }} title="Boost recharges every 30 minutes">
+            ⚡ {mmss(boostCooldownLeft)}
           </div>
         ) : (
           <Btn small onClick={() => setModal({ kind: "ad", ad: ADS[(Math.random() * ADS.length) | 0] })}>⚡ 2× boost</Btn>
