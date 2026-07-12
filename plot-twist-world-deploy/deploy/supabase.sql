@@ -76,6 +76,14 @@ create index if not exists idx_tiles_listed on tiles(updated_at desc) where list
 alter table tiles add column if not exists flip_price bigint;
 alter table tiles add column if not exists flip_royalty_to uuid references profiles(user_id) on delete set null;
 create index if not exists idx_tiles_flipped on tiles(updated_at desc) where flip_price is not null;
+-- flip_royalty_to is a SECOND foreign key from tiles into profiles
+-- (alongside owner) — this makes any unqualified PostgREST embed like
+-- `profiles(username)` on a tiles query ambiguous ("more than one
+-- relationship was found") and the whole query gets rejected, not just
+-- the embed. The client's tiles queries use the FK-qualified form
+-- `profiles!tiles_owner_fkey(username)` for exactly this reason — if you
+-- add another FK from tiles to profiles later, audit every tiles query
+-- with a profiles(...) embed in PlotTwistWorld.jsx, not just the new one.
 -- "flip" — see flip_tile()/buy_flipped_tile() below: the alternative to
 -- redevelop_tile's self-prestige loop. Instead of resetting a maxed tile
 -- and keeping it, the owner tears it down and releases it back onto the

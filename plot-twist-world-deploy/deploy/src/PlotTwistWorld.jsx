@@ -1298,7 +1298,11 @@ function Game({ G, onExit }) {
     setSyncing(true);
     const { data, error } = await supabase
       .from("tiles")
-      .select("qk,owner,cls,rarity,level,paid,list_price,flip_price,prestige,profiles(username)")
+      // profiles!tiles_owner_fkey — tiles now has two FKs into profiles
+      // (owner, flip_royalty_to as of the flip feature), so PostgREST can no
+      // longer infer which relationship an unqualified `profiles(username)`
+      // embed means and rejects the whole query. Must stay qualified.
+      .select("qk,owner,cls,rarity,level,paid,list_price,flip_price,prestige,profiles!tiles_owner_fkey(username)")
       .like("qk", `${prefix}%`);
     const t = {};
     if (error) {
@@ -1358,7 +1362,9 @@ function Game({ G, onExit }) {
   const refreshMarket = useCallback(async () => {
     setMarket({ loading: true, rows: null });
     const { data, error } = await supabase
-      .from("tiles").select("qk,cls,list_price,profiles(username)")
+      // see the matching comment in ensureRegion — must stay FK-qualified
+      // now that tiles has two relationships into profiles.
+      .from("tiles").select("qk,cls,list_price,profiles!tiles_owner_fkey(username)")
       .not("list_price", "is", null).order("updated_at", { ascending: false }).limit(40);
     if (error) { setMarket({ loading: false, rows: [] }); return; }
     setMarket({ loading: false, rows: (data || []).map((r) => ({ qk: r.qk, cls: r.cls, p: r.list_price, n: r.profiles?.username })) });
