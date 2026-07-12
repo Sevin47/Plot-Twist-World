@@ -1278,7 +1278,7 @@ function Game({ G, onExit }) {
     setSyncing(true);
     const { data, error } = await supabase
       .from("tiles")
-      .select("qk,owner,cls,rarity,level,paid,list_price,prestige,profiles(username)")
+      .select("qk,owner,cls,rarity,level,paid,list_price,flip_price,prestige,profiles(username)")
       .like("qk", `${prefix}%`);
     const t = {};
     if (!error) {
@@ -1286,6 +1286,7 @@ function Game({ G, onExit }) {
         t[row.qk] = {
           o: row.owner, n: row.profiles?.username, r: row.rarity, l: row.level, pr: row.prestige || 0,
           cls: row.cls, pd: row.paid, ...(row.list_price != null ? { p: row.list_price } : {}),
+          ...(row.flip_price != null ? { fp: row.flip_price } : {}),
         };
       }
     }
@@ -1462,6 +1463,37 @@ function Game({ G, onExit }) {
     if (!g.ach.redevelop1) { g.ach.redevelop1 = 1; toast("Unlocked — Redeveloper"); }
     rebuildOwn(); dirty.current = true; save();
     toast(`Redeveloped — ★${t.pr} · +${t.pr * 25}% rent permanently`);
+  };
+
+  // The alternative to redevelop(): cash out a maxed tile instead of
+  // prestiging it in place. Ownership is relinquished (see flip_tile in
+  // supabase.sql) so the local region cache is patched directly to reflect
+  // that immediately, same as the region-resync path would eventually show.
+  const flip = async (qk) => {
+    const t = ownMap.current.get(qk);
+    if (!t || t.l < MAX_LVL) return;
+    const { data, error } = await supabase.rpc("flip_tile", { p_qk: qk });
+    if (error || !data) { toast(error?.message || "Couldn't flip."); return; }
+    g.own.splice(g.own.findIndex((x) => x.qk === qk), 1);
+    const r = regions.current.get(regionOf(qk));
+    if (r) r.t[qk] = { o: null, r: 0, l: 0, pr: 0, cls: t.cls, pd: 0, fp: data.flip_price };
+    rebuildOwn(); dirty.current = true; save();
+    toast(`Flipped — listed for ₲${fmt(data.flip_price)}, you get a cut when it sells`);
+  };
+
+  const buyFlipped = async (qk) => {
+    if (needName()) return;
+    const rec = recOf(qk);
+    if (!rec) { toast("Tile not synced yet — one moment, then try again."); return; }
+    if (rec.fp == null || rec.o != null) return;
+    const price = rec.fp;
+    if (g.bal < price) return;
+    const { data, error } = await supabase.rpc("buy_flipped_tile", { p_qk: qk, p_expected_price: price });
+    if (error || !data) { toast(error?.message || "Listing changed — trade cancelled."); return; }
+    g.bal -= price;
+    g.own.push({ qk, l: data.level, r: data.rarity, pr: data.prestige || 0, cls: data.cls, pd: data.paid });
+    rebuildOwn(); checkAch(); dirty.current = true; save();
+    toast("Fresh deed acquired — flipped tile");
   };
 
   const abandon = async (qk) => {
@@ -1737,6 +1769,13 @@ function Game({ G, onExit }) {
           if (tilePx > 13) drawBuilding(ctx, px, py, tilePx, rec.l || 0, tx * 7 + ty);
           if (rec.p) {
             ctx.fillStyle = C.amber;
+            ctx.beginPath(); ctx.arc(px + tilePx - 4, py + 4, 2.6, 0, 7); ctx.fill();
+          }
+          if (rec.fp) {
+            // flipped tile awaiting a buyer — distinct color from the amber
+            // "listed by a player" dot above so the two are tellable apart
+            // at a glance while panning.
+            ctx.fillStyle = RAR[1].color;
             ctx.beginPath(); ctx.arc(px + tilePx - 4, py + 4, 2.6, 0, 7); ctx.fill();
           }
         }
@@ -2258,7 +2297,19 @@ function Game({ G, onExit }) {
                 </div>
               )}
 
-              {!selLocked && selRec && !selMine && !(roll && roll.qk === sel && roll.phase === "spin") && (
+              {!selLocked && selRec && selRec.o == null && selRec.fp != null && !selMine && !(roll && roll.qk === sel && roll.phase === "spin") && (
+                <div>
+                  <div className="mb-3 flex items-center justify-between text-sm" style={mono}>
+                    <span style={{ color: C.dim }}>Flipped · fresh deed available</span>
+                    <span className="font-bold">₲{fmt(selRec.fp)}</span>
+                  </div>
+                  <Btn full onClick={() => buyFlipped(sel)} disabled={g.bal < selRec.fp}>
+                    {g.bal < selRec.fp ? "Not enough ₲" : `Buy — ₲${fmt(selRec.fp)}`}
+                  </Btn>
+                </div>
+              )}
+
+              {!selLocked && selRec && selRec.o != null && !selMine && !(roll && roll.qk === sel && roll.phase === "spin") && (
                 <div>
                   <div className="mb-2 flex items-center gap-2">
                     <Chip color={RAR[selRec.r || 0].color}>{RAR[selRec.r || 0].name}</Chip>
@@ -2284,23 +2335,34 @@ function Game({ G, onExit }) {
                     <span className="text-xs" style={{ ...mono, color: C.amber }}>₲{fmt1(rentOf(selMine))}/s</span>
                     {selMine.p && <Chip color={C.amber}>Listed ₲{fmt(selMine.p)}</Chip>}
                   </div>
-                  <div className="flex gap-2">
-                    {selMine.l < MAX_LVL ? (
+                  {selMine.l < MAX_LVL ? (
+                    <div className="flex gap-2">
                       <Btn full onClick={() => upgrade(sel)} disabled={g.bal < upCost(selMine)}>
                         Build {LVL[selMine.l + 1]} — ₲{fmt(upCost(selMine))}
                       </Btn>
-                    ) : (
-                      <Btn full onClick={() => redevelop(sel)}>
-                        Redevelop — reset to Vacant, +25% rent permanently
-                      </Btn>
-                    )}
-                    {selMine.p ? (
-                      <Btn tone="ghost" onClick={() => unlist(sel)}>Unlist</Btn>
-                    ) : (
-                      <Btn tone="ghost" onClick={() => { setPriceDraft(String(Math.round((selMine.pd || CLS[selCls].price) * 1.5))); setModal({ kind: "list", qk: sel }); }}>List…</Btn>
-                    )}
-                    <Btn tone="danger" onClick={() => abandon(sel)}>50%</Btn>
-                  </div>
+                      {selMine.p ? (
+                        <Btn tone="ghost" onClick={() => unlist(sel)}>Unlist</Btn>
+                      ) : (
+                        <Btn tone="ghost" onClick={() => { setPriceDraft(String(Math.round((selMine.pd || CLS[selCls].price) * 1.5))); setModal({ kind: "list", qk: sel }); }}>List…</Btn>
+                      )}
+                      <Btn tone="danger" onClick={() => abandon(sel)}>50%</Btn>
+                    </div>
+                  ) : (
+                    <div className="flex flex-col gap-2">
+                      <div className="flex gap-2">
+                        <Btn full onClick={() => redevelop(sel)}>Redevelop — +25% rent, keep tile</Btn>
+                        <Btn full onClick={() => flip(sel)}>Flip — cash out ₲{fmt(Math.round((selMine.pd || 0) * 1.5))}</Btn>
+                      </div>
+                      <div className="flex gap-2">
+                        {selMine.p ? (
+                          <Btn tone="ghost" onClick={() => unlist(sel)}>Unlist</Btn>
+                        ) : (
+                          <Btn tone="ghost" onClick={() => { setPriceDraft(String(Math.round((selMine.pd || CLS[selCls].price) * 1.5))); setModal({ kind: "list", qk: sel }); }}>List…</Btn>
+                        )}
+                        <Btn tone="danger" onClick={() => abandon(sel)}>50%</Btn>
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
             </div>
@@ -2334,7 +2396,10 @@ function Game({ G, onExit }) {
                     {t.l < MAX_LVL ? (
                       <Btn small onClick={() => upgrade(t.qk)} disabled={g.bal < upCost(t)}>₲{fmt(upCost(t))}</Btn>
                     ) : (
-                      <Btn small onClick={() => redevelop(t.qk)}>Redevelop</Btn>
+                      <>
+                        <Btn small onClick={() => redevelop(t.qk)}>Redevelop</Btn>
+                        <Btn small onClick={() => flip(t.qk)}>Flip</Btn>
+                      </>
                     )}
                     {t.p ? (
                       <Btn small tone="ghost" onClick={() => unlist(t.qk)}>Unlist</Btn>

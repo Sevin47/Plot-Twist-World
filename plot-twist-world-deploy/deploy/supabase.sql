@@ -72,6 +72,17 @@ create table if not exists tiles (
 );
 create index if not exists idx_tiles_owner on tiles(owner);
 create index if not exists idx_tiles_listed on tiles(updated_at desc) where list_price is not null;
+
+alter table tiles add column if not exists flip_price bigint;
+alter table tiles add column if not exists flip_royalty_to uuid references profiles(user_id) on delete set null;
+create index if not exists idx_tiles_flipped on tiles(updated_at desc) where flip_price is not null;
+-- "flip" — see flip_tile()/buy_flipped_tile() below: the alternative to
+-- redevelop_tile's self-prestige loop. Instead of resetting a maxed tile
+-- and keeping it, the owner tears it down and releases it back onto the
+-- open market (owner set to null) at an auto-computed price, and gets a
+-- fixed royalty cut whenever someone else buys it. Mutually exclusive with
+-- prestige per cycle — a tile is owned-and-building, prestiging-in-place,
+-- or released-and-flipped, never more than one of those at once.
 -- text_pattern_ops so `qk like 'prefix%'` (region-shard lookups) can use an
 -- index scan regardless of the database's default collation
 create index if not exists idx_tiles_qk_pattern on tiles(qk text_pattern_ops);
@@ -100,10 +111,12 @@ create index if not exists idx_bank_ledger_recipient on bank_ledger(recipient) w
 --    claims (see repossess_stale_tiles / regen_energy / buy_unowned_tile
 --    below). Additive only — safe to re-run against a live database. ──
 alter table bank_ledger add column if not exists kind text not null default 'sale';
--- distinguishes "someone bought your listing" from "a tile was repossessed
--- for inactivity" in the one shared notification pipe (claim_bank_ledger);
--- no CHECK constraint — RLS already blocks any insert except through the
--- security-definer functions below, which are the only two writers.
+-- distinguishes "someone bought your listing" ('sale'), "a tile was
+-- repossessed for inactivity" ('repossession'), and "your flipped tile
+-- sold" ('flip', see buy_flipped_tile) in the one shared notification pipe
+-- (claim_bank_ledger); no CHECK constraint — RLS already blocks any insert
+-- except through the security-definer functions below, which are the only
+-- writers.
 
 alter table profiles add column if not exists energy int not null default 20;
 alter table profiles add column if not exists energy_at timestamptz not null default now();
@@ -721,6 +734,107 @@ $$;
 revoke all on function redevelop_tile(text) from public;
 grant execute on function redevelop_tile(text) to authenticated;
 
+-- ── flip_tile: cash out a maxed-out (level 4) tile instead of prestiging
+--    it. Tears the building down, wipes rarity/prestige, and releases the
+--    tile (owner -> null) at an auto-computed asking price of 1.5x total
+--    invested (tiles.paid, which upgrade_tile already accumulates) — see
+--    buy_flipped_tile below for the other half of this trade. ──
+create or replace function flip_tile(p_qk text)
+returns tiles
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_uid uuid := auth.uid();
+  v_tile tiles;
+  v_price bigint;
+begin
+  if v_uid is null then raise exception 'not authenticated'; end if;
+  perform accrue_rent(v_uid);
+
+  select * into v_tile from tiles where qk = p_qk and owner = v_uid for update;
+  if not found then raise exception 'tile not found or not yours'; end if;
+  if v_tile.level < 4 then raise exception 'not fully built yet'; end if;
+
+  v_price := round(v_tile.paid * 1.5);
+
+  update tiles
+    set owner = null, level = 0, rarity = 0, prestige = 0, paid = 0,
+        list_price = null, flip_price = v_price, flip_royalty_to = v_uid,
+        updated_at = now()
+  where qk = p_qk
+  returning * into v_tile;
+
+  return v_tile;
+end;
+$$;
+revoke all on function flip_tile(text) from public;
+grant execute on function flip_tile(text) to authenticated;
+
+-- ── buy_flipped_tile: buy a tile released via flip_tile. Pays a fixed 28%
+--    royalty to whoever flipped it (bank_ledger 'flip' entry, same "paid
+--    while you were away" pipe as a normal sale via claim_bank_ledger); the
+--    remaining 72% is a deliberate sink, same as buy_unowned_tile — the
+--    buyer is paying a premium for an already-classified, pre-cleared tile,
+--    not funding the previous owner 1:1. Energy-free and not region-gated,
+--    same as buy_listed_tile — this is a trade, not a land grab. The buyer
+--    gets a freshly-rolled deed (matches "starts over" framing), not the
+--    flipper's old rarity. ──
+create or replace function buy_flipped_tile(p_qk text, p_expected_price bigint)
+returns tiles
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_uid uuid := auth.uid();
+  v_tile tiles;
+  v_royalty bigint;
+  v_roll numeric;
+  v_rarity int;
+  v_buyer_name text;
+begin
+  if v_uid is null then raise exception 'not authenticated'; end if;
+  if not exists (select 1 from profiles where user_id = v_uid) then raise exception 'no profile'; end if;
+  perform accrue_rent(v_uid);
+
+  select * into v_tile from tiles where qk = p_qk for update;
+  if not found then raise exception 'tile not found'; end if;
+  if v_tile.owner is not null then raise exception 'no longer available'; end if;
+  if v_tile.flip_price is null or v_tile.flip_price <> p_expected_price then
+    raise exception 'listing changed';
+  end if;
+  if v_tile.flip_royalty_to = v_uid then raise exception 'cannot buy back your own flip'; end if;
+  if (select balance from profiles where user_id = v_uid) < p_expected_price then
+    raise exception 'insufficient balance';
+  end if;
+
+  v_royalty := round(p_expected_price * 0.28);
+  v_roll := random();
+  v_rarity := case when v_roll < 0.02 then 3 when v_roll < 0.10 then 2 when v_roll < 0.30 then 1 else 0 end;
+  select username into v_buyer_name from profiles where user_id = v_uid;
+
+  update profiles set balance = balance - p_expected_price where user_id = v_uid;
+  if v_tile.flip_royalty_to is not null then
+    update profiles set balance = balance + v_royalty where user_id = v_tile.flip_royalty_to;
+    insert into bank_ledger (recipient, amount, from_username, qk, kind)
+    values (v_tile.flip_royalty_to, v_royalty, v_buyer_name, p_qk, 'flip');
+  end if;
+
+  update tiles
+    set owner = v_uid, level = 0, rarity = v_rarity,
+        paid = p_expected_price, flip_price = null, flip_royalty_to = null,
+        updated_at = now()
+  where qk = p_qk
+  returning * into v_tile;
+
+  return v_tile;
+end;
+$$;
+revoke all on function buy_flipped_tile(text, bigint) from public;
+grant execute on function buy_flipped_tile(text, bigint) to authenticated;
+
 -- ── abandon_tile: 50% refund, matching the client's current rule ──
 create or replace function abandon_tile(p_qk text)
 returns void
@@ -768,8 +882,12 @@ declare
   v_repo_count int;
 begin
   if v_uid is null then raise exception 'not authenticated'; end if;
-  select coalesce(sum(amount) filter (where kind = 'sale'), 0),
-         coalesce(sum((kind = 'sale')::int), 0),
+  -- 'flip' royalty payouts are bucketed into the sale total/count here too
+  -- (a flip is, from the flipper's side, functionally a sale — they just
+  -- got a cut instead of the full price) so they surface in the same
+  -- "while you were away, N sales earned ₲X" notification without a new UI.
+  select coalesce(sum(amount) filter (where kind in ('sale', 'flip')), 0),
+         coalesce(sum((kind in ('sale', 'flip'))::int), 0),
          coalesce(sum(amount) filter (where kind = 'repossession'), 0),
          coalesce(sum((kind = 'repossession')::int), 0)
   into v_sale_total, v_sale_count, v_repo_total, v_repo_count
