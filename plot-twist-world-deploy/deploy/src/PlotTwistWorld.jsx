@@ -1390,13 +1390,23 @@ function Game({ G, onExit, startFresh }) {
   };
 
   /* ── market: just a live query over tiles.list_price, no separate index ── */
+  // Builds a PostgREST `.or()` filter matching any of the player's
+  // currently-unlocked regions — keeps the Market/Flip tabs scoped to
+  // territory actually reachable, the same boundary the map's fog-of-war
+  // and fine-grid prefetch already enforce visually (see the matching
+  // server-side check in buy_listed_tile/buy_flipped_tile — this is a
+  // convenience filter for what gets shown, not the real enforcement).
+  const regionOrFilter = () => [...unlockedRegions.current].map((r) => `qk.like.${r}%`).join(",");
+
   const refreshMarket = useCallback(async () => {
     setMarket({ loading: true, rows: null });
+    const filter = regionOrFilter();
+    if (!filter) { setMarket({ loading: false, rows: [] }); return; }
     const { data, error } = await supabase
       // see the matching comment in ensureRegion — must stay FK-qualified
       // now that tiles has two relationships into profiles.
       .from("tiles").select("qk,cls,list_price,profiles!tiles_owner_fkey(username)")
-      .not("list_price", "is", null).order("updated_at", { ascending: false }).limit(40);
+      .not("list_price", "is", null).or(filter).order("updated_at", { ascending: false }).limit(40);
     if (error) { setMarket({ loading: false, rows: [] }); return; }
     setMarket({ loading: false, rows: (data || []).map((r) => ({ qk: r.qk, cls: r.cls, p: r.list_price, n: r.profiles?.username })) });
   }, []);
@@ -1411,9 +1421,11 @@ function Game({ G, onExit, startFresh }) {
   // issue list_price's owner embed hit above).
   const refreshFlips = useCallback(async () => {
     setFlips({ loading: true, rows: null });
+    const filter = regionOrFilter();
+    if (!filter) { setFlips({ loading: false, rows: [] }); return; }
     const { data, error } = await supabase
       .from("tiles").select("qk,cls,flip_price")
-      .not("flip_price", "is", null).order("updated_at", { ascending: false }).limit(40);
+      .not("flip_price", "is", null).or(filter).order("updated_at", { ascending: false }).limit(40);
     if (error) { setFlips({ loading: false, rows: [] }); return; }
     setFlips({ loading: false, rows: (data || []).map((r) => ({ qk: r.qk, cls: r.cls, p: r.flip_price })) });
   }, []);
@@ -2657,7 +2669,7 @@ function Game({ G, onExit, startFresh }) {
             {market.loading && <div className="pt11 py-2" style={{ ...mono, color: C.dim }}>Checking the register…</div>}
             {market.rows && market.rows.length === 0 && (
               <div className="rounded-xl p-6 text-center text-sm" style={{ background: C.panel, color: C.dim }}>
-                Nothing listed right now. List one of your tiles and set the market.
+                Nothing listed in your unlocked territory right now. List one of your tiles, or unlock a new region to trade there too.
               </div>
             )}
             {market.rows && market.rows.map((e) => (
@@ -2679,7 +2691,7 @@ function Game({ G, onExit, startFresh }) {
               </div>
             ))}
             <div className="pt10 mt-2 mb-4 text-center" style={{ ...mono, color: C.dim }}>
-              Listings are public to all players. Sales pay the seller even while they're offline.
+              Only shows listings in territory you've unlocked. Sales pay the seller even while they're offline.
             </div>
 
             <Eyebrow>Flipped · fresh deeds available</Eyebrow>
@@ -2687,7 +2699,7 @@ function Game({ G, onExit, startFresh }) {
             {flips.loading && <div className="pt11 py-2" style={{ ...mono, color: C.dim }}>Checking flipped deeds…</div>}
             {flips.rows && flips.rows.length === 0 && (
               <div className="rounded-xl p-6 text-center text-sm" style={{ background: C.panel, color: C.dim }}>
-                No flipped tiles available right now.
+                No flipped tiles available in your unlocked territory right now.
               </div>
             )}
             {flips.rows && flips.rows.map((e) => (
@@ -2707,7 +2719,7 @@ function Game({ G, onExit, startFresh }) {
               </div>
             ))}
             <div className="pt10 mt-2 text-center" style={{ ...mono, color: C.dim }}>
-              Flipped tiles reset to Vacant with a freshly-rolled rarity — the previous owner gets a cut when one sells.
+              Only shows flips in territory you've unlocked. They reset to Vacant with a freshly-rolled rarity — the previous owner gets a cut when one sells.
             </div>
           </div>
         )}

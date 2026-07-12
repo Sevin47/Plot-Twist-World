@@ -596,6 +596,8 @@ declare
   v_tile tiles;
   v_seller uuid;
   v_buyer_name text;
+  v_region text := left(p_qk, 8);
+  v_is_first_tile boolean;
 begin
   if v_uid is null then raise exception 'not authenticated'; end if;
   if not exists (select 1 from profiles where user_id = v_uid) then raise exception 'no profile'; end if;
@@ -611,6 +613,18 @@ begin
     raise exception 'insufficient balance';
   end if;
 
+  -- Trading is now region-gated the same as claiming new land (see
+  -- buy_unowned_tile's identical check/bootstrap-exemption pattern) — the
+  -- Market tab only ever queries/shows listings inside regions the buyer
+  -- has unlocked, so this is enforcement of a rule the client already
+  -- follows, not a new restriction a normal client should ever hit.
+  v_is_first_tile := not exists (select 1 from tiles where owner = v_uid);
+  if not v_is_first_tile and not exists (
+    select 1 from unlocked_regions where owner = v_uid and region = v_region
+  ) then
+    raise exception 'region not unlocked — travel here first';
+  end if;
+
   v_seller := v_tile.owner;
   select username into v_buyer_name from profiles where user_id = v_uid;
 
@@ -620,6 +634,12 @@ begin
   update tiles set owner = v_uid, paid = p_expected_price, list_price = null, updated_at = now()
   where qk = p_qk
   returning * into v_tile;
+
+  if v_is_first_tile then
+    insert into unlocked_regions (owner, region, is_home)
+    values (v_uid, v_region, true)
+    on conflict (owner, region) do nothing;
+  end if;
 
   insert into bank_ledger (recipient, amount, from_username, qk)
   values (v_seller, p_expected_price, v_buyer_name, p_qk);
@@ -810,6 +830,8 @@ declare
   v_roll numeric;
   v_rarity int;
   v_buyer_name text;
+  v_region text;
+  v_is_first_tile boolean;
 begin
   if v_uid is null then raise exception 'not authenticated'; end if;
   if not exists (select 1 from profiles where user_id = v_uid) then raise exception 'no profile'; end if;
@@ -824,6 +846,17 @@ begin
   if v_tile.flip_royalty_to = v_uid then raise exception 'cannot buy back your own flip'; end if;
   if (select balance from profiles where user_id = v_uid) < p_expected_price then
     raise exception 'insufficient balance';
+  end if;
+
+  -- Same region gate as buy_listed_tile (see that function's comment) —
+  -- kept consistent so "which regions can I trade in" is one rule, not a
+  -- different rule per market surface.
+  v_region := left(p_qk, 8);
+  v_is_first_tile := not exists (select 1 from tiles where owner = v_uid);
+  if not v_is_first_tile and not exists (
+    select 1 from unlocked_regions where owner = v_uid and region = v_region
+  ) then
+    raise exception 'region not unlocked — travel here first';
   end if;
 
   v_royalty := round(p_expected_price * 0.28);
@@ -844,6 +877,12 @@ begin
         updated_at = now()
   where qk = p_qk
   returning * into v_tile;
+
+  if v_is_first_tile then
+    insert into unlocked_regions (owner, region, is_home)
+    values (v_uid, v_region, true)
+    on conflict (owner, region) do nothing;
+  end if;
 
   return v_tile;
 end;
