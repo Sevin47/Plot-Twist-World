@@ -320,7 +320,15 @@ begin
     select t.qk, t.owner, t.paid
     from tiles t
     left join profiles p on p.user_id = t.owner
-    where t.owner is null or p.last_seen < now() - interval '60 days'
+    -- t.owner is null alone would also match an active flip listing
+    -- (flip_tile sets owner = null on purpose while it waits for a buyer —
+    -- see flip_tile/buy_flipped_tile above) and, worse, such a listing
+    -- would sort FIRST every time (coalesce(null last_seen, 'epoch') is
+    -- always the oldest possible timestamp), making it the top repossession
+    -- target within seconds of being created. flip_price is not null is
+    -- exactly how a real orphaned owner=null row (deleted account, see
+    -- above) is told apart from a live flip listing.
+    where (t.owner is null and t.flip_price is null) or p.last_seen < now() - interval '60 days'
     order by coalesce(p.last_seen, 'epoch'::timestamptz) asc
     limit 5
     for update of t skip locked
