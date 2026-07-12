@@ -911,3 +911,12 @@ left join tiles t on t.owner = p.user_id
 group by p.user_id, p.username, p.balance
 order by net_worth desc;
 grant select on leaderboard to anon, authenticated;
+
+-- Force PostgREST to pick up schema changes from this script immediately.
+-- It normally reloads on its own shortly after DDL, but that can lag or
+-- occasionally not fire when running raw SQL through the dashboard editor
+-- (as opposed to a tracked migration) — leaving queries against a
+-- brand-new column/function failing with "column/function not found in
+-- schema cache" even though the DDL above genuinely succeeded. Safe to
+-- run every time this script runs.
+notify pgrst, 'reload schema';

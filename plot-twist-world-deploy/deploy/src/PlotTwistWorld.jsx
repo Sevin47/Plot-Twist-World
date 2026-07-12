@@ -1301,7 +1301,19 @@ function Game({ G, onExit }) {
       .select("qk,owner,cls,rarity,level,paid,list_price,flip_price,prestige,profiles(username)")
       .like("qk", `${prefix}%`);
     const t = {};
-    if (!error) {
+    if (error) {
+      // A failed fetch here used to fail silently: t stayed {}, the fine
+      // grid rendered zero tiles for this region, and nothing anywhere
+      // told you why (a schema drift — e.g. a client querying a column a
+      // live DB doesn't have yet — is exactly the kind of thing that
+      // trips this). Route it into the same errs/🐞 pipe as window error/
+      // unhandledrejection so it's visible via the debug overlay and
+      // "copy diagnostics" instead of a blank map with no signal.
+      const D = dbgRef.current;
+      D.errs = [...D.errs.slice(-2), `tiles fetch (${prefix}): ${error.message || error.code || "unknown error"}`.slice(0, 140)];
+      setDbg(true);
+      console.error("ensureRegion fetch failed", prefix, error);
+    } else {
       for (const row of data || []) {
         t[row.qk] = {
           o: row.owner, n: row.profiles?.username, r: row.rarity, l: row.level, pr: row.prestige || 0,
