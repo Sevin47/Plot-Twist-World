@@ -1671,7 +1671,13 @@ function Game({ G, onExit, startFresh }) {
       const r = el.getBoundingClientRect();
       if (r.width === 0 || r.height === 0) return; // hidden or not laid out yet
       const dpr = Math.min(window.devicePixelRatio || 1, 2);
-      if (size.current.w === r.width && size.current.h === r.height && size.current.dpr === dpr && cam.current.init) return;
+      // Checked against the actual canvas element's own pixel buffer, not
+      // just the cached size.current ref — size.current persists across a
+      // canvas remount (see the pickingHome comment below) and would still
+      // "match" even though the freshly-mounted <canvas> itself still has
+      // its default, never-set 300x150 buffer. Comparing to cv.width/height
+      // directly is what makes this guard correct for that case too.
+      if (cv.width === Math.round(r.width * dpr) && cv.height === Math.round(r.height * dpr) && cam.current.init) return;
       size.current = { w: r.width, h: r.height, dpr };
       cv.width = r.width * dpr; cv.height = r.height * dpr;
       cv.style.width = r.width + "px"; cv.style.height = r.height + "px";
@@ -1682,7 +1688,17 @@ function Game({ G, onExit, startFresh }) {
     ro.observe(el);
     window.addEventListener("resize", measure);
     return () => { ro.disconnect(); window.removeEventListener("resize", measure); };
-  }, [fitWorld, ready]); // must re-run after the loading screen unmounts
+    // must re-run after the loading screen unmounts (ready), AND after the
+    // start-location picker hands off to the normal game view (pickingHome)
+    // — that transition swaps in a completely different <canvas> DOM node
+    // (two separate early-return JSX trees sharing the same canvasRef/
+    // wrapRef), and without pickingHome here this effect stayed attached
+    // via ResizeObserver to the OLD, now-unmounted picker canvas forever,
+    // leaving the new one at the browser's default 300x150 pixel buffer
+    // while its container was CSS-stretched to full size — exactly the
+    // clipped/mis-proportioned render a player reported after confirming
+    // a start location.
+  }, [fitWorld, ready, pickingHome]);
 
   const hexA = (hex, a) => {
     const n = parseInt(hex.slice(1), 16);
