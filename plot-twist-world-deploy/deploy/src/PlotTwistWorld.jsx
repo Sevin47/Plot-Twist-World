@@ -181,6 +181,7 @@ const ACH = [
   { k: "trader", name: "Trader",         desc: "Sell a tile to another player" },
   { k: "rich",   name: "Deep pockets",   desc: "Hold ₲50,000 at once" },
   { k: "streak3",name: "Regular",        desc: "3-day visit streak" },
+  { k: "redevelop1", name: "Redeveloper", desc: "Tear down and rebuild a maxed-out tile" },
 ];
 
 /* ── math: mercator + quadkeys ──────────────────────────────── */
@@ -282,8 +283,12 @@ function hashQk(qk) {
 
 /* ── economy helpers ────────────────────────────────────────── */
 
-const rentOf = (t) => CLS[t.cls].rps * RAR[t.r].m * (1 + t.l);
-const upCost = (t) => Math.round(CLS[t.cls].price * 0.8 * Math.pow(t.l + 1, 1.6));
+// t.pr ("prestige") — see redevelop_tile in supabase.sql: a maxed-out tile
+// can reset to Vacant for a permanent +25% rent bonus per cycle, repeatable.
+// Rebuild cost scales with it too (upCost below), or it'd cost the same
+// every cycle and let a wealthy player farm unlimited rent for free.
+const rentOf = (t) => CLS[t.cls].rps * RAR[t.r].m * (1 + t.l) * (1 + 0.25 * (t.pr || 0));
+const upCost = (t) => Math.round(CLS[t.cls].price * 0.8 * Math.pow(t.l + 1, 1.6) * (1 + 0.5 * (t.pr || 0)));
 
 function rollRarity() {
   const n = Math.random();
@@ -783,14 +788,14 @@ function Game({ G, onExit }) {
       let tileRows = null, tilesErr = null;
       for (let attempt = 0; attempt < 3 && !tileRows; attempt++) {
         const res = await supabase
-          .from("tiles").select("qk,cls,level,rarity,paid,list_price").eq("owner", g.uid);
+          .from("tiles").select("qk,cls,level,rarity,paid,list_price,prestige").eq("owner", g.uid);
         if (!res.error) { tileRows = res.data || []; break; }
         tilesErr = res.error;
         await new Promise((r) => setTimeout(r, 500 * (attempt + 1)));
       }
       if (tileRows) {
         g.own = tileRows.map((t) => ({
-          qk: t.qk, cls: t.cls, l: t.level, r: t.rarity, pd: t.paid,
+          qk: t.qk, cls: t.cls, l: t.level, r: t.rarity, pd: t.paid, pr: t.prestige || 0,
           ...(t.list_price != null ? { p: t.list_price } : {}),
         }));
       } else {
@@ -1271,13 +1276,13 @@ function Game({ G, onExit }) {
     setSyncing(true);
     const { data, error } = await supabase
       .from("tiles")
-      .select("qk,owner,cls,rarity,level,paid,list_price,profiles(username)")
+      .select("qk,owner,cls,rarity,level,paid,list_price,prestige,profiles(username)")
       .like("qk", `${prefix}%`);
     const t = {};
     if (!error) {
       for (const row of data || []) {
         t[row.qk] = {
-          o: row.owner, n: row.profiles?.username, r: row.rarity, l: row.level,
+          o: row.owner, n: row.profiles?.username, r: row.rarity, l: row.level, pr: row.prestige || 0,
           cls: row.cls, pd: row.paid, ...(row.list_price != null ? { p: row.list_price } : {}),
         };
       }
@@ -1296,7 +1301,7 @@ function Game({ G, onExit }) {
         // spot; a live "pending" read here would get baked into g.own as a
         // real district, silently zeroing that tile's rent (pending has
         // rps 0) even though the account genuinely owns a real, priced tile.
-        g.own.push({ qk, l: rec.l || 0, r: rec.r || 0, cls: rec.cls, pd: rec.pd || 0, ...(rec.p != null ? { p: rec.p } : {}) });
+        g.own.push({ qk, l: rec.l || 0, r: rec.r || 0, pr: rec.pr || 0, cls: rec.cls, pd: rec.pd || 0, ...(rec.p != null ? { p: rec.p } : {}) });
         changed = true;
       } else if (mine) {
         if (rec.o !== g.uid) { g.own.splice(g.own.findIndex((t2) => t2.qk === qk), 1); changed = true; }
@@ -1366,7 +1371,7 @@ function Game({ G, onExit }) {
     g.energy = Math.max(0, energyNow(g) - 1);
     g.energyAt = Date.now();
     const r = data.rarity;
-    g.own.push({ qk, l: data.level, r, cls, pd: data.paid });
+    g.own.push({ qk, l: data.level, r, pr: data.prestige || 0, cls, pd: data.paid });
     // if this was the player's very first tile anywhere, the server just
     // set it as their free home region (see buy_unowned_tile) — mirror
     // that locally so it doesn't render as freshly-fogged before the next
@@ -1411,7 +1416,7 @@ function Game({ G, onExit }) {
     const { data, error } = await supabase.rpc("buy_listed_tile", { p_qk: qk, p_expected_price: price });
     if (error || !data) { toast(error?.message || "Listing changed — trade cancelled."); return; }
     g.bal -= price;
-    g.own.push({ qk, l: data.level, r: data.rarity, cls: data.cls, pd: data.paid });
+    g.own.push({ qk, l: data.level, r: data.rarity, pr: data.prestige || 0, cls: data.cls, pd: data.paid });
     rebuildOwn(); checkAch(); dirty.current = true; save();
     toast(`Deed acquired from ${rec.n || "a player"}`);
   };
@@ -1444,6 +1449,17 @@ function Game({ G, onExit }) {
     g.bal -= cost; t.l = data.level; t.pd = data.paid;
     rebuildOwn(); checkAch(); dirty.current = true; save();
     toast(`${LVL[t.l]} built`);
+  };
+
+  const redevelop = async (qk) => {
+    const t = ownMap.current.get(qk);
+    if (!t || t.l < MAX_LVL) return;
+    const { data, error } = await supabase.rpc("redevelop_tile", { p_qk: qk });
+    if (error || !data) { toast(error?.message || "Couldn't redevelop."); return; }
+    t.l = data.level; t.pr = data.prestige;
+    if (!g.ach.redevelop1) { g.ach.redevelop1 = 1; toast("Unlocked — Redeveloper"); }
+    rebuildOwn(); dirty.current = true; save();
+    toast(`Redeveloped — ★${t.pr} · +${t.pr * 25}% rent permanently`);
   };
 
   const abandon = async (qk) => {
@@ -2251,6 +2267,7 @@ function Game({ G, onExit }) {
                   <div className="mb-2 flex flex-wrap items-center gap-2">
                     <Chip color={RAR[selMine.r].color}>{RAR[selMine.r].name}</Chip>
                     <Chip color={CLS[selCls].color}>{LVL[selMine.l]}</Chip>
+                    {selMine.pr > 0 && <Chip color={C.amber}>★{selMine.pr}</Chip>}
                     <span className="text-xs" style={{ ...mono, color: C.amber }}>₲{fmt1(rentOf(selMine))}/s</span>
                     {selMine.p && <Chip color={C.amber}>Listed ₲{fmt(selMine.p)}</Chip>}
                   </div>
@@ -2260,7 +2277,9 @@ function Game({ G, onExit }) {
                         Build {LVL[selMine.l + 1]} — ₲{fmt(upCost(selMine))}
                       </Btn>
                     ) : (
-                      <div className="flex-1 py-2 text-center text-xs" style={{ ...mono, color: C.dim }}>Fully built.</div>
+                      <Btn full onClick={() => redevelop(sel)}>
+                        Redevelop — reset to Vacant, +25% rent permanently
+                      </Btn>
                     )}
                     {selMine.p ? (
                       <Btn tone="ghost" onClick={() => unlist(sel)}>Unlist</Btn>
@@ -2292,14 +2311,17 @@ function Game({ G, onExit }) {
                     <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: CLS[t.cls].color, boxShadow: `0 0 6px ${CLS[t.cls].color}99` }} />
                     <span className="truncate text-sm font-bold" style={mono}>{coordLabel(t.qk)}</span>
                     <Chip color={RAR[t.r].color}>{RAR[t.r].name}</Chip>
+                    {t.pr > 0 && <Chip color={C.amber}>★{t.pr}</Chip>}
                   </div>
                   <span className="text-xs" style={{ ...mono, color: C.amber }}>₲{fmt1(rentOf(t))}/s</span>
                 </button>
                 <div className="mt-2 flex items-center justify-between">
                   <span className="pt11" style={{ ...mono, color: C.dim }}>{LVL[t.l]} · Lv {t.l}/{MAX_LVL}{t.p ? ` · listed ₲${fmt(t.p)}` : ""}</span>
                   <div className="flex gap-1.5">
-                    {t.l < MAX_LVL && (
+                    {t.l < MAX_LVL ? (
                       <Btn small onClick={() => upgrade(t.qk)} disabled={g.bal < upCost(t)}>₲{fmt(upCost(t))}</Btn>
+                    ) : (
+                      <Btn small onClick={() => redevelop(t.qk)}>Redevelop</Btn>
                     )}
                     {t.p ? (
                       <Btn small tone="ghost" onClick={() => unlist(t.qk)}>Unlist</Btn>
