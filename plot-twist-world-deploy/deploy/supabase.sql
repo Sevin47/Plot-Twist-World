@@ -67,6 +67,13 @@ create index if not exists idx_tiles_listed on tiles(updated_at desc) where list
 -- index scan regardless of the database's default collation
 create index if not exists idx_tiles_qk_pattern on tiles(qk text_pattern_ops);
 
+alter table tiles add column if not exists prestige int not null default 0;
+-- "redevelopment" — see redevelop_tile() below: resets a maxed-out (level 4)
+-- tile back to Vacant in exchange for a permanent +25% rent bonus per cycle,
+-- so a single tile has repeatable depth instead of dead-ending at Tower.
+-- Rebuild cost also scales with this (see upgrade_tile), or a wealthy player
+-- could farm unlimited rent multiplier at a fixed, non-escalating price.
+
 -- ── lightweight "you sold a tile" notification log (money moves instantly
 --    via profiles.balance above; this is just history, not a payment queue) ──
 create table if not exists bank_ledger (
@@ -197,7 +204,7 @@ begin
   if not found then return; end if;
 
   select coalesce(sum(
-    tc.rps * (case t.rarity when 0 then 1 when 1 then 1.5 when 2 then 3 when 3 then 8 else 1 end) * (1 + t.level)
+    tc.rps * (case t.rarity when 0 then 1 when 1 then 1.5 when 2 then 3 when 3 then 8 else 1 end) * (1 + t.level) * (1 + 0.25 * t.prestige)
   ), 0) into v_rps
   from tiles t join tile_class tc on tc.cls = t.cls
   where t.owner = p_uid;
@@ -640,7 +647,9 @@ begin
   if v_tile.level >= 4 then raise exception 'already at max level'; end if;
 
   select * into v_class from tile_class where cls = v_tile.cls;
-  v_cost := round(v_class.price * 0.8 * power(v_tile.level + 1, 1.6));
+  -- the prestige factor is why this doesn't cost the same every
+  -- redevelopment cycle — see the `prestige` column comment above
+  v_cost := round(v_class.price * 0.8 * power(v_tile.level + 1, 1.6) * (1 + 0.5 * v_tile.prestige));
 
   if (select balance from profiles where user_id = v_uid) < v_cost then
     raise exception 'insufficient balance';
@@ -656,6 +665,40 @@ end;
 $$;
 revoke all on function upgrade_tile(text) from public;
 grant execute on function upgrade_tile(text) to authenticated;
+
+-- ── redevelop_tile: the prestige loop. Requires a fully-built (level 4)
+--    tile; resets it to Vacant in exchange for a permanent +25% rent bonus
+--    (see accrue_rent) on this tile, repeatable indefinitely — each cycle's
+--    rebuild costs more than the last (see upgrade_tile's prestige factor),
+--    so this self-limits without an arbitrary hard cap on prestige. No
+--    separate charge here: giving up four levels of paid-for building IS
+--    the cost, same as how upgrading itself is just credits spent. ──
+create or replace function redevelop_tile(p_qk text)
+returns tiles
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_uid uuid := auth.uid();
+  v_tile tiles;
+begin
+  if v_uid is null then raise exception 'not authenticated'; end if;
+  perform accrue_rent(v_uid);
+
+  select * into v_tile from tiles where qk = p_qk and owner = v_uid for update;
+  if not found then raise exception 'tile not found or not yours'; end if;
+  if v_tile.level < 4 then raise exception 'not fully built yet'; end if;
+
+  update tiles set level = 0, prestige = prestige + 1, updated_at = now()
+  where qk = p_qk
+  returning * into v_tile;
+
+  return v_tile;
+end;
+$$;
+revoke all on function redevelop_tile(text) from public;
+grant execute on function redevelop_tile(text) to authenticated;
 
 -- ── abandon_tile: 50% refund, matching the client's current rule ──
 create or replace function abandon_tile(p_qk text)
