@@ -156,8 +156,31 @@ const MAX_LVL = 4;
 // supabase.sql — display-only, the server is the sole authority on the
 // real value. Gates claiming NEW unowned land specifically (not trading or
 // upgrading), so wealth/click-speed alone can't sprawl across the whole
-// map instantly. Hard daily cap, no banking — resets once per UTC day.
-const ENERGY_DAILY_CAP = 10;
+// map instantly. Hard daily cap, no banking — resets once per UTC day, at
+// whatever this player's current status tier grants (see STATUS_TIERS).
+
+// MUST match status_tier in supabase.sql exactly. Sticky/high-water-mark:
+// driven by peak_net_worth (all-time-highest net worth this account has
+// ever reached), never demotes for spending down or losing tiles. Tier 6's
+// cap of 20 is the old unconditional energy default from before the
+// daily-cap rework — you used to start with it for free, now you earn
+// your way back to it.
+const STATUS_TIERS = [
+  { tier: 1, name: "Squatter",    min: 0,       cap: 10 },
+  { tier: 2, name: "Homesteader", min: 5000,    cap: 12 },
+  { tier: 3, name: "Landholder",  min: 25000,   cap: 14 },
+  { tier: 4, name: "Developer",   min: 100000,  cap: 16 },
+  { tier: 5, name: "Baron",       min: 500000,  cap: 18 },
+  { tier: 6, name: "Magnate",     min: 2000000, cap: 20 },
+];
+// Highest tier whose threshold this net worth clears, plus the next tier
+// up (null once already at the top) for progress-bar display.
+const statusFor = (netWorth) => {
+  const nw = netWorth || 0;
+  let idx = 0;
+  for (let i = 0; i < STATUS_TIERS.length; i++) if (nw >= STATUS_TIERS[i].min) idx = i;
+  return { ...STATUS_TIERS[idx], next: STATUS_TIERS[idx + 1] || null };
+};
 
 const ADS = [
   { brand: "Bolder Boulders", line: "Rocks, but bolder." },
@@ -345,7 +368,8 @@ const gameFromProfile = (uid, profile) => ({
   boostUntil: profile.boost_until ? new Date(profile.boost_until).getTime() : 0,
   boostReadyAt: profile.boost_ready_at ? new Date(profile.boost_ready_at).getTime() : 0,
   lastSeen: profile.last_seen ? new Date(profile.last_seen).getTime() : Date.now(),
-  energy: profile.energy ?? ENERGY_DAILY_CAP,
+  peakNetWorth: profile.peak_net_worth || 0,
+  energy: profile.energy ?? statusFor(profile.peak_net_worth || 0).cap,
   rps: 0,
 });
 
@@ -779,6 +803,7 @@ function Game({ G, onExit, startFresh }) {
     g.boostUntil = data.boost_until ? new Date(data.boost_until).getTime() : 0;
     g.boostReadyAt = data.boost_ready_at ? new Date(data.boost_ready_at).getTime() : 0;
     if (data.energy != null) g.energy = data.energy;
+    if (data.peak_net_worth != null) g.peakNetWorth = data.peak_net_worth;
     return data;
   }, [g]);
 
@@ -1338,7 +1363,7 @@ function Game({ G, onExit, startFresh }) {
       // (owner, flip_royalty_to as of the flip feature), so PostgREST can no
       // longer infer which relationship an unqualified `profiles(username)`
       // embed means and rejects the whole query. Must stay qualified.
-      .select("qk,owner,cls,rarity,level,paid,list_price,flip_price,prestige,profiles!tiles_owner_fkey(username)")
+      .select("qk,owner,cls,rarity,level,paid,list_price,flip_price,prestige,profiles!tiles_owner_fkey(username,peak_net_worth)")
       .like("qk", `${prefix}%`);
     const t = {};
     if (error) {
@@ -1356,7 +1381,7 @@ function Game({ G, onExit, startFresh }) {
     } else {
       for (const row of data || []) {
         t[row.qk] = {
-          o: row.owner, n: row.profiles?.username, r: row.rarity, l: row.level, pr: row.prestige || 0,
+          o: row.owner, n: row.profiles?.username, pnw: row.profiles?.peak_net_worth || 0, r: row.rarity, l: row.level, pr: row.prestige || 0,
           cls: row.cls, pd: row.paid, ...(row.list_price != null ? { p: row.list_price } : {}),
           ...(row.flip_price != null ? { fp: row.flip_price } : {}),
         };
@@ -1410,10 +1435,10 @@ function Game({ G, onExit, startFresh }) {
     const { data, error } = await supabase
       // see the matching comment in ensureRegion — must stay FK-qualified
       // now that tiles has two relationships into profiles.
-      .from("tiles").select("qk,cls,list_price,profiles!tiles_owner_fkey(username)")
+      .from("tiles").select("qk,cls,list_price,profiles!tiles_owner_fkey(username,peak_net_worth)")
       .not("list_price", "is", null).or(filter).order("updated_at", { ascending: false }).limit(40);
     if (error) { setMarket({ loading: false, rows: [] }); return; }
-    setMarket({ loading: false, rows: (data || []).map((r) => ({ qk: r.qk, cls: r.cls, p: r.list_price, n: r.profiles?.username })) });
+    setMarket({ loading: false, rows: (data || []).map((r) => ({ qk: r.qk, cls: r.cls, p: r.list_price, n: r.profiles?.username, pnw: r.profiles?.peak_net_worth || 0 })) });
   }, []);
 
   // Flipped tiles (owner null, flip_price set — see flip_tile/buy_flipped_tile
@@ -1443,7 +1468,7 @@ function Game({ G, onExit, startFresh }) {
     const { data, error } = await supabase
       .from("leaderboard").select("*").order("net_worth", { ascending: false }).limit(10);
     if (error) { setLb({ loading: false, rows: [] }); return; }
-    setLb({ loading: false, rows: (data || []).map((r) => ({ id: r.user_id, n: r.username, nw: r.net_worth, pc: r.tile_count })) });
+    setLb({ loading: false, rows: (data || []).map((r) => ({ id: r.user_id, n: r.username, nw: r.net_worth, pc: r.tile_count, pnw: r.peak_net_worth || 0 })) });
   }, []);
   useEffect(() => { if (tab === "hq") refreshLB(); }, [tab, refreshLB]);
 
@@ -1464,7 +1489,7 @@ function Game({ G, onExit, startFresh }) {
     // Client-side check just saves a round-trip; the server enforces this
     // independently and for real.
     if (energyNow(g) < 1) {
-      toast(`Out of energy for today (${ENERGY_DAILY_CAP}/day) — resets at midnight UTC`);
+      toast(`Out of energy for today (${statusFor(g.peakNetWorth).cap}/day) — resets at midnight UTC`);
       return;
     }
     setRoll({ qk, phase: "spin" });
@@ -2196,7 +2221,8 @@ function Game({ G, onExit, startFresh }) {
       longtasks: D.long, longtaskMaxMs: D.longMax, errors: D.errs, lastInput: D.lastEvt,
       // full per-tile breakdown — this is what actually shows whether a
       // tile's district/rent is wrong, and if so what cls it's stuck at
-      owned: g.own.length, rps: g.rps, energy: energyNow(g), energyDailyCap: ENERGY_DAILY_CAP, energySecsToReset: energySecsToReset(),
+      owned: g.own.length, rps: g.rps, energy: energyNow(g), energyDailyCap: statusFor(g.peakNetWorth).cap, energySecsToReset: energySecsToReset(),
+      status: statusFor(g.peakNetWorth).name, peakNetWorth: g.peakNetWorth,
       ownTiles: g.own.map((t) => ({ qk: t.qk, cls: t.cls, rarity: t.r, level: t.l, rps: CLS[t.cls] ? rentOf(t) : "UNKNOWN_CLS" })),
     }, null, 1);
     try { navigator.clipboard.writeText(data); toast("Diagnostics copied"); }
@@ -2218,6 +2244,7 @@ function Game({ G, onExit, startFresh }) {
   const boostOnCooldown = !boostOn && boostCooldownLeft > 0;
   const mmss = (ms) => { const s = Math.ceil(ms / 1000); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`; };
   const hm = (secs) => { const h = Math.floor(secs / 3600), m = Math.floor((secs % 3600) / 60); return h > 0 ? `${h}h ${m}m` : `${m}m`; };
+  const myStatus = statusFor(g.peakNetWorth);
 
   const selRec = sel ? recOf(sel) : undefined;
   const selDbg = dbg && sel ? classify(sel) : null;
@@ -2341,11 +2368,12 @@ function Game({ G, onExit, startFresh }) {
             <div className="text-2xl font-bold" style={{ ...mono, color: C.amber, fontVariantNumeric: "tabular-nums", textShadow: `0 0 18px ${C.glow}` }}>₲{fmt(g.bal)}</div>
             <div className="text-xs" style={{ ...mono, color: C.dim }}>+{fmt1(g.rps * (boostOn ? 2 : 1))}/s{boostOn ? " ⚡" : ""}</div>
           </div>
-          <div className="mt-0.5 flex items-center gap-1.5" title="Energy — spent claiming unowned land, resets once per day">
-            <span className="pt10 font-bold" style={{ ...mono, color: energyNow(g) > 0 ? C.amber : "#F08A8A", fontVariantNumeric: "tabular-nums" }}>
-              ⚡{energyNow(g)}/{ENERGY_DAILY_CAP} today
+          <div className="mt-0.5 flex items-center gap-1.5">
+            <Chip color={C.amber}>{myStatus.name}</Chip>
+            <span className="pt10 font-bold" style={{ ...mono, color: energyNow(g) > 0 ? C.amber : "#F08A8A", fontVariantNumeric: "tabular-nums" }} title="Energy — spent claiming unowned land, resets once per day">
+              ⚡{energyNow(g)}/{myStatus.cap} today
             </span>
-            {energyNow(g) < ENERGY_DAILY_CAP && (
+            {energyNow(g) < myStatus.cap && (
               <span className="pt10" style={{ ...mono, color: C.dim }}>resets in {hm(energySecsToReset())}</span>
             )}
           </div>
@@ -2458,7 +2486,7 @@ function Game({ G, onExit, startFresh }) {
                   <span style={{ color: "#F08A8A" }}> · {g.own.filter((t) => !CLS[t.cls] || CLS[t.cls].rps === 0).length} zero-rent!</span>
                 )}
               </div>
-              <div>energy {energyNow(g)}/{ENERGY_DAILY_CAP} today · resets in {hm(energySecsToReset())}</div>
+              <div>energy {energyNow(g)}/{myStatus.cap} today ({myStatus.name}) · resets in {hm(energySecsToReset())}</div>
               <div>territory: {unlockedRegions.current.size} region(s){homeRegionRef.current ? ` · home ${homeRegionRef.current}` : ""}{sel ? ` · sel ${regionOf(sel)} locked=${String(selLocked)}` : ""}</div>
               <div>fps {D.fps} · draw {D.avg}ms · max {D.max}ms</div>
               <div>tilePx {D.tilePx.toFixed(2)} · grid {String(D.gridOn)} · tiles {D.cnt}</div>
@@ -2562,10 +2590,11 @@ function Game({ G, onExit, startFresh }) {
 
               {!selLocked && selRec && selRec.o != null && !selMine && !(roll && roll.qk === sel && roll.phase === "spin") && (
                 <div>
-                  <div className="mb-2 flex items-center gap-2">
+                  <div className="mb-2 flex flex-wrap items-center gap-2">
                     <Chip color={RAR[selRec.r || 0].color}>{RAR[selRec.r || 0].name}</Chip>
                     <Chip color={CLS[selCls].color}>{LVL[selRec.l || 0]}</Chip>
                     <span className="text-xs" style={{ ...mono, color: C.dim }}>owned by {selRec.n || "a player"}</span>
+                    <Chip color={C.amber}>{statusFor(selRec.pnw).name}</Chip>
                   </div>
                   {selRec.p ? (
                     <Btn full onClick={() => buyListed(sel)} disabled={g.bal < selRec.p}>
@@ -2685,7 +2714,7 @@ function Game({ G, onExit, startFresh }) {
                     <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: (CLS[e.cls] || CLS.land).color, boxShadow: `0 0 6px ${(CLS[e.cls] || CLS.land).color}99` }} />
                     <span className="truncate text-sm font-bold" style={mono}>{coordLabel(e.qk)}</span>
                   </div>
-                  <div className="pt11 mt-0.5" style={{ ...mono, color: C.dim }}>by {e.n || "a player"}{e.n === g.name ? " (you)" : ""}</div>
+                  <div className="pt11 mt-0.5" style={{ ...mono, color: C.dim }}>by {e.n || "a player"}{e.n === g.name ? " (you)" : ""} · {statusFor(e.pnw).name}</div>
                 </button>
                 <div className="flex shrink-0 items-center gap-2">
                   <span className="text-sm font-bold" style={{ ...mono, color: C.amber }}>₲{fmt(e.p)}</span>
@@ -2744,6 +2773,32 @@ function Game({ G, onExit, startFresh }) {
                   <div className="text-lg font-bold" style={{ ...mono, fontVariantNumeric: "tabular-nums" }}>{v}</div>
                 </div>
               ))}
+            </div>
+
+            <div className="mb-3 rounded-xl p-3" style={cardSty}>
+              <div className="mb-2 flex items-center justify-between">
+                <Eyebrow>Status</Eyebrow>
+                <Chip color={C.amber}>{myStatus.name}</Chip>
+              </div>
+              {myStatus.next ? (
+                <>
+                  <div className="pt10 mb-1 flex items-center justify-between" style={{ ...mono, color: C.dim }}>
+                    <span>₲{fmt(g.peakNetWorth)} peak net worth</span>
+                    <span>{myStatus.next.name} at ₲{fmt(myStatus.next.min)}</span>
+                  </div>
+                  <div className="h-1.5 w-full overflow-hidden rounded-full" style={{ background: C.hair }}>
+                    <div className="h-full rounded-full" style={{
+                      width: `${Math.min(100, Math.max(0, ((g.peakNetWorth - myStatus.min) / (myStatus.next.min - myStatus.min)) * 100))}%`,
+                      background: C.amber,
+                    }} />
+                  </div>
+                </>
+              ) : (
+                <div className="pt10" style={{ ...mono, color: C.dim }}>Highest status reached — ₲{fmt(g.peakNetWorth)} peak net worth.</div>
+              )}
+              <div className="pt10 mt-2" style={{ ...mono, color: C.dim }}>
+                Sticky — based on your all-time-highest net worth, never drops. Higher status raises your daily energy cap ({myStatus.cap}/day now).
+              </div>
             </div>
 
             <div className="mb-3 rounded-xl p-3" style={cardSty}>
@@ -2819,13 +2874,14 @@ function Game({ G, onExit, startFresh }) {
               ) : lb.rows && lb.rows.length ? (
                 lb.rows.map((r, idx) => (
                   <div key={r.id} className="flex items-center justify-between py-1.5 text-sm" style={{ borderTop: idx ? `1px solid ${C.hair}` : "none" }}>
-                    <div className="flex items-center gap-2" style={mono}>
-                      <span className="w-5 text-right text-xs" style={{ color: C.dim }}>{idx + 1}</span>
-                      <span className={r.id === g.uid ? "font-bold" : ""} style={r.id === g.uid ? { color: C.amber } : {}}>
+                    <div className="flex min-w-0 items-center gap-2" style={mono}>
+                      <span className="w-5 shrink-0 text-right text-xs" style={{ color: C.dim }}>{idx + 1}</span>
+                      <span className={`truncate ${r.id === g.uid ? "font-bold" : ""}`} style={r.id === g.uid ? { color: C.amber } : {}}>
                         {r.n}{r.id === g.uid ? " (you)" : ""}
                       </span>
+                      <Chip color={C.amber}>{statusFor(r.pnw).name}</Chip>
                     </div>
-                    <span className="text-xs" style={{ ...mono, color: C.dim }}>₲{fmt(r.nw || 0)} · {r.pc || 0} tiles</span>
+                    <span className="shrink-0 text-xs" style={{ ...mono, color: C.dim }}>₲{fmt(r.nw || 0)} · {r.pc || 0} tiles</span>
                   </div>
                 ))
               ) : (
