@@ -40,6 +40,28 @@ insert into tile_class (cls, price, rps, sellable) values
   ('water',      50,  0.009,  false)
 on conflict (cls) do update set price = excluded.price, rps = excluded.rps, sellable = excluded.sellable;
 
+-- ── reference data: status ladder (mirrors STATUS_TIERS in
+--    PlotTwistWorld.jsx). Sticky/high-water-mark — driven by
+--    profiles.peak_net_worth (all-time-highest net worth), which never
+--    decreases, not live current net worth — see reset_daily_energy and
+--    the accrue_rent peak-tracking block below. Tier 6's cap of 20 is the
+--    old unconditional energy default from before the daily-cap rework:
+--    you used to start with it for free, now you earn your way back. ──
+create table if not exists status_tier (
+  tier int primary key,
+  name text not null,
+  min_net_worth bigint not null,
+  daily_energy_cap int not null
+);
+insert into status_tier (tier, name, min_net_worth, daily_energy_cap) values
+  (1, 'Squatter',    0,       10),
+  (2, 'Homesteader', 5000,    12),
+  (3, 'Landholder',  25000,   14),
+  (4, 'Developer',   100000,  16),
+  (5, 'Baron',       500000,  18),
+  (6, 'Magnate',     2000000, 20)
+on conflict (tier) do update set name = excluded.name, min_net_worth = excluded.min_net_worth, daily_energy_cap = excluded.daily_energy_cap;
+
 -- ── accounts ──
 create table if not exists profiles (
   user_id uuid primary key references auth.users(id) on delete cascade,
@@ -138,17 +160,32 @@ alter table profiles add column if not exists energy_date date not null default 
 -- weekly, not the same amount just delayed.
 -- energy_at (timestamptz) is vestigial from the old continuous 1/60s-tick
 -- regen model this replaced — safe to ignore, left in place rather than
--- dropped (this script never drops columns from a live table).
--- One-time normalization: existing accounts may still be sitting on up to
--- 20 energy from the old cap; the ADD COLUMN default above stamps
--- energy_date as "today" for everyone on migration, which would otherwise
--- let that leftover balance survive untouched until the next UTC day
--- boundary. Capping it down to the new 10 immediately is idempotent and
--- safe to re-run.
-update profiles set energy = 10 where energy > 10;
+-- dropped (this script never drops columns from a live table). No
+-- blanket "cap existing energy down" migration line here (an earlier
+-- version of this had one, hardcoded to 10) — now that the cap varies by
+-- status tier (see peak_net_worth/status_tier below), that would wrongly
+-- punish a high-status player; any old leftover energy self-corrects at
+-- each player's own next UTC-day reset regardless.
 
 create index if not exists idx_profiles_last_seen on profiles(last_seen);
 -- backs repossess_stale_tiles()'s inactivity scan below
+
+alter table profiles add column if not exists peak_net_worth bigint not null default 0;
+-- Sticky status ladder (see status_tier above): driven by the
+-- all-time-highest net worth this account has ever reached, which only
+-- ever increases (see accrue_rent's rate-limited peak-tracking block) —
+-- never demotes a player for spending down or losing tiles, same
+-- philosophy as everything else this session (boost cooldown not a
+-- penalty, resync-on-focus not a session lock, etc.). Also what
+-- reset_daily_energy looks up to decide a player's actual daily cap, now
+-- that it varies by tier instead of being a flat number for everyone.
+-- One-time backfill for existing accounts, so nobody's status appears to
+-- reset to tier 1 on this migration even though they've already earned
+-- more — guarded by peak_net_worth = 0 so it only touches never-backfilled
+-- rows (a real account can't have exactly 0 once backfilled, since every
+-- profile starts with a positive balance).
+update profiles p set peak_net_worth = p.balance + coalesce((select sum(t.paid) from tiles t where t.owner = p.user_id), 0)
+where p.peak_net_worth = 0;
 
 -- ── territory: a player's fine-deed-grid interaction is gated to regions
 --    they've unlocked (see unlock_region / buy_unowned_tile below) — the
@@ -200,6 +237,11 @@ drop policy if exists "read tile_class" on tile_class;
 create policy "read tile_class" on tile_class for select using (true);
 grant select on tile_class to anon, authenticated;
 
+alter table status_tier enable row level security;
+drop policy if exists "read status_tier" on status_tier;
+create policy "read status_tier" on status_tier for select using (true);
+grant select on status_tier to anon, authenticated;
+
 alter table profiles enable row level security;
 drop policy if exists "read profiles" on profiles;
 create policy "read profiles" on profiles for select using (true);
@@ -243,6 +285,7 @@ declare
   v_elapsed numeric;
   v_gain numeric;
   v_mult numeric;
+  v_net_worth bigint;
 begin
   select * into v_profile from profiles where user_id = p_uid for update;
   if not found then return; end if;
@@ -271,6 +314,15 @@ begin
   -- player's ordinary traffic still drives it constantly enough with no
   -- cron/extension required.
   if random() < 0.25 then perform repossess_stale_tiles(); end if;
+
+  -- Same rate-limiting logic for the sticky status ladder's high-water
+  -- mark (see peak_net_worth above) — this aggregates over every tile a
+  -- player owns, so it doesn't need to run on literally every call either.
+  if random() < 0.25 then
+    select balance + coalesce((select sum(paid) from tiles where owner = p_uid), 0)
+    into v_net_worth from profiles where user_id = p_uid;
+    update profiles set peak_net_worth = greatest(peak_net_worth, v_net_worth) where user_id = p_uid;
+  end if;
 end;
 $$;
 revoke all on function accrue_rent(uuid) from public;
@@ -282,12 +334,16 @@ drop function if exists regen_energy(uuid);
 
 -- ── reset_daily_energy: hard daily cap on buy_unowned_tile's energy gate,
 --    replacing the old continuous 1/60s leaky-bucket regen entirely. Once
---    per UTC calendar day, energy resets to 10 flat — deliberately
---    hard-expire, not banked: unused claims from a day you didn't play are
---    gone, not carried forward, so a daily-habit player accumulates more
---    total claims over time than a weekly one, not just the same amount
---    delayed. Same "compute on read" pattern as accrue_rent above, and the
---    same date-comparison idiom claim_daily already uses for the streak. ──
+--    per UTC calendar day, energy resets to this player's current status
+--    tier's daily_energy_cap (see status_tier/peak_net_worth above) —
+--    deliberately hard-expire, not banked: unused claims from a day you
+--    didn't play are gone, not carried forward, so a daily-habit player
+--    accumulates more total claims over time than a weekly one, not just
+--    the same amount delayed. Same "compute on read" pattern as
+--    accrue_rent above, and the same date-comparison idiom claim_daily
+--    already uses for the streak. The cap is looked up fresh at each
+--    day's reset, not recalculated mid-day — crossing into a new tier
+--    takes effect on the next day's reset, not retroactively today. ──
 create or replace function reset_daily_energy(p_uid uuid)
 returns void
 language plpgsql
@@ -296,8 +352,15 @@ set search_path = public
 as $$
 declare
   v_today date := (now() at time zone 'utc')::date;
+  v_cap int;
 begin
-  update profiles set energy = 10, energy_date = v_today
+  select st.daily_energy_cap into v_cap
+  from status_tier st
+  where st.min_net_worth <= (select peak_net_worth from profiles where user_id = p_uid)
+  order by st.min_net_worth desc
+  limit 1;
+
+  update profiles set energy = coalesce(v_cap, 10), energy_date = v_today
   where user_id = p_uid and energy_date < v_today;
 end;
 $$;
@@ -557,7 +620,7 @@ begin
   -- another player) and upgrade_tile (investing in what you already own)
   -- are deliberately left energy-free.
   if (select energy from profiles where user_id = v_uid) < 1 then
-    raise exception 'no energy left today — resets tomorrow, 10/day';
+    raise exception 'no energy left today — resets tomorrow (your daily cap grows with status)';
   end if;
 
   -- a player's very first tile anywhere is always allowed regardless of
@@ -973,10 +1036,11 @@ grant execute on function claim_bank_ledger() to authenticated;
 create or replace view leaderboard as
 select p.user_id, p.username,
        p.balance + coalesce(sum(t.paid), 0) as net_worth,
-       count(t.qk) as tile_count
+       count(t.qk) as tile_count,
+       p.peak_net_worth
 from profiles p
 left join tiles t on t.owner = p.user_id
-group by p.user_id, p.username, p.balance
+group by p.user_id, p.username, p.balance, p.peak_net_worth
 order by net_worth desc;
 grant select on leaderboard to anon, authenticated;
 
