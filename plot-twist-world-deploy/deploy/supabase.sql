@@ -116,7 +116,7 @@ create table if not exists bank_ledger (
 create index if not exists idx_bank_ledger_recipient on bank_ledger(recipient) where claimed = false;
 
 -- ── land economy: repossession of inactive-owner tiles + energy-limited
---    claims (see repossess_stale_tiles / regen_energy / buy_unowned_tile
+--    claims (see repossess_stale_tiles / reset_daily_energy / buy_unowned_tile
 --    below). Additive only — safe to re-run against a live database. ──
 alter table bank_ledger add column if not exists kind text not null default 'sale';
 -- distinguishes "someone bought your listing" ('sale'), "a tile was
@@ -126,12 +126,26 @@ alter table bank_ledger add column if not exists kind text not null default 'sal
 -- except through the security-definer functions below, which are the only
 -- writers.
 
-alter table profiles add column if not exists energy int not null default 20;
-alter table profiles add column if not exists energy_at timestamptz not null default now();
--- lazy-regen resource (same "compute on read" pattern as accrue_rent's rent
--- accrual, not a background job): 1 point per 60s, cap 20. Throttles how
--- fast *new unowned land* can be claimed, independent of wallet size — the
--- actual anti-sprawl lever, not just a speed bump.
+alter table profiles add column if not exists energy int not null default 10;
+alter table profiles add column if not exists energy_date date not null default (now() at time zone 'utc')::date;
+-- Hard daily cap (10/day, no banking) on *new unowned land* claims,
+-- independent of wallet size — the actual anti-sprawl lever, not just a
+-- speed bump. Reset once per UTC calendar day, same "compute on read"
+-- pattern as accrue_rent's rent accrual (see reset_daily_energy below) and
+-- the same date-comparison idiom claim_daily already uses. Deliberately
+-- hard-expire rather than bank up across missed days — a player who checks
+-- in daily should get more total claims over time than one who checks in
+-- weekly, not the same amount just delayed.
+-- energy_at (timestamptz) is vestigial from the old continuous 1/60s-tick
+-- regen model this replaced — safe to ignore, left in place rather than
+-- dropped (this script never drops columns from a live table).
+-- One-time normalization: existing accounts may still be sitting on up to
+-- 20 energy from the old cap; the ADD COLUMN default above stamps
+-- energy_date as "today" for everyone on migration, which would otherwise
+-- let that leftover balance survive untouched until the next UTC day
+-- boundary. Capping it down to the new 10 immediately is idempotent and
+-- safe to re-run.
+update profiles set energy = 10 where energy > 10;
 
 create index if not exists idx_profiles_last_seen on profiles(last_seen);
 -- backs repossess_stale_tiles()'s inactivity scan below
@@ -250,7 +264,7 @@ begin
 
   update profiles set balance = balance + floor(v_gain), last_seen = now() where user_id = p_uid;
 
-  perform regen_energy(p_uid);
+  perform reset_daily_energy(p_uid);
   -- rate-limited to a quarter of calls, not every one — repossess_stale_tiles
   -- does real writes (balance credit + ledger insert + delete) per row, so
   -- there's no need to run it on literally every RPC round-trip; any active
@@ -261,34 +275,33 @@ end;
 $$;
 revoke all on function accrue_rent(uuid) from public;
 
--- ── regen_energy: lazy leaky-bucket regen for buy_unowned_tile's energy
---    gate, same "compute on read" idea as accrue_rent above. Advances
---    energy_at by whole consumed 60s ticks (never snaps to now()) so partial
---    progress toward the next point is never lost — that would let frequent
---    syncing quietly reset the regen clock. ──
-create or replace function regen_energy(p_uid uuid)
+-- Renamed from regen_energy — CREATE OR REPLACE can't rename a function,
+-- so the old name has to be dropped explicitly (same pattern used for
+-- claim_bank_ledger's signature change above).
+drop function if exists regen_energy(uuid);
+
+-- ── reset_daily_energy: hard daily cap on buy_unowned_tile's energy gate,
+--    replacing the old continuous 1/60s leaky-bucket regen entirely. Once
+--    per UTC calendar day, energy resets to 10 flat — deliberately
+--    hard-expire, not banked: unused claims from a day you didn't play are
+--    gone, not carried forward, so a daily-habit player accumulates more
+--    total claims over time than a weekly one, not just the same amount
+--    delayed. Same "compute on read" pattern as accrue_rent above, and the
+--    same date-comparison idiom claim_daily already uses for the streak. ──
+create or replace function reset_daily_energy(p_uid uuid)
 returns void
 language plpgsql
 security definer
 set search_path = public
 as $$
 declare
-  v_profile profiles;
-  v_ticks int;
+  v_today date := (now() at time zone 'utc')::date;
 begin
-  select * into v_profile from profiles where user_id = p_uid for update;
-  if not found or v_profile.energy >= 20 then return; end if;
-
-  v_ticks := floor(greatest(0, extract(epoch from (now() - v_profile.energy_at))) / 60);
-  if v_ticks <= 0 then return; end if;
-
-  update profiles
-  set energy = least(20, energy + v_ticks),
-      energy_at = energy_at + (v_ticks * interval '60 seconds')
-  where user_id = p_uid;
+  update profiles set energy = 10, energy_date = v_today
+  where user_id = p_uid and energy_date < v_today;
 end;
 $$;
-revoke all on function regen_energy(uuid) from public;
+revoke all on function reset_daily_energy(uuid) from public;
 
 -- ── repossess_stale_tiles: land decay. An owner absent 60+ days (profiles.
 --    last_seen — already tracked by accrue_rent for every player, no new
@@ -544,7 +557,7 @@ begin
   -- another player) and upgrade_tile (investing in what you already own)
   -- are deliberately left energy-free.
   if (select energy from profiles where user_id = v_uid) < 1 then
-    raise exception 'no energy left — recharges 1/min, max 20';
+    raise exception 'no energy left today — resets tomorrow, 10/day';
   end if;
 
   -- a player's very first tile anywhere is always allowed regardless of

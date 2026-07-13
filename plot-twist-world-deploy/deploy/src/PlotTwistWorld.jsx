@@ -152,12 +152,12 @@ const RAR = [
 const LVL = ["Vacant tile", "Cottage", "Duplex", "Apartments", "Tower"];
 const MAX_LVL = 4;
 
-// Mirrors regen_energy()/buy_unowned_tile's energy gate in supabase.sql —
-// display-only, the server is the sole authority on the real value. Gates
-// claiming NEW unowned land specifically (not trading or upgrading), so
-// wealth/click-speed alone can't sprawl across the whole map instantly.
-const ENERGY_CAP = 20;
-const ENERGY_REGEN_S = 60;
+// Mirrors reset_daily_energy()/buy_unowned_tile's energy gate in
+// supabase.sql — display-only, the server is the sole authority on the
+// real value. Gates claiming NEW unowned land specifically (not trading or
+// upgrading), so wealth/click-speed alone can't sprawl across the whole
+// map instantly. Hard daily cap, no banking — resets once per UTC day.
+const ENERGY_DAILY_CAP = 10;
 
 const ADS = [
   { brand: "Bolder Boulders", line: "Rocks, but bolder." },
@@ -309,15 +309,22 @@ function fmt(n) {
 // e.g. 0.018 down to a meaningless "0.0", so sub-1 values get 3 decimals.
 const fmt1 = (n) => (n < 1 ? n.toFixed(3) : n < 100 ? n.toFixed(1) : fmt(n));
 
-// Client-side projection of regen_energy()'s lazy-regen formula in
-// supabase.sql — purely for a smoothly-ticking meter between server syncs
-// (same spirit as the 250ms local rent tick below). Never gates anything
-// itself; the server re-derives and enforces the real value independently.
-const energyNow = (g) => Math.min(ENERGY_CAP, g.energy + Math.floor((Date.now() - g.energyAt) / 1000 / ENERGY_REGEN_S));
-const energySecsToNext = (g) => {
-  if (energyNow(g) >= ENERGY_CAP) return 0;
-  const sinceLastTick = ((Date.now() - g.energyAt) / 1000) % ENERGY_REGEN_S;
-  return Math.ceil(ENERGY_REGEN_S - sinceLastTick);
+// energy is now a flat daily value with no client-side ticking to
+// simulate (unlike the old continuous regen model) — it only ever changes
+// via an explicit server round-trip (sync_rent, or the optimistic
+// decrement in buyUnowned). This wrapper exists purely so call sites don't
+// need to care whether that's a plain field read; the server re-derives
+// and enforces the real value independently either way.
+const energyNow = (g) => g.energy;
+// Seconds until the next UTC-midnight reset — display-only estimate of
+// when reset_daily_energy() will next actually reset this player's energy
+// (the real reset only happens lazily, on that player's next RPC call
+// after the boundary, same "compute on read" pattern as everything else
+// here, but midnight UTC is close enough for a countdown).
+const energySecsToReset = () => {
+  const now = new Date();
+  const next = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1, 0, 0, 0);
+  return Math.max(0, Math.round((next - Date.now()) / 1000));
 };
 
 /* ── in-memory game state ──────────────────────────────────────
@@ -338,8 +345,7 @@ const gameFromProfile = (uid, profile) => ({
   boostUntil: profile.boost_until ? new Date(profile.boost_until).getTime() : 0,
   boostReadyAt: profile.boost_ready_at ? new Date(profile.boost_ready_at).getTime() : 0,
   lastSeen: profile.last_seen ? new Date(profile.last_seen).getTime() : Date.now(),
-  energy: profile.energy ?? ENERGY_CAP,
-  energyAt: profile.energy_at ? new Date(profile.energy_at).getTime() : Date.now(),
+  energy: profile.energy ?? ENERGY_DAILY_CAP,
   rps: 0,
 });
 
@@ -773,7 +779,6 @@ function Game({ G, onExit, startFresh }) {
     g.boostUntil = data.boost_until ? new Date(data.boost_until).getTime() : 0;
     g.boostReadyAt = data.boost_ready_at ? new Date(data.boost_ready_at).getTime() : 0;
     if (data.energy != null) g.energy = data.energy;
-    if (data.energy_at) g.energyAt = new Date(data.energy_at).getTime();
     return data;
   }, [g]);
 
@@ -1459,7 +1464,7 @@ function Game({ G, onExit, startFresh }) {
     // Client-side check just saves a round-trip; the server enforces this
     // independently and for real.
     if (energyNow(g) < 1) {
-      toast(`Out of energy — recharges 1/min (max ${ENERGY_CAP}), next in ${energySecsToNext(g)}s`);
+      toast(`Out of energy for today (${ENERGY_DAILY_CAP}/day) — resets at midnight UTC`);
       return;
     }
     setRoll({ qk, phase: "spin" });
@@ -1471,7 +1476,6 @@ function Game({ G, onExit, startFresh }) {
     }
     g.bal -= price;
     g.energy = Math.max(0, energyNow(g) - 1);
-    g.energyAt = Date.now();
     const r = data.rarity;
     g.own.push({ qk, l: data.level, r, pr: data.prestige || 0, cls, pd: data.paid });
     // if this was the player's very first tile anywhere, the server just
@@ -2192,7 +2196,7 @@ function Game({ G, onExit, startFresh }) {
       longtasks: D.long, longtaskMaxMs: D.longMax, errors: D.errs, lastInput: D.lastEvt,
       // full per-tile breakdown — this is what actually shows whether a
       // tile's district/rent is wrong, and if so what cls it's stuck at
-      owned: g.own.length, rps: g.rps, energy: energyNow(g), energyCap: ENERGY_CAP, energySecsToNext: energySecsToNext(g),
+      owned: g.own.length, rps: g.rps, energy: energyNow(g), energyDailyCap: ENERGY_DAILY_CAP, energySecsToReset: energySecsToReset(),
       ownTiles: g.own.map((t) => ({ qk: t.qk, cls: t.cls, rarity: t.r, level: t.l, rps: CLS[t.cls] ? rentOf(t) : "UNKNOWN_CLS" })),
     }, null, 1);
     try { navigator.clipboard.writeText(data); toast("Diagnostics copied"); }
@@ -2213,6 +2217,7 @@ function Game({ G, onExit, startFresh }) {
   const boostCooldownLeft = Math.max(0, (g.boostReadyAt || 0) - Date.now());
   const boostOnCooldown = !boostOn && boostCooldownLeft > 0;
   const mmss = (ms) => { const s = Math.ceil(ms / 1000); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`; };
+  const hm = (secs) => { const h = Math.floor(secs / 3600), m = Math.floor((secs % 3600) / 60); return h > 0 ? `${h}h ${m}m` : `${m}m`; };
 
   const selRec = sel ? recOf(sel) : undefined;
   const selDbg = dbg && sel ? classify(sel) : null;
@@ -2336,12 +2341,12 @@ function Game({ G, onExit, startFresh }) {
             <div className="text-2xl font-bold" style={{ ...mono, color: C.amber, fontVariantNumeric: "tabular-nums", textShadow: `0 0 18px ${C.glow}` }}>₲{fmt(g.bal)}</div>
             <div className="text-xs" style={{ ...mono, color: C.dim }}>+{fmt1(g.rps * (boostOn ? 2 : 1))}/s{boostOn ? " ⚡" : ""}</div>
           </div>
-          <div className="mt-0.5 flex items-center gap-1.5" title="Energy — spent claiming unowned land, recharges 1/min">
+          <div className="mt-0.5 flex items-center gap-1.5" title="Energy — spent claiming unowned land, resets once per day">
             <span className="pt10 font-bold" style={{ ...mono, color: energyNow(g) > 0 ? C.amber : "#F08A8A", fontVariantNumeric: "tabular-nums" }}>
-              ⚡{energyNow(g)}/{ENERGY_CAP}
+              ⚡{energyNow(g)}/{ENERGY_DAILY_CAP} today
             </span>
-            {energyNow(g) < ENERGY_CAP && (
-              <span className="pt10" style={{ ...mono, color: C.dim }}>+1 in {energySecsToNext(g)}s</span>
+            {energyNow(g) < ENERGY_DAILY_CAP && (
+              <span className="pt10" style={{ ...mono, color: C.dim }}>resets in {hm(energySecsToReset())}</span>
             )}
           </div>
         </div>
@@ -2453,7 +2458,7 @@ function Game({ G, onExit, startFresh }) {
                   <span style={{ color: "#F08A8A" }}> · {g.own.filter((t) => !CLS[t.cls] || CLS[t.cls].rps === 0).length} zero-rent!</span>
                 )}
               </div>
-              <div>energy {energyNow(g)}/{ENERGY_CAP} · raw {g.energy} @ +{ENERGY_REGEN_S}s ticks · next in {energySecsToNext(g)}s</div>
+              <div>energy {energyNow(g)}/{ENERGY_DAILY_CAP} today · resets in {hm(energySecsToReset())}</div>
               <div>territory: {unlockedRegions.current.size} region(s){homeRegionRef.current ? ` · home ${homeRegionRef.current}` : ""}{sel ? ` · sel ${regionOf(sel)} locked=${String(selLocked)}` : ""}</div>
               <div>fps {D.fps} · draw {D.avg}ms · max {D.max}ms</div>
               <div>tilePx {D.tilePx.toFixed(2)} · grid {String(D.gridOn)} · tiles {D.cnt}</div>
