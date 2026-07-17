@@ -724,6 +724,7 @@ function Game({ G, onExit, startFresh }) {
   const [assetClsFilter, setAssetClsFilter] = useState("all");
   const [assetRarityFilter, setAssetRarityFilter] = useState(-1);
   const [assetSort, setAssetSort] = useState("rent");
+  const [batchBusy, setBatchBusy] = useState(null);
   const [nameDraft, setNameDraft] = useState(G.current.name || "");
   const [priceDraft, setPriceDraft] = useState("");
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -1586,6 +1587,42 @@ function Game({ G, onExit, startFresh }) {
     toast(`${LVL[t.l]} built`);
   };
 
+  // Manual, sequential batch upgrade over a given tile set (the Assets
+  // tab's currently-filtered list, so it's scoped to whatever the player
+  // was already looking at — "upgrade all my Rural tiles" falls out of
+  // the existing filter for free). Deliberately re-picks the single
+  // cheapest still-upgradable tile each round rather than sorting once
+  // up front — upgrading a tile changes ITS OWN next cost, which can
+  // reorder it relative to the others mid-batch. Sequential (not
+  // parallel) on purpose: affordability is order-dependent against a
+  // running balance, and running it visibly one tile at a time (with a
+  // live progress toast) is the point — a player asked for this, it's
+  // not a background auto-upgrade bot.
+  const upgradeAll = async (tiles) => {
+    if (batchBusy) return;
+    let pool = tiles.filter((t) => t.l < MAX_LVL);
+    const totalEligible = pool.length;
+    if (totalEligible === 0) { toast("Nothing here needs upgrading."); return; }
+    let count = 0, spent = 0;
+    setBatchBusy({ done: 0, total: totalEligible });
+    while (pool.length) {
+      pool.sort((a, b) => upCost(a) - upCost(b));
+      const t = pool[0];
+      const cost = upCost(t);
+      if (g.bal < cost) break; // cheapest remaining is unaffordable — nothing else in the pool will be either
+      const { data, error } = await supabase.rpc("upgrade_tile", { p_qk: t.qk });
+      if (error || !data) break; // stop on any server-side rejection rather than retry-looping
+      g.bal -= cost; t.l = data.level; t.pd = data.paid;
+      spent += cost; count++;
+      if (t.l >= MAX_LVL) pool = pool.filter((x) => x !== t);
+      setBatchBusy({ done: count, total: totalEligible });
+      force();
+    }
+    setBatchBusy(null);
+    rebuildOwn(); checkAch(); dirty.current = true; save();
+    toast(count > 0 ? `Upgraded ${count} tile${count === 1 ? "" : "s"} for ₲${fmt(spent)}` : "Not enough ₲ to upgrade anything here.");
+  };
+
   const redevelop = async (qk) => {
     const t = ownMap.current.get(qk);
     if (!t || t.l < MAX_LVL) return;
@@ -2288,6 +2325,7 @@ function Game({ G, onExit, startFresh }) {
     else if (assetSort === "district") sorted.sort((a, b) => (CLS[a.cls]?.name || "").localeCompare(CLS[b.cls]?.name || ""));
     return sorted;
   })();
+  const assetsUpgradable = tab !== "assets" ? [] : assetsFiltered.filter((t) => t.l < MAX_LVL);
 
   // Reads whatever world coordinate is currently centered under the fixed
   // pin (the map pans underneath it, not the other way around — same
@@ -2727,6 +2765,11 @@ function Game({ G, onExit, startFresh }) {
                       <option value="district">District</option>
                     </select>
                   </div>
+                  {assetsUpgradable.length > 0 && (
+                    <Btn small tone="ghost" full onClick={() => upgradeAll(assetsFiltered)} disabled={!!batchBusy}>
+                      {batchBusy ? `Upgrading… ${batchBusy.done}/${batchBusy.total}` : `Upgrade all — ${assetsUpgradable.length} eligible${assetClsFilter !== "all" || assetRarityFilter !== -1 || assetQuery.trim() ? " (filtered)" : ""}`}
+                    </Btn>
+                  )}
                 </div>
               )}
             </div>
