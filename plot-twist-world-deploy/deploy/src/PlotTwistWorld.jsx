@@ -720,6 +720,10 @@ function Game({ G, onExit, startFresh }) {
   const [market, setMarket] = useState({ loading: false, rows: null });
   const [flips, setFlips] = useState({ loading: false, rows: null });
   const [lb, setLb] = useState({ loading: false, rows: null });
+  const [assetQuery, setAssetQuery] = useState("");
+  const [assetClsFilter, setAssetClsFilter] = useState("all");
+  const [assetRarityFilter, setAssetRarityFilter] = useState(-1);
+  const [assetSort, setAssetSort] = useState("rent");
   const [nameDraft, setNameDraft] = useState(G.current.name || "");
   const [priceDraft, setPriceDraft] = useState("");
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -2260,6 +2264,31 @@ function Game({ G, onExit, startFresh }) {
   const selLocked = sel && g.own.length > 0 ? !unlockedRegions.current.has(regionOf(sel)) : false;
   const tilePxNow = cam.current.s / N;
 
+  // Only actually filters/sorts when the Assets tab is showing — skipped
+  // otherwise so a 50+ tile portfolio doesn't pay this cost 4x/sec on the
+  // 250ms economy tick while the player is looking at the map instead.
+  const assetsFiltered = tab !== "assets" ? g.own : (() => {
+    const q = assetQuery.trim().toLowerCase();
+    let list = g.own;
+    if (assetClsFilter !== "all") list = list.filter((t) => t.cls === assetClsFilter);
+    if (assetRarityFilter !== -1) list = list.filter((t) => t.r === assetRarityFilter);
+    if (q) {
+      list = list.filter((t) => {
+        const city = classify(t.qk).n || "";
+        return (CLS[t.cls]?.name || "").toLowerCase().includes(q)
+          || city.toLowerCase().includes(q)
+          || coordLabel(t.qk).toLowerCase().includes(q);
+      });
+    }
+    const sorted = list.slice();
+    if (assetSort === "rent") sorted.sort((a, b) => rentOf(b) - rentOf(a));
+    else if (assetSort === "rent-asc") sorted.sort((a, b) => rentOf(a) - rentOf(b));
+    else if (assetSort === "level") sorted.sort((a, b) => b.l - a.l);
+    else if (assetSort === "rarity") sorted.sort((a, b) => b.r - a.r);
+    else if (assetSort === "district") sorted.sort((a, b) => (CLS[a.cls]?.name || "").localeCompare(CLS[b.cls]?.name || ""));
+    return sorted;
+  })();
+
   // Reads whatever world coordinate is currently centered under the fixed
   // pin (the map pans underneath it, not the other way around — same
   // pattern as most map-based location pickers), resolves REAL
@@ -2651,14 +2680,73 @@ function Game({ G, onExit, startFresh }) {
 
         {/* PORTFOLIO */}
         {tab === "assets" && (
-          <div className="absolute inset-0 overflow-y-auto p-4">
-            <div className="mb-3"><Eyebrow>Your holdings · {g.own.length} tile{g.own.length === 1 ? "" : "s"} · net worth ₲{fmt(netWorth())}</Eyebrow></div>
-            {g.own.length === 0 && (
-              <div className="rounded-xl p-6 text-center text-sm" style={{ background: C.panel, color: C.dim }}>
-                You own nothing. The planet awaits — zoom in anywhere and claim your first ~300 m of it.
-              </div>
-            )}
-            {g.own.slice().sort((a, b) => rentOf(b) - rentOf(a)).map((t) => (
+          <div className="absolute inset-0 flex flex-col">
+            <div className="shrink-0 px-4 pt-4">
+              <div className="mb-3"><Eyebrow>Your holdings · {g.own.length} tile{g.own.length === 1 ? "" : "s"} · net worth ₲{fmt(netWorth())}</Eyebrow></div>
+              {g.own.length > 0 && (
+                <div className="mb-1">
+                  <input value={assetQuery} onChange={(e) => setAssetQuery(e.target.value)} placeholder="Search by district or nearby city…"
+                    className="mb-2 w-full rounded-xl px-3 py-2 text-sm focus-visible:outline focus-visible:outline-2"
+                    style={{ ...display, ...inputSty }} />
+                  <div className="mb-2 flex gap-1.5 overflow-x-auto pb-1">
+                    {["all", ...LEGEND].map((cls) => (
+                      <button key={cls} onClick={() => setAssetClsFilter(cls)}
+                        className="pt10 shrink-0 rounded-full px-2.5 py-1 font-bold uppercase tracking-wide focus-visible:outline focus-visible:outline-2"
+                        style={{
+                          ...display, outlineColor: C.amber,
+                          color: assetClsFilter === cls ? "#2B1B03" : C.dim,
+                          backgroundImage: assetClsFilter === cls ? C.amberGrad : "none",
+                          background: assetClsFilter === cls ? undefined : C.panel,
+                          border: `1px solid ${assetClsFilter === cls ? "#E8A430" : C.hairLit}`,
+                        }}>
+                        {cls === "all" ? "All" : CLS[cls].name}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <div className="flex flex-1 gap-1.5 overflow-x-auto pb-1">
+                      {[{ v: -1, n: "All rarity", c: C.dim }, ...RAR.map((r, i) => ({ v: i, n: r.name, c: r.color }))].map((r) => (
+                        <button key={r.v} onClick={() => setAssetRarityFilter(r.v)}
+                          className="pt10 shrink-0 rounded-full px-2.5 py-1 font-bold uppercase tracking-wide focus-visible:outline focus-visible:outline-2"
+                          style={{
+                            ...display, outlineColor: C.amber,
+                            color: assetRarityFilter === r.v ? "#0B1420" : r.c,
+                            background: assetRarityFilter === r.v ? r.c : C.panel,
+                            border: `1px solid ${assetRarityFilter === r.v ? r.c : C.hairLit}`,
+                          }}>
+                          {r.n}
+                        </button>
+                      ))}
+                    </div>
+                    <select value={assetSort} onChange={(e) => setAssetSort(e.target.value)}
+                      className="pt11 shrink-0 rounded-xl px-2 py-2 focus-visible:outline focus-visible:outline-2"
+                      style={{ ...display, ...inputSty }}>
+                      <option value="rent">Rent ↓</option>
+                      <option value="rent-asc">Rent ↑</option>
+                      <option value="level">Level</option>
+                      <option value="rarity">Rarity</option>
+                      <option value="district">District</option>
+                    </select>
+                  </div>
+                </div>
+              )}
+            </div>
+            <div className="flex-1 overflow-y-auto px-4 pb-4">
+              {g.own.length === 0 && (
+                <div className="rounded-xl p-6 text-center text-sm" style={{ background: C.panel, color: C.dim }}>
+                  You own nothing. The planet awaits — zoom in anywhere and claim your first ~300 m of it.
+                </div>
+              )}
+              {g.own.length > 0 && assetsFiltered.length === 0 && (
+                <div className="rounded-xl p-6 text-center text-sm" style={{ background: C.panel, color: C.dim }}>
+                  No tiles match those filters. <button className="font-bold underline" style={{ color: C.amber }}
+                    onClick={() => { setAssetQuery(""); setAssetClsFilter("all"); setAssetRarityFilter(-1); }}>Clear filters</button>
+                </div>
+              )}
+              {g.own.length > 0 && assetsFiltered.length > 0 && assetsFiltered.length !== g.own.length && (
+                <div className="pt10 mb-2" style={{ ...mono, color: C.dim }}>Showing {assetsFiltered.length} of {g.own.length}</div>
+              )}
+              {assetsFiltered.map((t) => (
               <div key={t.qk} className="mb-2 rounded-xl p-3 transition-transform duration-150 hover:-translate-y-0.5" style={cardSty}>
                 <button className="flex w-full items-center justify-between text-left focus-visible:outline focus-visible:outline-2" style={{ outlineColor: C.amber }}
                   onClick={() => { setTab("map"); setSel(t.qk); const [wx, wy] = centerOfQk(t.qk); const { w, h } = size.current; const s = N * 16; cam.current = { s, x: w / 2 - wx * s, y: h / 2 - wy * s, init: true }; ensureRegion(regionOf(t.qk), true); }}>
@@ -2689,7 +2777,8 @@ function Game({ G, onExit, startFresh }) {
                   </div>
                 </div>
               </div>
-            ))}
+              ))}
+            </div>
           </div>
         )}
 
@@ -2761,23 +2850,26 @@ function Game({ G, onExit, startFresh }) {
         {/* HQ */}
         {tab === "hq" && (
           <div className="absolute inset-0 overflow-y-auto p-4">
-            <div className="mb-3 grid grid-cols-2 gap-2">
-              {[
-                ["Net worth", "₲" + fmt(netWorth())],
-                ["Rent rate", "₲" + fmt1(g.rps) + "/s"],
-                ["Tiles", g.own.length],
-                ["Visit streak", (g.streak || 0) + "d"],
-              ].map(([k, v]) => (
-                <div key={k} className="rounded-xl p-3" style={cardSty}>
-                  <div className="pt9 trk uppercase font-semibold" style={{ ...display, color: C.dim }}>{k}</div>
-                  <div className="text-lg font-bold" style={{ ...mono, fontVariantNumeric: "tabular-nums" }}>{v}</div>
-                </div>
-              ))}
+            {/* zone: you — identity comes first, then the numbers, then what you've earned */}
+            <div className="mb-2 flex items-center gap-2">
+              <span className="text-xs font-bold uppercase tracking-wide" style={{ ...display, color: C.text }}>You</span>
+              <div className="h-px flex-1" style={{ background: C.hair }} />
             </div>
 
             <div className="mb-3 rounded-xl p-3" style={cardSty}>
-              <div className="mb-2 flex items-center justify-between">
-                <Eyebrow>Status</Eyebrow>
+              <div className="mb-2 flex items-center justify-between gap-2">
+                {g.name ? (
+                  <div className="flex min-w-0 items-center gap-2">
+                    <span className="truncate text-base font-bold" style={mono}>{g.name}</span>
+                    <button className="pt10 shrink-0 font-bold underline focus-visible:outline focus-visible:outline-2" style={{ ...display, color: C.dim, outlineColor: C.amber }}
+                      onClick={() => { setNameDraft(g.name); setModal({ kind: "name" }); }}>Rename</button>
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs" style={{ color: C.dim }}>Pick a name to claim tiles and trade.</span>
+                    <Btn small onClick={() => setModal({ kind: "name" })}>Set name</Btn>
+                  </div>
+                )}
                 <Chip color={C.amber}>{myStatus.name}</Chip>
               </div>
               {myStatus.next ? (
@@ -2797,26 +2889,47 @@ function Game({ G, onExit, startFresh }) {
                 <div className="pt10" style={{ ...mono, color: C.dim }}>Highest status reached — ₲{fmt(g.peakNetWorth)} peak net worth.</div>
               )}
               <div className="pt10 mt-2" style={{ ...mono, color: C.dim }}>
-                Sticky — based on your all-time-highest net worth, never drops. Higher status raises your daily energy cap ({myStatus.cap}/day now).
+                Status is sticky (never drops) and raises your daily energy cap — {myStatus.cap}/day now. Your name is public on tiles, listings and the leaderboard.
               </div>
             </div>
 
+            <div className="mb-3 grid grid-cols-2 gap-2">
+              {[
+                ["Net worth", "₲" + fmt(netWorth())],
+                ["Rent rate", "₲" + fmt1(g.rps) + "/s"],
+                ["Tiles", g.own.length],
+                ["Visit streak", (g.streak || 0) + "d"],
+              ].map(([k, v]) => (
+                <div key={k} className="rounded-xl p-3" style={cardSty}>
+                  <div className="pt9 trk uppercase font-semibold" style={{ ...display, color: C.dim }}>{k}</div>
+                  <div className="text-lg font-bold" style={{ ...mono, fontVariantNumeric: "tabular-nums" }}>{v}</div>
+                </div>
+              ))}
+            </div>
+
             <div className="mb-3 rounded-xl p-3" style={cardSty}>
-              <div className="mb-2"><Eyebrow>Landlord identity</Eyebrow></div>
-              {g.name ? (
-                <div className="flex items-center justify-between">
-                  <span className="text-sm font-bold" style={mono}>{g.name}</span>
-                  <Btn small tone="ghost" onClick={() => { setNameDraft(g.name); setModal({ kind: "name" }); }}>Rename</Btn>
-                </div>
-              ) : (
-                <div className="flex items-center justify-between">
-                  <span className="text-xs" style={{ color: C.dim }}>Pick a name to claim tiles and trade.</span>
-                  <Btn small onClick={() => setModal({ kind: "name" })}>Set name</Btn>
-                </div>
-              )}
-              <div className="pt10 mt-2" style={{ ...mono, color: C.dim }}>
-                Your name appears publicly on tiles you own, market listings and the leaderboard.
+              <div className="mb-2"><Eyebrow>Commendations</Eyebrow></div>
+              <div className="flex flex-wrap gap-1.5">
+                {ACH.map((a) => (
+                  <span key={a.k} title={a.desc} className="pt10 rounded-full px-2.5 py-1 font-bold"
+                    style={{
+                      ...display,
+                      color: g.ach[a.k] ? "#2B1B03" : C.dim,
+                      backgroundImage: g.ach[a.k] ? C.amberGrad : "none",
+                      background: g.ach[a.k] ? undefined : C.panel,
+                      border: `1px solid ${g.ach[a.k] ? "#E8A430" : C.hairLit}`,
+                      boxShadow: g.ach[a.k] ? `0 0 12px ${C.glow}` : "none",
+                    }}>
+                    {a.name}
+                  </span>
+                ))}
               </div>
+            </div>
+
+            {/* zone: world — territory + who else is out there */}
+            <div className="mb-2 mt-1 flex items-center gap-2">
+              <span className="text-xs font-bold uppercase tracking-wide" style={{ ...display, color: C.text }}>World</span>
+              <div className="h-px flex-1" style={{ background: C.hair }} />
             </div>
 
             <div className="mb-3 rounded-xl p-3" style={cardSty}>
@@ -2846,25 +2959,6 @@ function Game({ G, onExit, startFresh }) {
             </div>
 
             <div className="mb-3 rounded-xl p-3" style={cardSty}>
-              <div className="mb-2"><Eyebrow>Commendations</Eyebrow></div>
-              <div className="flex flex-wrap gap-1.5">
-                {ACH.map((a) => (
-                  <span key={a.k} title={a.desc} className="pt10 rounded-full px-2.5 py-1 font-bold"
-                    style={{
-                      ...display,
-                      color: g.ach[a.k] ? "#2B1B03" : C.dim,
-                      backgroundImage: g.ach[a.k] ? C.amberGrad : "none",
-                      background: g.ach[a.k] ? undefined : `${C.ink}80`,
-                      border: `1px solid ${g.ach[a.k] ? "#E8A430" : C.hair}`,
-                      boxShadow: g.ach[a.k] ? `0 0 12px ${C.glow}` : "none",
-                    }}>
-                    {a.name}
-                  </span>
-                ))}
-              </div>
-            </div>
-
-            <div className="mb-3 rounded-xl p-3" style={cardSty}>
               <div className="mb-2 flex items-center justify-between">
                 <Eyebrow>World register · top landlords</Eyebrow>
                 <button onClick={refreshLB} className="pt11 focus-visible:outline focus-visible:outline-2" style={{ ...mono, color: C.amber, outlineColor: C.amber }}>Refresh</button>
@@ -2889,8 +2983,13 @@ function Game({ G, onExit, startFresh }) {
               )}
             </div>
 
+            {/* zone: account */}
+            <div className="mb-2 mt-1 flex items-center gap-2">
+              <span className="text-xs font-bold uppercase tracking-wide" style={{ ...display, color: C.text }}>Account</span>
+              <div className="h-px flex-1" style={{ background: C.hair }} />
+            </div>
+
             <div className="mb-3 rounded-xl p-3" style={cardSty}>
-              <div className="mb-2"><Eyebrow>Account</Eyebrow></div>
               <div className="flex gap-2">
                 <Btn small tone="ghost" onClick={() => { save(); onExit(); signOut(); }}>Sign out</Btn>
                 <Btn small tone="danger" onClick={() => setConfirmDelete(true)}>Delete account &amp; data</Btn>
