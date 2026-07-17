@@ -2694,10 +2694,9 @@ function Game({ G, onExit, startFresh }) {
                         className="pt10 shrink-0 rounded-full px-2.5 py-1 font-bold uppercase tracking-wide focus-visible:outline focus-visible:outline-2"
                         style={{
                           ...display, outlineColor: C.amber,
-                          color: assetClsFilter === cls ? "#2B1B03" : C.dim,
-                          backgroundImage: assetClsFilter === cls ? C.amberGrad : "none",
-                          background: assetClsFilter === cls ? undefined : C.panel,
-                          border: `1px solid ${assetClsFilter === cls ? "#E8A430" : C.hairLit}`,
+                          color: assetClsFilter === cls ? C.ink : C.dim,
+                          background: assetClsFilter === cls ? C.amber : C.panel,
+                          border: `1px solid ${assetClsFilter === cls ? C.amber : C.hairLit}`,
                         }}>
                         {cls === "all" ? "All" : CLS[cls].name}
                       </button>
@@ -2914,11 +2913,9 @@ function Game({ G, onExit, startFresh }) {
                   <span key={a.k} title={a.desc} className="pt10 rounded-full px-2.5 py-1 font-bold"
                     style={{
                       ...display,
-                      color: g.ach[a.k] ? "#2B1B03" : C.dim,
-                      backgroundImage: g.ach[a.k] ? C.amberGrad : "none",
-                      background: g.ach[a.k] ? undefined : C.panel,
-                      border: `1px solid ${g.ach[a.k] ? "#E8A430" : C.hairLit}`,
-                      boxShadow: g.ach[a.k] ? `0 0 12px ${C.glow}` : "none",
+                      color: g.ach[a.k] ? C.ink : C.dim,
+                      background: g.ach[a.k] ? C.amber : C.panel,
+                      border: `1px solid ${g.ach[a.k] ? C.amber : C.hairLit}`,
                     }}>
                     {a.name}
                   </span>
@@ -3010,7 +3007,7 @@ function Game({ G, onExit, startFresh }) {
       <div className="pointer-events-none absolute inset-x-0 bottom-20 z-10 flex flex-col items-center gap-1.5">
         {toasts.map((t) => (
           <div key={t.id} className="pt-anim-popIn rounded-full px-4 py-2 text-xs font-bold"
-            style={{ ...display, backgroundImage: C.amberGrad, color: "#2B1B03", boxShadow: `${C.shadowMd}, 0 0 20px ${C.glow}` }}>{t.text}</div>
+            style={{ ...display, background: C.amber, color: C.ink, boxShadow: C.shadowMd }}>{t.text}</div>
         ))}
       </div>
 
@@ -3020,8 +3017,8 @@ function Game({ G, onExit, startFresh }) {
           <button key={k} onClick={() => setTab(k)} className="pt11 trk flex-1 rounded-xl py-2.5 font-bold uppercase transition-all duration-150 focus-visible:outline focus-visible:outline-2"
             style={{
               ...display,
-              color: tab === k ? "#2B1B03" : C.dim,
-              backgroundImage: tab === k ? C.amberGrad : "none",
+              color: tab === k ? C.ink : C.dim,
+              background: tab === k ? C.amber : "none",
               boxShadow: tab === k ? "0 4px 14px -4px rgba(226,154,46,.55)" : "none",
               outlineColor: C.amber,
             }}>
