@@ -376,6 +376,15 @@ const energySecsToReset = () => {
 // attack_tile() re-derives this server-side and is the sole authority.
 const todayUTC = () => new Date().toISOString().slice(0, 10);
 
+// relative-time label for the HQ activity log — display only.
+const timeAgo = (iso) => {
+  const secs = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 1000));
+  if (secs < 60) return "just now";
+  if (secs < 3600) return `${Math.floor(secs / 60)}m ago`;
+  if (secs < 86400) return `${Math.floor(secs / 3600)}h ago`;
+  return `${Math.floor(secs / 86400)}d ago`;
+};
+
 /* ── in-memory game state ──────────────────────────────────────
    No localStorage save anymore: `profiles`/`tiles` in Postgres (via the
    RPCs in supabase.sql, keyed by auth.uid()) are the only source of truth.
@@ -398,6 +407,7 @@ const gameFromProfile = (uid, profile) => ({
   energy: profile.energy ?? statusFor(profile.peak_net_worth || 0).cap,
   attacksSent: profile.attacks_sent_count || 0,
   devMode: profile.dev_mode || false,
+  hasUnseenLoss: false, // pure client-side cosmetic flag, never persisted server-side — see collectBattles
   rps: 0,
 });
 
@@ -748,6 +758,7 @@ function Game({ G, onExit, startFresh }) {
   const [market, setMarket] = useState({ loading: false, rows: null });
   const [flips, setFlips] = useState({ loading: false, rows: null });
   const [lb, setLb] = useState({ loading: false, rows: null });
+  const [log, setLog] = useState({ loading: false, rows: null });
   const [assetQuery, setAssetQuery] = useState("");
   const [assetClsFilter, setAssetClsFilter] = useState("all");
   const [assetRarityFilter, setAssetRarityFilter] = useState(-1);
@@ -877,8 +888,10 @@ function Game({ G, onExit, startFresh }) {
     if (received_count) {
       // a lost tile changes g.own out from under us with no local action —
       // pull the real portfolio immediately rather than waiting for the
-      // next focus/visibility resync
-      if (received_lost_count) refreshOwnedTiles();
+      // next focus/visibility resync. Also flags the HQ nav badge so a loss
+      // that happened fully offline stays visible past the toast, until
+      // the player actually opens HQ (see the refreshLog effect above).
+      if (received_lost_count) { refreshOwnedTiles(); g.hasUnseenLoss = true; }
       toast(received_lost_count
         ? `Your territory was raided — ${received_lost_count} of ${received_count} attack${received_count === 1 ? "" : "s"} took a tile`
         : `Your territory was raided ${received_count} time${received_count === 1 ? "" : "s"} — you held every tile`);
@@ -1412,7 +1425,7 @@ function Game({ G, onExit, startFresh }) {
   const ensureRegion = useCallback(async (prefix, forceRefresh) => {
     const rc = regions.current;
     const cur = rc.get(prefix);
-    if (!forceRefresh && cur && Date.now() - cur.at < 25000) return cur;
+    if (!forceRefresh && cur && Date.now() - cur.at < 8000) return cur;
     if (busyRegions.current.has(prefix)) return cur;
     busyRegions.current.add(prefix);
     setSyncing(true);
@@ -1531,6 +1544,46 @@ function Game({ G, onExit, startFresh }) {
     setLb({ loading: false, rows: (data || []).map((r) => ({ id: r.user_id, n: r.username, nw: r.net_worth, pc: r.tile_count, pnw: r.peak_net_worth || 0 })) });
   }, []);
   useEffect(() => { if (tab === "hq") refreshLB(); }, [tab, refreshLB]);
+
+  /* ── activity log: reads bank_ledger + battle_log directly (both already
+     RLS-permitted for your own rows — no new RPC needed) and merges them
+     into one human-readable feed. battle_log references auth.users, not
+     profiles, so it can't ride a PostgREST embed the way tiles.owner does —
+     opponent usernames need a separate lookup. ── */
+  const refreshLog = useCallback(async () => {
+    setLog({ loading: true, rows: null });
+    const [bankRes, battleRes] = await Promise.all([
+      supabase.from("bank_ledger").select("id,amount,from_username,kind,created_at").eq("recipient", g.uid).order("created_at", { ascending: false }).limit(20),
+      supabase.from("battle_log").select("id,attacker,defender,attacker_won,cost,created_at").or(`attacker.eq.${g.uid},defender.eq.${g.uid}`).order("created_at", { ascending: false }).limit(20),
+    ]);
+    const bankRows = bankRes.data || [];
+    const battleRows = battleRes.data || [];
+    const oppIds = [...new Set(battleRows.map((r) => (r.attacker === g.uid ? r.defender : r.attacker)))];
+    let names = {};
+    if (oppIds.length) {
+      const { data: profRows } = await supabase.from("profiles").select("user_id,username").in("user_id", oppIds);
+      names = Object.fromEntries((profRows || []).map((p) => [p.user_id, p.username]));
+    }
+    const bankEvents = bankRows.map((r) => ({
+      id: `bank-${r.id}`, ts: r.created_at,
+      text: r.kind === "repossession" ? `Tile repossessed for inactivity — ₲${fmt(r.amount)} refunded`
+        : r.kind === "flip" ? `Flip royalty from ${r.from_username || "a player"} — +₲${fmt(r.amount)}`
+        : `Sold to ${r.from_username || "a player"} — +₲${fmt(r.amount)}`,
+      tone: r.kind === "repossession" ? "dim" : "good",
+    }));
+    const battleEvents = battleRows.map((r) => {
+      const iAmAttacker = r.attacker === g.uid;
+      const oppName = names[iAmAttacker ? r.defender : r.attacker] || "a player";
+      return iAmAttacker
+        ? { id: `battle-${r.id}`, ts: r.created_at, tone: r.attacker_won ? "good" : "bad",
+            text: r.attacker_won ? `Captured a tile from ${oppName} — ₲${fmt(r.cost)} spent` : `Attack on ${oppName} repelled — ₲${fmt(r.cost)} lost` }
+        : { id: `battle-${r.id}`, ts: r.created_at, tone: r.attacker_won ? "bad" : "good",
+            text: r.attacker_won ? `Lost a tile to ${oppName}'s attack` : `Defended against ${oppName}'s attack — nothing lost` };
+    });
+    const merged = [...bankEvents, ...battleEvents].sort((a, b) => new Date(b.ts) - new Date(a.ts)).slice(0, 30);
+    setLog({ loading: false, rows: merged });
+  }, [g]);
+  useEffect(() => { if (tab === "hq") { refreshLog(); g.hasUnseenLoss = false; } }, [tab, refreshLog, g]);
 
   /* ── actions: every one of these is a security-definer RPC call — price,
      rarity, balance and ownership are all decided server-side (see
@@ -2080,6 +2133,16 @@ function Game({ G, onExit, startFresh }) {
           const mine = rec.o === g.uid;
           ctx.fillStyle = hexA(mine ? C.amber : CLS[classifyTxy(tx, ty).c].color, mine ? 0.28 : 0.3);
           ctx.fillRect(px + 1, py + 1, tilePx - 2, tilePx - 2);
+          if (!mine) {
+            // owned-by-someone-else marker — otherwise an enemy tile is
+            // pixel-identical to unowned land of the same district until
+            // you click it. Reuses the existing danger red so "bordered in
+            // red" reads as "someone else's, contestable" at a glance.
+            ctx.strokeStyle = hexA("#F08A8A", 0.55);
+            ctx.lineWidth = 1.5;
+            ctx.strokeRect(px + 1.5, py + 1.5, tilePx - 3, tilePx - 3);
+            ctx.lineWidth = 1;
+          }
           if (rec.r === 3) {
             const pulse = reduced ? 0.8 : 0.55 + 0.35 * Math.sin(frame.current / 12 + tx + ty);
             ctx.strokeStyle = hexA(C.amber, pulse);
@@ -3193,6 +3256,31 @@ function Game({ G, onExit, startFresh }) {
               )}
             </div>
 
+            {/* zone: activity — sales, repossessions, battle results */}
+            <div className="mb-2 mt-1 flex items-center gap-2">
+              <span className="text-xs font-bold uppercase tracking-wide" style={{ ...display, color: C.text }}>Activity</span>
+              <div className="h-px flex-1" style={{ background: C.hair }} />
+            </div>
+
+            <div className="mb-3 rounded-xl p-3" style={cardSty}>
+              <div className="mb-2 flex items-center justify-between">
+                <Eyebrow>Recent activity</Eyebrow>
+                <button onClick={refreshLog} className="pt11 focus-visible:outline focus-visible:outline-2" style={{ ...mono, color: C.amber, outlineColor: C.amber }}>Refresh</button>
+              </div>
+              {log.loading ? (
+                <div className="pt11 py-2" style={{ ...mono, color: C.dim }}>Pulling records…</div>
+              ) : log.rows && log.rows.length ? (
+                log.rows.map((e, idx) => (
+                  <div key={e.id} className="flex items-center justify-between gap-2 py-1.5 text-xs" style={{ ...mono, borderTop: idx ? `1px solid ${C.hair}` : "none", color: e.tone === "bad" ? "#F08A8A" : e.tone === "good" ? C.amber : C.dim }}>
+                    <span className="min-w-0 flex-1 truncate">{e.text}</span>
+                    <span className="shrink-0" style={{ color: C.dim }}>{timeAgo(e.ts)}</span>
+                  </div>
+                ))
+              ) : (
+                <div className="pt11 py-2" style={{ ...mono, color: C.dim }}>Nothing yet — sales, repossessions, and battle results will show up here.</div>
+              )}
+            </div>
+
             {/* zone: account */}
             <div className="mb-2 mt-1 flex items-center gap-2">
               <span className="text-xs font-bold uppercase tracking-wide" style={{ ...display, color: C.text }}>Account</span>
@@ -3227,7 +3315,7 @@ function Game({ G, onExit, startFresh }) {
       {/* nav */}
       <div className="flex gap-1 p-1.5" style={{ background: C.panel, borderTop: `1px solid ${C.hair}` }}>
         {[["map", "Map"], ["assets", "Assets"], ["market", "Market"], ["hq", "HQ"]].map(([k, label]) => (
-          <button key={k} onClick={() => setTab(k)} className="pt11 trk flex-1 rounded-xl py-2.5 font-bold uppercase transition-all duration-150 focus-visible:outline focus-visible:outline-2"
+          <button key={k} onClick={() => setTab(k)} className="relative pt11 trk flex-1 rounded-xl py-2.5 font-bold uppercase transition-all duration-150 focus-visible:outline focus-visible:outline-2"
             style={{
               ...display,
               color: tab === k ? C.ink : C.dim,
@@ -3236,6 +3324,9 @@ function Game({ G, onExit, startFresh }) {
               outlineColor: C.amber,
             }}>
             {label}
+            {k === "hq" && g.hasUnseenLoss && (
+              <span className="absolute right-2.5 top-1.5 h-2 w-2 rounded-full" style={{ background: "#F08A8A", boxShadow: "0 0 6px #F08A8A99" }} title="Territory lost while you were away" />
+            )}
           </button>
         ))}
       </div>
