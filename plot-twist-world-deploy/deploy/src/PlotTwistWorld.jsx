@@ -1687,10 +1687,20 @@ function Game({ G, onExit, startFresh }) {
   // outcome.
   const attackableFrom = (qk) => neighborsOf(qk).some((nqk) => ownMap.current.has(nqk));
 
-  // mirrors attack_tile()'s cost/power formulas exactly — display/disabled-
-  // state only, the RPC is what actually charges and resolves the battle.
-  const attackCostFor = (rec) => Math.round(CLS[rec.cls].price * 0.5 * (1 + 0.5 * (rec.l || 0)));
-  const defPowerFor = (rec) => (1 + (rec.l || 0)) * RAR[rec.r || 0].m;
+  // mirrors attack_tile()'s cost/power/odds formulas exactly — display/
+  // disabled-state only, the RPC is what actually charges and resolves
+  // the battle. Includes the wealth-indexed floor (0.2% of the ATTACKER's
+  // own peak net worth, via g.peakNetWorth) — this was previously missing
+  // client-side, which meant the button showed/gated on the pre-floor
+  // price even though the server was already charging the real (higher,
+  // for wealthy attackers) amount.
+  const attackCostFor = (rec) => Math.max(
+    Math.round(CLS[rec.cls].price * 0.5 * (1 + 0.5 * (rec.l || 0))),
+    Math.round((g.peakNetWorth || 0) * 0.002)
+  );
+  const defPowerFor = (rec) => (1 + (rec.l || 0)) * RAR[rec.r || 0].m * (1 + 0.25 * (rec.pr || 0));
+  // win probability from the attacker's side, same clamp as attack_tile()
+  const winProbFor = (attPower, defPower) => Math.max(0.05, Math.min(0.90, attPower / (attPower + defPower)));
 
   const buyListed = async (qk) => {
     if (needName()) return;
@@ -2989,7 +2999,11 @@ function Game({ G, onExit, startFresh }) {
                         <span>attacked {selRec.arc || 0}/{ATTACK_RECEIVED_CAP} today</span>
                       </div>
                       <div className="mb-1.5 pt10" style={{ ...mono, color: C.dim }}>
-                        your power {neighborsOf(sel).filter((nqk) => ownMap.current.has(nqk)).length} vs their power {defPowerFor(selRec).toFixed(2)} — more surrounding sides tip the odds
+                        your power {neighborsOf(sel).filter((nqk) => ownMap.current.has(nqk)).length} vs their power {defPowerFor(selRec).toFixed(2)}
+                        {" — "}
+                        <span style={{ color: C.amber, fontWeight: 700 }}>
+                          {Math.round(winProbFor(neighborsOf(sel).filter((nqk) => ownMap.current.has(nqk)).length, defPowerFor(selRec)) * 100)}% chance to win
+                        </span>
                       </div>
                       <Btn full tone="danger"
                         onClick={() => attackTile(sel)}
