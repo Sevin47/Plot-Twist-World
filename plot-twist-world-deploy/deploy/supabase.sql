@@ -53,14 +53,20 @@ create table if not exists status_tier (
   min_net_worth bigint not null,
   daily_energy_cap int not null
 );
-insert into status_tier (tier, name, min_net_worth, daily_energy_cap) values
-  (1, 'Squatter',    0,       10),
-  (2, 'Homesteader', 5000,    12),
-  (3, 'Landholder',  25000,   14),
-  (4, 'Developer',   100000,  16),
-  (5, 'Baron',       500000,  18),
-  (6, 'Magnate',     2000000, 20)
-on conflict (tier) do update set name = excluded.name, min_net_worth = excluded.min_net_worth, daily_energy_cap = excluded.daily_energy_cap;
+-- builder_slots: max tiles a player can have under construction at once
+-- (see the "Pacing: build timers" section below) — added here rather than
+-- as a hardcoded CASE so it lives alongside daily_energy_cap as one
+-- tier-indexed config table, same reasoning as that column.
+alter table status_tier add column if not exists builder_slots int not null default 2;
+
+insert into status_tier (tier, name, min_net_worth, daily_energy_cap, builder_slots) values
+  (1, 'Squatter',    0,       10, 2),
+  (2, 'Homesteader', 5000,    12, 2),
+  (3, 'Landholder',  25000,   14, 3),
+  (4, 'Developer',   100000,  16, 3),
+  (5, 'Baron',       500000,  18, 4),
+  (6, 'Magnate',     2000000, 20, 4)
+on conflict (tier) do update set name = excluded.name, min_net_worth = excluded.min_net_worth, daily_energy_cap = excluded.daily_energy_cap, builder_slots = excluded.builder_slots;
 
 -- ── accounts ──
 create table if not exists profiles (
@@ -307,6 +313,7 @@ begin
 
   update profiles set balance = balance + floor(v_gain), last_seen = now() where user_id = p_uid;
 
+  perform finish_builds(p_uid); -- see the "Pacing: build timers" section below
   perform reset_daily_energy(p_uid);
   perform reset_daily_attacks_sent(p_uid);
   -- rate-limited to a quarter of calls, not every one — repossess_stale_tiles
@@ -767,6 +774,9 @@ declare
 begin
   if v_uid is null then raise exception 'not authenticated'; end if;
   if p_price is null or p_price <= 0 then raise exception 'invalid price'; end if;
+  if exists (select 1 from tiles where qk = p_qk and owner = v_uid and build_until is not null) then
+    raise exception 'tile is mid-build — finish or rush it before listing';
+  end if;
 
   update tiles set list_price = p_price, updated_at = now()
   where qk = p_qk and owner = v_uid
@@ -800,6 +810,13 @@ revoke all on function unlist_tile(text) from public;
 grant execute on function unlist_tile(text) to authenticated;
 
 -- ── upgrade_tile: cost formula ported from upCost() in PlotTwistWorld.jsx ──
+-- ── upgrade_tile: starts a build timer instead of completing instantly
+--    (see "Pacing: build timers" below) — cost is charged up front same as
+--    always, but the level only bumps once build_until passes (lazily, via
+--    finish_builds). Gated by builder_slots so a player can't queue their
+--    whole portfolio at once. dev_mode accounts skip the timer and the
+--    slot cap entirely and complete immediately, matching the pre-timer
+--    behavior — needed for fast iteration/testing. ──
 create or replace function upgrade_tile(p_qk text)
 returns tiles
 language plpgsql
@@ -811,14 +828,33 @@ declare
   v_tile tiles;
   v_class tile_class;
   v_cost bigint;
+  v_dev_mode boolean;
+  v_active_builds int;
+  v_slot_cap int;
+  v_duration interval;
 begin
   if v_uid is null then raise exception 'not authenticated'; end if;
   if not exists (select 1 from profiles where user_id = v_uid) then raise exception 'no profile'; end if;
-  perform accrue_rent(v_uid);
+  perform accrue_rent(v_uid); -- also completes any of this player's finished builds, see finish_builds
 
-  select * into v_tile from tiles where qk = p_qk and owner = v_uid for update;
+  select dev_mode into v_dev_mode from profiles where user_id = v_uid;
+
+  select * into v_tile from tiles where tiles.qk = p_qk and owner = v_uid for update;
   if not found then raise exception 'tile not found or not yours'; end if;
   if v_tile.level >= 4 then raise exception 'already at max level'; end if;
+  if v_tile.build_until is not null then raise exception 'already building — wait or rush it'; end if;
+
+  if not v_dev_mode then
+    select count(*) into v_active_builds from tiles where owner = v_uid and build_until is not null;
+    select st.builder_slots into v_slot_cap
+    from status_tier st
+    where st.min_net_worth <= (select peak_net_worth from profiles where user_id = v_uid)
+    order by st.min_net_worth desc
+    limit 1;
+    if v_active_builds >= coalesce(v_slot_cap, 2) then
+      raise exception 'no free builder slots — rush a build or wait for one to finish';
+    end if;
+  end if;
 
   select * into v_class from tile_class where cls = v_tile.cls;
   -- the prestige factor is why this doesn't cost the same every
@@ -830,15 +866,87 @@ begin
   end if;
 
   update profiles set balance = balance - v_cost where user_id = v_uid;
-  update tiles set level = level + 1, paid = paid + v_cost, updated_at = now()
-  where qk = p_qk
-  returning * into v_tile;
+
+  if v_dev_mode then
+    update tiles set level = level + 1, paid = paid + v_cost, updated_at = now()
+    where tiles.qk = p_qk
+    returning * into v_tile;
+  else
+    -- MUST match BUILD_SECONDS in PlotTwistWorld.jsx exactly (client-side
+    -- display/rush-cost mirror, server here is the sole authority).
+    v_duration := (case v_tile.level + 1
+        when 1 then interval '5 minutes'
+        when 2 then interval '30 minutes'
+        when 3 then interval '2 hours'
+        when 4 then interval '8 hours'
+      end) * (1 + 0.25 * v_tile.prestige);
+    update tiles set paid = paid + v_cost, build_until = now() + v_duration, updated_at = now()
+    where tiles.qk = p_qk
+    returning * into v_tile;
+  end if;
 
   return v_tile;
 end;
 $$;
 revoke all on function upgrade_tile(text) from public;
 grant execute on function upgrade_tile(text) to authenticated;
+
+-- ── rush_build: pay to finish an in-progress build instantly. Priced
+--    proportional to how much time is actually left — rushing right after
+--    starting costs close to the full upgrade price again, rushing near
+--    completion costs almost nothing. ──
+create or replace function rush_build(p_qk text)
+returns tiles
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_uid uuid := auth.uid();
+  v_tile tiles;
+  v_class tile_class;
+  v_full_cost bigint;
+  v_total_secs numeric;
+  v_remaining_secs numeric;
+  v_frac numeric;
+  v_rush_cost bigint;
+begin
+  if v_uid is null then raise exception 'not authenticated'; end if;
+  perform accrue_rent(v_uid);
+
+  select * into v_tile from tiles where tiles.qk = p_qk and owner = v_uid for update;
+  if not found then raise exception 'tile not found or not yours'; end if;
+  if v_tile.build_until is null then raise exception 'nothing is building on this tile'; end if;
+
+  select * into v_class from tile_class where cls = v_tile.cls;
+  v_full_cost := round(v_class.price * 0.8 * power(v_tile.level + 1, 1.6) * (1 + 0.5 * v_tile.prestige));
+
+  v_total_secs := extract(epoch from (
+    (case v_tile.level + 1
+        when 1 then interval '5 minutes'
+        when 2 then interval '30 minutes'
+        when 3 then interval '2 hours'
+        when 4 then interval '8 hours'
+      end) * (1 + 0.25 * v_tile.prestige)
+  ));
+  v_remaining_secs := greatest(0, extract(epoch from (v_tile.build_until - now())));
+  v_frac := least(1, v_remaining_secs / greatest(v_total_secs, 1));
+  v_rush_cost := ceil(v_full_cost * v_frac);
+
+  if v_rush_cost > 0 and (select balance from profiles where user_id = v_uid) < v_rush_cost then
+    raise exception 'insufficient balance to rush';
+  end if;
+
+  update profiles set balance = balance - v_rush_cost where user_id = v_uid;
+  update tiles set level = level + 1, build_until = null, updated_at = now()
+  where tiles.qk = p_qk
+  returning * into v_tile;
+
+  return v_tile;
+end;
+$$;
+revoke all on function rush_build(text) from public;
+grant execute on function rush_build(text) to authenticated;
 
 -- ── redevelop_tile: the prestige loop. Requires a fully-built (level 4)
 --    tile; resets it to Vacant in exchange for a permanent +25% rent bonus
@@ -1248,6 +1356,18 @@ begin
   if v_tile.owner is null then raise exception 'that tile is unowned — claim it instead of attacking it'; end if;
   if v_tile.owner = v_uid then raise exception 'you already own this tile'; end if;
 
+  -- lazily complete a finished-but-not-yet-processed build on the TARGET
+  -- before computing defense power — otherwise a defender whose Tower
+  -- finished construction hours ago but hasn't logged in since (so their
+  -- own finish_builds never ran) would defend at their pre-completion
+  -- level. Mirrors finish_builds' own logic inline since this is a single
+  -- already-locked row, not a per-player sweep. Persisted below in both
+  -- the win and loss branches so the completion isn't silently discarded.
+  if v_tile.build_until is not null and v_tile.build_until <= now() then
+    v_tile.level := v_tile.level + 1;
+    v_tile.build_until := null;
+  end if;
+
   select * into v_defender from profiles where user_id = v_tile.owner;
   if not found then raise exception 'target has no profile'; end if;
   if not v_dev_mode and v_defender.created_at > now() - interval '72 hours' then
@@ -1275,7 +1395,16 @@ begin
   end if;
 
   select * into v_class from tile_class where cls = v_tile.cls;
-  v_cost := round(v_class.price * 0.5 * (1 + 0.5 * v_tile.level));
+  -- wealth-indexed floor: attacking DOWN (a wealthy player raiding modest
+  -- land) costs at least 0.2% of the attacker's own peak net worth, so a
+  -- ₲5M player pays ≥₲10k per attack instead of the base formula's trivial
+  -- ₲25-1,200. Attacking UP stays cheap — a newcomer's floor is pennies,
+  -- so the base formula still governs for them. greatest() means whichever
+  -- number is actually bigger wins, never both charged.
+  v_cost := greatest(
+    round(v_class.price * 0.5 * (1 + 0.5 * v_tile.level)),
+    round((select peak_net_worth from profiles where user_id = v_uid) * 0.002)
+  );
   if (select balance from profiles where user_id = v_uid) < v_cost then
     raise exception 'insufficient balance';
   end if;
@@ -1298,15 +1427,19 @@ begin
 
   -- only a CAPTURE resets the tile — level/rarity/prestige wiped, any
   -- listing cleared, paid reset to the district's base price (mirrors
-  -- flip_tile's "tear it down" reset), ownership transferred. A successful
-  -- DEFENSE leaves the tile completely untouched — the defender's build is
-  -- what won the fight, so it has to survive the fight, or defending would
-  -- never be worth more than losing outright. Either outcome still bumps
-  -- the per-tile daily received-attack counter.
+  -- flip_tile's "tear it down" reset), ownership transferred, and any
+  -- build in progress is scrapped (build_until = null; a freshly-captured
+  -- Vacant tile has nothing under construction). A successful DEFENSE
+  -- leaves the tile completely untouched except for persisting the lazy
+  -- build-completion from above (if the timer had already passed) — the
+  -- defender's build is what won the fight, so it has to survive the
+  -- fight, or defending would never be worth more than losing outright.
+  -- Either outcome still bumps the per-tile daily received-attack counter.
   if v_won then
     update tiles
       set level = 0, rarity = 0, prestige = 0, paid = v_class.price,
           list_price = null, flip_price = null, flip_royalty_to = null,
+          build_until = null,
           owner = v_uid,
           attacks_received_count = v_tile.attacks_received_count + 1,
           attacks_received_date = v_today,
@@ -1314,7 +1447,8 @@ begin
       where tiles.qk = p_qk;
   else
     update tiles
-      set attacks_received_count = v_tile.attacks_received_count + 1,
+      set level = v_tile.level, build_until = v_tile.build_until,
+          attacks_received_count = v_tile.attacks_received_count + 1,
           attacks_received_date = v_today
       where tiles.qk = p_qk;
   end if;
@@ -1369,6 +1503,45 @@ end;
 $$;
 revoke all on function claim_battle_log() from public;
 grant execute on function claim_battle_log() to authenticated;
+
+-- ═════════════════════════════════════════════════════════════
+-- Pacing: build timers. Upgrading a tile no longer completes instantly —
+-- it starts a timer (build_until) and the level increments lazily once
+-- that passes, same compute-on-read idiom as everything else in this
+-- file (energy, daily attack counters). This is the actual fix for
+-- "wealthy players reach the point where every price is trivial" — time
+-- binds every wealth level equally, where a flat ₲ cost eventually
+-- doesn't. Builder slots (status_tier.builder_slots above) cap how many
+-- tiles can be building at once, scaling with status tier, so a player
+-- can't just queue their whole portfolio and let it all finish overnight.
+-- Rushing (rush_build below) is the money sink this creates — pay to
+-- finish instantly, priced proportional to how much time is actually
+-- left. dev_mode accounts skip both the timer and the slot cap entirely
+-- (see the dev_mode column comment near the PvP section above).
+-- ═════════════════════════════════════════════════════════════
+
+alter table tiles add column if not exists build_until timestamptz;
+
+-- ── finish_builds: lazily completes any of this player's tiles whose
+--    timer has passed. Called from accrue_rent (after the rent credit)
+--    so it rides every RPC round-trip already touching this player, same
+--    as reset_daily_energy/reset_daily_attacks_sent. Deliberately does
+--    NOT retroactively credit the rent gap between actual completion and
+--    whenever this runs — a slightly-late rent bump is fine and exploit-
+--    safe; back-crediting exact completion timestamps would not be. ──
+create or replace function finish_builds(p_uid uuid)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  update tiles
+    set level = level + 1, build_until = null
+    where owner = p_uid and build_until is not null and build_until <= now();
+end;
+$$;
+revoke all on function finish_builds(uuid) from public;
 
 -- Force PostgREST to pick up schema changes from this script immediately.
 -- It normally reloads on its own shortly after DDL, but that can lag or

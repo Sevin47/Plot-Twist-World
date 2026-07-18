@@ -165,13 +165,15 @@ const MAX_LVL = 4;
 // cap of 20 is the old unconditional energy default from before the
 // daily-cap rework — you used to start with it for free, now you earn
 // your way back to it.
+// `slots` = max tiles this tier can have under construction at once —
+// MUST match status_tier.builder_slots in supabase.sql exactly.
 const STATUS_TIERS = [
-  { tier: 1, name: "Squatter",    min: 0,       cap: 10 },
-  { tier: 2, name: "Homesteader", min: 5000,    cap: 12 },
-  { tier: 3, name: "Landholder",  min: 25000,   cap: 14 },
-  { tier: 4, name: "Developer",   min: 100000,  cap: 16 },
-  { tier: 5, name: "Baron",       min: 500000,  cap: 18 },
-  { tier: 6, name: "Magnate",     min: 2000000, cap: 20 },
+  { tier: 1, name: "Squatter",    min: 0,       cap: 10, slots: 2 },
+  { tier: 2, name: "Homesteader", min: 5000,    cap: 12, slots: 2 },
+  { tier: 3, name: "Landholder",  min: 25000,   cap: 14, slots: 3 },
+  { tier: 4, name: "Developer",   min: 100000,  cap: 16, slots: 3 },
+  { tier: 5, name: "Baron",       min: 500000,  cap: 18, slots: 4 },
+  { tier: 6, name: "Magnate",     min: 2000000, cap: 20, slots: 4 },
 ];
 // Highest tier whose threshold this net worth clears, plus the next tier
 // up (null once already at the top) for progress-bar display.
@@ -332,6 +334,19 @@ function hashQk(qk) {
 // every cycle and let a wealthy player farm unlimited rent for free.
 const rentOf = (t) => CLS[t.cls].rps * RAR[t.r].m * (1 + t.l) * (1 + 0.25 * (t.pr || 0));
 const upCost = (t) => Math.round(CLS[t.cls].price * 0.8 * Math.pow(t.l + 1, 1.6) * (1 + 0.5 * (t.pr || 0)));
+
+// Build timers — base seconds per TARGET level, MUST match the CASE in
+// upgrade_tile()/rush_build() in supabase.sql exactly. Display/disabled-
+// state only; the server owns the real countdown and completion.
+const BUILD_SECONDS = { 1: 300, 2: 1800, 3: 7200, 4: 28800 };
+const buildDurationSecs = (targetLevel, prestige) => BUILD_SECONDS[targetLevel] * (1 + 0.25 * (prestige || 0));
+const buildSecsLeft = (t) => t.bu ? Math.max(0, Math.round((new Date(t.bu).getTime() - Date.now()) / 1000)) : 0;
+// mirrors rush_build()'s proportional-remaining-time pricing exactly
+const rushCostFor = (t) => {
+  const totalSecs = buildDurationSecs(t.l + 1, t.pr);
+  const frac = Math.min(1, buildSecsLeft(t) / Math.max(totalSecs, 1));
+  return Math.ceil(upCost(t) * frac);
+};
 
 function rollRarity() {
   const n = Math.random();
@@ -863,11 +878,12 @@ function Game({ G, onExit, startFresh }) {
   // tries again, not a real player watching an empty portfolio.
   const refreshOwnedTiles = useCallback(async () => {
     const { data, error } = await supabase
-      .from("tiles").select("qk,cls,level,rarity,paid,list_price,prestige").eq("owner", g.uid);
+      .from("tiles").select("qk,cls,level,rarity,paid,list_price,prestige,build_until").eq("owner", g.uid);
     if (error || !data) return;
     g.own = data.map((t) => ({
       qk: t.qk, cls: t.cls, l: t.level, r: t.rarity, pd: t.paid, pr: t.prestige || 0,
       ...(t.list_price != null ? { p: t.list_price } : {}),
+      ...(t.build_until != null ? { bu: t.build_until } : {}),
     }));
     rebuildOwn();
     dirty.current = true;
@@ -927,7 +943,7 @@ function Game({ G, onExit, startFresh }) {
       let tileRows = null, tilesErr = null;
       for (let attempt = 0; attempt < 3 && !tileRows; attempt++) {
         const res = await supabase
-          .from("tiles").select("qk,cls,level,rarity,paid,list_price,prestige").eq("owner", g.uid);
+          .from("tiles").select("qk,cls,level,rarity,paid,list_price,prestige,build_until").eq("owner", g.uid);
         if (!res.error) { tileRows = res.data || []; break; }
         tilesErr = res.error;
         await new Promise((r) => setTimeout(r, 500 * (attempt + 1)));
@@ -936,6 +952,7 @@ function Game({ G, onExit, startFresh }) {
         g.own = tileRows.map((t) => ({
           qk: t.qk, cls: t.cls, l: t.level, r: t.rarity, pd: t.paid, pr: t.prestige || 0,
           ...(t.list_price != null ? { p: t.list_price } : {}),
+          ...(t.build_until != null ? { bu: t.build_until } : {}),
         }));
       } else {
         toast("Couldn't load your tiles — check your connection and reopen the app.");
@@ -982,13 +999,26 @@ function Game({ G, onExit, startFresh }) {
     const iv = setInterval(() => {
       const mult = Date.now() < g.boostUntil ? 2 : 1;
       if (g.rps > 0) { g.bal += (g.rps * mult) / 4; dirty.current = true; }
+      // optimistic local completion the moment a build's countdown hits
+      // zero, rather than waiting for the next server round-trip to
+      // confirm it (finish_builds will do the same thing lazily server-
+      // side anyway — this is purely so the UI doesn't sit on a stale
+      // "5s left" after time's actually up)
+      for (const t of g.own) {
+        if (t.bu && buildSecsLeft(t) <= 0) {
+          t.l += 1;
+          delete t.bu;
+          dirty.current = true;
+          toast(`🔨 ${LVL[t.l]} finished building`);
+        }
+      }
       n++;
       if (n % 8 === 0) checkAch();
       if (n % 80 === 0) { syncRent(); collectBank(); collectBattles(); }
       force();
     }, 250);
     return () => clearInterval(iv);
-  }, [ready, g, checkAch, syncRent, collectBank, collectBattles]);
+  }, [ready, g, checkAch, syncRent, collectBank, collectBattles, toast]);
 
   /* Classification is fully vector-driven (see classifyFromVector above);
      there's no procedural mask/coastline-image fallback. */
@@ -1435,7 +1465,7 @@ function Game({ G, onExit, startFresh }) {
       // (owner, flip_royalty_to as of the flip feature), so PostgREST can no
       // longer infer which relationship an unqualified `profiles(username)`
       // embed means and rejects the whole query. Must stay qualified.
-      .select("qk,owner,cls,rarity,level,paid,list_price,flip_price,prestige,attacks_received_count,attacks_received_date,profiles!tiles_owner_fkey(username,peak_net_worth)")
+      .select("qk,owner,cls,rarity,level,paid,list_price,flip_price,prestige,attacks_received_count,attacks_received_date,build_until,profiles!tiles_owner_fkey(username,peak_net_worth)")
       .like("qk", `${prefix}%`);
     const t = {};
     if (error) {
@@ -1457,6 +1487,7 @@ function Game({ G, onExit, startFresh }) {
           cls: row.cls, pd: row.paid, ...(row.list_price != null ? { p: row.list_price } : {}),
           ...(row.flip_price != null ? { fp: row.flip_price } : {}),
           arc: row.attacks_received_date === todayUTC() ? (row.attacks_received_count || 0) : 0,
+          ...(row.build_until != null ? { bu: row.build_until } : {}),
         };
       }
     }
@@ -1474,7 +1505,7 @@ function Game({ G, onExit, startFresh }) {
         // spot; a live "pending" read here would get baked into g.own as a
         // real district, silently zeroing that tile's rent (pending has
         // rps 0) even though the account genuinely owns a real, priced tile.
-        g.own.push({ qk, l: rec.l || 0, r: rec.r || 0, pr: rec.pr || 0, cls: rec.cls, pd: rec.pd || 0, ...(rec.p != null ? { p: rec.p } : {}) });
+        g.own.push({ qk, l: rec.l || 0, r: rec.r || 0, pr: rec.pr || 0, cls: rec.cls, pd: rec.pd || 0, ...(rec.p != null ? { p: rec.p } : {}), ...(rec.bu != null ? { bu: rec.bu } : {}) });
         changed = true;
       } else if (mine) {
         if (rec.o !== g.uid) { g.own.splice(g.own.findIndex((t2) => t2.qk === qk), 1); changed = true; }
@@ -1756,16 +1787,53 @@ function Game({ G, onExit, startFresh }) {
     toast("Listing removed");
   };
 
+  // Starts a build timer rather than completing instantly (see
+  // upgrade_tile in supabase.sql) — the response's level is UNCHANGED and
+  // build_until is set, unless this account is dev_mode (server completes
+  // it immediately, same as the old pre-timer behavior). Slot-cap check
+  // here is display/UX only; the server enforces it for real.
   const upgrade = async (qk) => {
     const t = ownMap.current.get(qk);
     if (!t || t.l >= MAX_LVL) return;
+    if (t.bu) { toast("Already building — rush it or wait for it to finish."); return; }
+    if (!g.devMode) {
+      const activeBuilds = g.own.filter((x) => x.bu).length;
+      const slotCap = statusFor(g.peakNetWorth).slots;
+      if (activeBuilds >= slotCap) { toast(`No free builder slots (${slotCap}) — rush a build or wait for one to finish`); return; }
+    }
     const cost = upCost(t);
     if (g.bal < cost) return;
     const { data, error } = await supabase.rpc("upgrade_tile", { p_qk: qk });
     if (error || !data) { toast(error?.message || "Couldn't upgrade."); return; }
-    g.bal -= cost; t.l = data.level; t.pd = data.paid;
+    g.bal -= cost; t.pd = data.paid;
+    if (data.build_until) {
+      t.bu = data.build_until;
+      toast(`Building ${LVL[t.l + 1]}…`);
+    } else {
+      t.l = data.level;
+      delete t.bu;
+      checkAch();
+      toast(`${LVL[t.l]} built`);
+    }
+    rebuildOwn(); dirty.current = true; save();
+  };
+
+  // Pay to finish an in-progress build instantly (see rush_build in
+  // supabase.sql) — cost is proportional to time remaining, computed
+  // client-side via rushCostFor() for display; the server computes its
+  // own authoritative charge, so a few seconds of drift between the two
+  // is possible and self-corrects on the next syncRent().
+  const rushBuild = async (qk) => {
+    const t = ownMap.current.get(qk);
+    if (!t || !t.bu) return;
+    const cost = rushCostFor(t);
+    if (g.bal < cost) { toast("Not enough ₲ to rush this build."); return; }
+    const { data, error } = await supabase.rpc("rush_build", { p_qk: qk });
+    if (error || !data) { toast(error?.message || "Couldn't rush this build."); return; }
+    g.bal -= cost; t.l = data.level;
+    delete t.bu;
     rebuildOwn(); checkAch(); dirty.current = true; save();
-    toast(`${LVL[t.l]} built`);
+    toast(`Rushed — ${LVL[t.l]} built for ₲${fmt(cost)}`);
   };
 
   // Manual, sequential batch upgrade over a given tile set (the Assets
@@ -1781,27 +1849,37 @@ function Game({ G, onExit, startFresh }) {
   // not a background auto-upgrade bot.
   const upgradeAll = async (tiles) => {
     if (batchBusy) return;
-    let pool = tiles.filter((t) => t.l < MAX_LVL);
+    // already-building tiles aren't "eligible" here — starting a build is
+    // all this does now, and a tile can only run one at a time
+    let pool = tiles.filter((t) => t.l < MAX_LVL && !t.bu);
     const totalEligible = pool.length;
     if (totalEligible === 0) { toast("Nothing here needs upgrading."); return; }
-    let count = 0, spent = 0;
+    let count = 0, spent = 0, slotLimited = false;
     setBatchBusy({ done: 0, total: totalEligible });
     while (pool.length) {
+      if (!g.devMode) {
+        const activeBuilds = g.own.filter((x) => x.bu).length;
+        const slotCap = statusFor(g.peakNetWorth).slots;
+        if (activeBuilds >= slotCap) { slotLimited = true; break; }
+      }
       pool.sort((a, b) => upCost(a) - upCost(b));
       const t = pool[0];
       const cost = upCost(t);
       if (g.bal < cost) break; // cheapest remaining is unaffordable — nothing else in the pool will be either
       const { data, error } = await supabase.rpc("upgrade_tile", { p_qk: t.qk });
       if (error || !data) break; // stop on any server-side rejection rather than retry-looping
-      g.bal -= cost; t.l = data.level; t.pd = data.paid;
+      g.bal -= cost; t.pd = data.paid;
+      if (data.build_until) t.bu = data.build_until; else t.l = data.level;
       spent += cost; count++;
-      if (t.l >= MAX_LVL) pool = pool.filter((x) => x !== t);
+      pool = pool.filter((x) => x !== t); // one build per tile at a time either way
       setBatchBusy({ done: count, total: totalEligible });
       force();
     }
     setBatchBusy(null);
     rebuildOwn(); checkAch(); dirty.current = true; save();
-    toast(count > 0 ? `Upgraded ${count} tile${count === 1 ? "" : "s"} for ₲${fmt(spent)}` : "Not enough ₲ to upgrade anything here.");
+    toast(count > 0
+      ? `Started ${count} build${count === 1 ? "" : "s"} for ₲${fmt(spent)}${slotLimited ? " — builder slots full, queue the rest once one finishes" : ""}`
+      : slotLimited ? "No free builder slots — wait for a build to finish or rush one." : "Not enough ₲ to upgrade anything here.");
   };
 
   const redevelop = async (qk) => {
@@ -2655,6 +2733,9 @@ function Game({ G, onExit, startFresh }) {
             <span className="pt10 font-bold" style={{ ...mono, color: (g.attacksSent || 0) < ATTACK_DAILY_CAP ? C.text : "#F08A8A", fontVariantNumeric: "tabular-nums" }} title="Attacks launched — resets once per day">
               ⚔{Math.max(0, ATTACK_DAILY_CAP - (g.attacksSent || 0))}/{ATTACK_DAILY_CAP} today
             </span>
+            <span className="pt10 font-bold" style={{ ...mono, color: C.text, fontVariantNumeric: "tabular-nums" }} title="Tiles currently under construction">
+              🔨{g.own.filter((t) => t.bu).length}/{myStatus.slots} building
+            </span>
           </div>
         </div>
         {boostOn ? (
@@ -2766,6 +2847,7 @@ function Game({ G, onExit, startFresh }) {
                 )}
               </div>
               <div>energy {energyNow(g)}/{myStatus.cap} today ({myStatus.name}) · resets in {hm(energySecsToReset())}</div>
+              <div>builds: {g.own.filter((t) => t.bu).length}/{myStatus.slots} slots · attacks {g.attacksSent || 0}/{ATTACK_DAILY_CAP} sent</div>
               <div>territory: {unlockedRegions.current.size} region(s){homeRegionRef.current ? ` · home ${homeRegionRef.current}` : ""}{sel ? ` · sel ${regionOf(sel)} locked=${String(selLocked)}` : ""}</div>
               <div>fps {D.fps} · draw {D.avg}ms · max {D.max}ms</div>
               <div>tilePx {D.tilePx.toFixed(2)} · grid {String(D.gridOn)} · tiles {D.cnt}</div>
@@ -2932,17 +3014,32 @@ function Game({ G, onExit, startFresh }) {
                     {selMine.p && <Chip color={C.amber}>Listed ₲{fmt(selMine.p)}</Chip>}
                   </div>
                   {selMine.l < MAX_LVL ? (
-                    <div className="flex gap-2">
-                      <Btn full onClick={() => upgrade(sel)} disabled={g.bal < upCost(selMine)}>
-                        Build {LVL[selMine.l + 1]} — ₲{fmt(upCost(selMine))}
-                      </Btn>
-                      {selMine.p ? (
-                        <Btn tone="ghost" onClick={() => unlist(sel)}>Unlist</Btn>
-                      ) : (
-                        <Btn tone="ghost" onClick={() => { setPriceDraft(String(Math.round((selMine.pd || CLS[selCls].price) * 1.5))); setModal({ kind: "list", qk: sel }); }}>List…</Btn>
-                      )}
-                      <Btn tone="danger" onClick={() => abandon(sel)}>50%</Btn>
-                    </div>
+                    selMine.bu ? (
+                      <div className="flex flex-col gap-2">
+                        <div className="flex items-center justify-between rounded-xl p-2.5 text-sm" style={cardSty}>
+                          <span style={{ ...mono, color: C.dim }}>Building {LVL[selMine.l + 1]}…</span>
+                          <span className="font-bold" style={{ ...mono, fontVariantNumeric: "tabular-nums" }}>{hm(buildSecsLeft(selMine))}</span>
+                        </div>
+                        <div className="flex gap-2">
+                          <Btn full tone="ghost" onClick={() => rushBuild(sel)} disabled={g.bal < rushCostFor(selMine)}>
+                            Rush — ₲{fmt(rushCostFor(selMine))}
+                          </Btn>
+                          <Btn tone="danger" onClick={() => abandon(sel)}>50%</Btn>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="flex gap-2">
+                        <Btn full onClick={() => upgrade(sel)} disabled={g.bal < upCost(selMine)}>
+                          Build {LVL[selMine.l + 1]} — ₲{fmt(upCost(selMine))}
+                        </Btn>
+                        {selMine.p ? (
+                          <Btn tone="ghost" onClick={() => unlist(sel)}>Unlist</Btn>
+                        ) : (
+                          <Btn tone="ghost" onClick={() => { setPriceDraft(String(Math.round((selMine.pd || CLS[selCls].price) * 1.5))); setModal({ kind: "list", qk: sel }); }}>List…</Btn>
+                        )}
+                        <Btn tone="danger" onClick={() => abandon(sel)}>50%</Btn>
+                      </div>
+                    )
                   ) : (
                     <div className="flex flex-col gap-2">
                       <div className="flex gap-2">
@@ -3050,9 +3147,13 @@ function Game({ G, onExit, startFresh }) {
                   <span className="text-xs" style={{ ...mono, color: C.amber }}>₲{fmt1(rentOf(t))}/s</span>
                 </button>
                 <div className="mt-2 flex items-center justify-between">
-                  <span className="pt11" style={{ ...mono, color: C.dim }}>{LVL[t.l]} · Lv {t.l}/{MAX_LVL}{t.p ? ` · listed ₲${fmt(t.p)}` : ""}</span>
+                  <span className="pt11" style={{ ...mono, color: t.bu ? C.amber : C.dim }}>
+                    {t.bu ? `Building ${LVL[t.l + 1]}… ${hm(buildSecsLeft(t))}` : `${LVL[t.l]} · Lv ${t.l}/${MAX_LVL}${t.p ? ` · listed ₲${fmt(t.p)}` : ""}`}
+                  </span>
                   <div className="flex gap-1.5">
-                    {t.l < MAX_LVL ? (
+                    {t.bu ? (
+                      <Btn small onClick={() => rushBuild(t.qk)} disabled={g.bal < rushCostFor(t)}>Rush ₲{fmt(rushCostFor(t))}</Btn>
+                    ) : t.l < MAX_LVL ? (
                       <Btn small onClick={() => upgrade(t.qk)} disabled={g.bal < upCost(t)}>₲{fmt(upCost(t))}</Btn>
                     ) : (
                       <>
@@ -3060,11 +3161,11 @@ function Game({ G, onExit, startFresh }) {
                         <Btn small onClick={() => flip(t.qk)}>Flip</Btn>
                       </>
                     )}
-                    {t.p ? (
+                    {!t.bu && (t.p ? (
                       <Btn small tone="ghost" onClick={() => unlist(t.qk)}>Unlist</Btn>
                     ) : (
                       <Btn small tone="ghost" onClick={() => { setPriceDraft(String(Math.round((t.pd || CLS[t.cls].price) * 1.5))); setModal({ kind: "list", qk: t.qk }); }}>List</Btn>
-                    )}
+                    ))}
                   </div>
                 </div>
               </div>
