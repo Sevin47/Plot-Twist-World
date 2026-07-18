@@ -308,6 +308,7 @@ begin
   update profiles set balance = balance + floor(v_gain), last_seen = now() where user_id = p_uid;
 
   perform reset_daily_energy(p_uid);
+  perform reset_daily_attacks_sent(p_uid);
   -- rate-limited to a quarter of calls, not every one — repossess_stale_tiles
   -- does real writes (balance credit + ledger insert + delete) per row, so
   -- there's no need to run it on literally every RPC round-trip; any active
@@ -365,6 +366,26 @@ begin
 end;
 $$;
 revoke all on function reset_daily_energy(uuid) from public;
+
+-- ── reset_daily_attacks_sent: hard daily cap (3/day, flat, not tier-scaled)
+--    on attack_tile's "attacks launched" gate. Same compute-on-read,
+--    hard-expire-not-banked pattern as reset_daily_energy above, called
+--    from accrue_rent the same way so the counter stays fresh on every
+--    sync_rent(), not just when the player actually attacks. ──
+create or replace function reset_daily_attacks_sent(p_uid uuid)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_today date := (now() at time zone 'utc')::date;
+begin
+  update profiles set attacks_sent_count = 0, attacks_sent_date = v_today
+  where user_id = p_uid and attacks_sent_date < v_today;
+end;
+$$;
+revoke all on function reset_daily_attacks_sent(uuid) from public;
 
 -- ── repossess_stale_tiles: land decay. An owner absent 60+ days (profiles.
 --    last_seen — already tracked by accrue_rent for every player, no new
@@ -1043,6 +1064,266 @@ left join tiles t on t.owner = p.user_id
 group by p.user_id, p.username, p.balance, p.peak_net_worth
 order by net_worth desc;
 grant select on leaderboard to anon, authenticated;
+
+-- ═════════════════════════════════════════════════════════════
+-- PvP: attack a tile orthogonally adjacent to your own territory.
+-- Adjacency-restricted (you must already own a neighbor of the target),
+-- cost scales with the target's value and burns whether you win or lose,
+-- and either outcome resets the tile to Vacant ("scorched earth") — a win
+-- also transfers ownership to the attacker, a loss leaves the original
+-- owner holding the now-blank land. Two daily caps (attacker-launched,
+-- tile-received) throttle both a single aggressive player and a dogpile on
+-- one victim; a 72h new-account grace period protects brand-new players.
+-- Deliberately out of scope for this pass: safe zones, fortify/
+-- reinforcement spending, diagonal adjacency, anti-multi-accounting beyond
+-- the mandatory-Google-sign-in bar that already exists.
+-- ═════════════════════════════════════════════════════════════
+
+alter table profiles add column if not exists attacks_sent_date date not null default (now() at time zone 'utc')::date;
+alter table profiles add column if not exists attacks_sent_count int not null default 0;
+
+-- per-TILE daily received-attack cap, independent of who's attacking
+alter table tiles add column if not exists attacks_received_date date not null default (now() at time zone 'utc')::date;
+alter table tiles add column if not exists attacks_received_count int not null default 0;
+
+-- ── qk_to_txy / qk_of_txy / qk_neighbors: plpgsql port of txyOf()/qkOf() in
+--    PlotTwistWorld.jsx (same bit logic — char '1'/'3' sets the x-bit, '2'/
+--    '3' sets the y-bit, iterated MSB-first) — needed so attack_tile can
+--    verify adjacency server-side instead of trusting the client's claim. ──
+create or replace function qk_to_txy(p_qk text, out tx bigint, out ty bigint)
+language plpgsql
+immutable
+as $$
+declare
+  ch text;
+begin
+  tx := 0; ty := 0;
+  for i in 1..length(p_qk) loop
+    ch := substr(p_qk, i, 1);
+    tx := tx * 2 + (case when ch in ('1','3') then 1 else 0 end);
+    ty := ty * 2 + (case when ch in ('2','3') then 1 else 0 end);
+  end loop;
+end;
+$$;
+revoke all on function qk_to_txy(text) from public;
+
+create or replace function qk_of_txy(p_tx bigint, p_ty bigint, p_z int)
+returns text
+language plpgsql
+immutable
+as $$
+declare
+  q text := '';
+  m bigint;
+begin
+  for i in reverse p_z..1 loop
+    m := 1::bigint << (i - 1);
+    q := q || ((case when (p_tx & m) <> 0 then 1 else 0 end)
+             + (case when (p_ty & m) <> 0 then 2 else 0 end))::text;
+  end loop;
+  return q;
+end;
+$$;
+revoke all on function qk_of_txy(bigint, bigint, int) from public;
+
+-- up to 4 orthogonal (N/S/E/W) neighbor quadkeys, clamped at the grid edge
+-- (tx/ty = 0 or 2^Z-1) rather than wrapping or erroring — edge tiles just
+-- have fewer attackable/attacking sides.
+create or replace function qk_neighbors(p_qk text)
+returns text[]
+language plpgsql
+immutable
+as $$
+declare
+  v_tx bigint; v_ty bigint;
+  v_z int := length(p_qk);
+  v_n bigint := 1::bigint << v_z;
+  v_out text[] := '{}';
+begin
+  select tx, ty into v_tx, v_ty from qk_to_txy(p_qk);
+  if v_ty > 0       then v_out := v_out || qk_of_txy(v_tx, v_ty - 1, v_z); end if; -- N
+  if v_ty < v_n - 1 then v_out := v_out || qk_of_txy(v_tx, v_ty + 1, v_z); end if; -- S
+  if v_tx > 0       then v_out := v_out || qk_of_txy(v_tx - 1, v_ty, v_z); end if; -- W
+  if v_tx < v_n - 1 then v_out := v_out || qk_of_txy(v_tx + 1, v_ty, v_z); end if; -- E
+  return v_out;
+end;
+$$;
+revoke all on function qk_neighbors(text) from public;
+
+-- ── battle_log: "you were attacked / your attack resolved" notification
+--    log, mirrors bank_ledger's "while you were away" pattern — but a
+--    single battle has TWO interested parties with different framings of
+--    the same event, so it gets its own claimed flag per side instead of
+--    one shared `claimed` boolean + one `recipient`. ──
+create table if not exists battle_log (
+  id bigserial primary key,
+  attacker uuid not null references auth.users(id) on delete cascade,
+  defender uuid not null references auth.users(id) on delete cascade,
+  qk text not null,
+  att_power numeric not null,
+  def_power numeric not null,
+  att_roll numeric not null,
+  def_roll numeric not null,
+  attacker_won boolean not null,
+  cost bigint not null,
+  created_at timestamptz not null default now(),
+  attacker_claimed boolean not null default false,
+  defender_claimed boolean not null default false
+);
+create index if not exists idx_battle_log_attacker on battle_log(attacker) where attacker_claimed = false;
+create index if not exists idx_battle_log_defender on battle_log(defender) where defender_claimed = false;
+
+alter table battle_log enable row level security;
+drop policy if exists "read own battle_log" on battle_log;
+create policy "read own battle_log" on battle_log for select using (auth.uid() = attacker or auth.uid() = defender);
+grant select on battle_log to authenticated;
+
+-- ── attack_tile: the main PvP RPC. Cost is charged up front and kept
+--    regardless of outcome. Win: tile resets to Vacant AND ownership
+--    transfers to the attacker (first-tile-ever bootstrap mirrors
+--    buy_unowned_tile's unlocked_regions insert). Lose: "scorched earth" —
+--    tile resets to Vacant but the ORIGINAL owner keeps it, blank. ──
+create or replace function attack_tile(p_qk text)
+returns table(qk text, won boolean, cost bigint, att_power numeric, def_power numeric)
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_uid uuid := auth.uid();
+  v_tile tiles;
+  v_class tile_class;      -- the TARGET's own district — cost and reset price ride on the defender's tile, not the attacker's
+  v_defender profiles;
+  v_neighbors text[];
+  v_att_power numeric;
+  v_def_power numeric;
+  v_att_roll numeric;
+  v_def_roll numeric;
+  v_cost bigint;
+  v_won boolean;
+  v_today date := (now() at time zone 'utc')::date;
+  v_is_first_tile boolean;
+  v_region text := left(p_qk, 8);
+begin
+  if v_uid is null then raise exception 'not authenticated'; end if;
+  if not exists (select 1 from profiles where user_id = v_uid) then raise exception 'no profile'; end if;
+  perform accrue_rent(v_uid); -- also resets attacks_sent_count/date, see accrue_rent above
+
+  select * into v_tile from tiles where qk = p_qk for update;
+  if not found then raise exception 'tile not found'; end if;
+  if v_tile.owner is null then raise exception 'that tile is unowned — claim it instead of attacking it'; end if;
+  if v_tile.owner = v_uid then raise exception 'you already own this tile'; end if;
+
+  select * into v_defender from profiles where user_id = v_tile.owner;
+  if not found then raise exception 'target has no profile'; end if;
+  if v_defender.created_at > now() - interval '72 hours' then
+    raise exception 'that player is too new to attack — protected for 72 hours';
+  end if;
+
+  -- per-tile daily received-attack cap, same compute-on-read reset idiom as
+  -- everything else here, done inline since this row is already locked and
+  -- no other function ever touches this counter
+  if v_tile.attacks_received_date < v_today then
+    v_tile.attacks_received_count := 0;
+  end if;
+  if v_tile.attacks_received_count >= 2 then
+    raise exception 'this tile has already been attacked twice today — try again tomorrow';
+  end if;
+
+  if (select attacks_sent_count from profiles where user_id = v_uid) >= 3 then
+    raise exception 'no attacks left today — resets tomorrow';
+  end if;
+
+  v_neighbors := qk_neighbors(p_qk);
+  v_att_power := (select count(*) from tiles where owner = v_uid and qk = any(v_neighbors));
+  if v_att_power < 1 then
+    raise exception 'you need to own an adjacent tile to attack this one';
+  end if;
+
+  select * into v_class from tile_class where cls = v_tile.cls;
+  v_cost := round(v_class.price * 0.5 * (1 + 0.5 * v_tile.level));
+  if (select balance from profiles where user_id = v_uid) < v_cost then
+    raise exception 'insufficient balance';
+  end if;
+
+  v_def_power := (1 + v_tile.level) * (case v_tile.rarity when 0 then 1 when 1 then 1.5 when 2 then 3 when 3 then 8 else 1 end);
+  -- independent ±15% roll per side, server-side only — can't be predicted
+  -- or influenced by the client
+  v_att_roll := v_att_power * (1 + (random() - 0.5) * 0.3);
+  v_def_roll := v_def_power * (1 + (random() - 0.5) * 0.3);
+  v_won := v_att_roll > v_def_roll;
+
+  v_is_first_tile := v_won and not exists (select 1 from tiles where owner = v_uid);
+
+  -- cost is spent regardless of outcome
+  update profiles
+    set balance = balance - v_cost,
+        attacks_sent_count = attacks_sent_count + 1,
+        attacks_sent_date = v_today
+    where user_id = v_uid;
+
+  -- scorched earth either way: level/rarity/prestige wiped, any listing
+  -- cleared, paid reset to the district's base price (mirrors flip_tile's
+  -- "tear it down" reset) — only `owner` differs by outcome
+  update tiles
+    set level = 0, rarity = 0, prestige = 0, paid = v_class.price,
+        list_price = null, flip_price = null, flip_royalty_to = null,
+        owner = case when v_won then v_uid else owner end,
+        attacks_received_count = v_tile.attacks_received_count + 1,
+        attacks_received_date = v_today,
+        updated_at = now()
+    where qk = p_qk;
+
+  if v_is_first_tile then
+    insert into unlocked_regions (owner, region, is_home)
+    values (v_uid, v_region, true)
+    on conflict (owner, region) do nothing;
+  end if;
+
+  insert into battle_log (attacker, defender, qk, att_power, def_power, att_roll, def_roll, attacker_won, cost)
+  values (v_uid, v_tile.owner, p_qk, v_att_power, v_def_power, v_att_roll, v_def_roll, v_won, v_cost);
+
+  return query select p_qk, v_won, v_cost, v_att_power, v_def_power;
+end;
+$$;
+revoke all on function attack_tile(text) from public;
+grant execute on function attack_tile(text) to authenticated;
+
+-- ── claim_battle_log: surfaces "N of your attacks resolved (W/L, ₲ spent)"
+--    and "your territory was raided N times" notifications, same lazy
+--    claim-and-mark-seen shape as claim_bank_ledger — money/ownership
+--    already moved instantly in attack_tile above, this only reports +
+--    marks rows seen. Two independent claimed flags because one battle_log
+--    row has two viewers with different framings of the same event. ──
+create or replace function claim_battle_log()
+returns table("sent_win_count" int, "sent_loss_count" int, "sent_cost_total" bigint, "received_count" int, "received_lost_count" int)
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_uid uuid := auth.uid();
+  v_sent_win int; v_sent_loss int; v_sent_cost bigint;
+  v_recv_count int; v_recv_lost int;
+begin
+  if v_uid is null then raise exception 'not authenticated'; end if;
+
+  select coalesce(sum((attacker_won)::int), 0), coalesce(sum((not attacker_won)::int), 0), coalesce(sum(cost), 0)
+  into v_sent_win, v_sent_loss, v_sent_cost
+  from battle_log where attacker = v_uid and attacker_claimed = false;
+
+  select count(*), coalesce(sum((attacker_won)::int), 0)
+  into v_recv_count, v_recv_lost
+  from battle_log where defender = v_uid and defender_claimed = false;
+
+  update battle_log set attacker_claimed = true where attacker = v_uid and attacker_claimed = false;
+  update battle_log set defender_claimed = true where defender = v_uid and defender_claimed = false;
+
+  return query select v_sent_win, v_sent_loss, v_sent_cost, v_recv_count, v_recv_lost;
+end;
+$$;
+revoke all on function claim_battle_log() from public;
+grant execute on function claim_battle_log() to authenticated;
 
 -- Force PostgREST to pick up schema changes from this script immediately.
 -- It normally reloads on its own shortly after DDL, but that can lag or

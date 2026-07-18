@@ -182,6 +182,11 @@ const statusFor = (netWorth) => {
   return { ...STATUS_TIERS[idx], next: STATUS_TIERS[idx + 1] || null };
 };
 
+// PvP: mirrors attack_tile()'s hardcoded caps in supabase.sql — flat for
+// every player regardless of status tier, unlike energy's cap.
+const ATTACK_DAILY_CAP = 3;    // attacks a player may LAUNCH per UTC day
+const ATTACK_RECEIVED_CAP = 2; // attacks a single TILE may absorb per UTC day
+
 const ADS = [
   { brand: "Bolder Boulders", line: "Rocks, but bolder." },
   { brand: "Grandma's Artisanal Gravel", line: "Chew responsibly." },
@@ -205,6 +210,7 @@ const ACH = [
   { k: "rich",   name: "Deep pockets",   desc: "Hold ₲50,000 at once" },
   { k: "streak3",name: "Regular",        desc: "3-day visit streak" },
   { k: "redevelop1", name: "Redeveloper", desc: "Tear down and rebuild a maxed-out tile" },
+  { k: "conqueror", name: "Conqueror", desc: "Win a PvP attack and capture a tile" },
 ];
 
 /* ── math: mercator + quadkeys ──────────────────────────────── */
@@ -232,6 +238,20 @@ function txyOf(qk) {
   return [tx, ty];
 }
 const centerOfQk = (qk) => { const [tx, ty] = txyOf(qk); const n = 1 << qk.length; return [(tx + 0.5) / n, (ty + 0.5) / n]; };
+
+// PvP: up to 4 orthogonal (N/S/E/W) neighbor quadkeys, clamped at the grid
+// edge — plpgsql-equivalent mirror of qk_neighbors() in supabase.sql. This
+// copy is display/disabled-state only; attack_tile() recomputes adjacency
+// itself server-side, this never gates the real outcome.
+function neighborsOf(qk) {
+  const [tx, ty] = txyOf(qk);
+  const out = [];
+  if (ty > 0) out.push(qkOf(tx, ty - 1));
+  if (ty < N - 1) out.push(qkOf(tx, ty + 1));
+  if (tx > 0) out.push(qkOf(tx - 1, ty));
+  if (tx < N - 1) out.push(qkOf(tx + 1, ty));
+  return out;
+}
 const regionOf = (qk) => qk.slice(0, REGION_LEN);
 
 function prefixesFor(camv, sz, cap = 9) {
@@ -350,6 +370,12 @@ const energySecsToReset = () => {
   return Math.max(0, Math.round((next - Date.now()) / 1000));
 };
 
+// PvP: UTC calendar-day string ("YYYY-MM-DD") — used only to locally
+// interpret a synced tile's attacks_received_date for the "attacked X/2
+// today" display before the region cache next resyncs. Display only:
+// attack_tile() re-derives this server-side and is the sole authority.
+const todayUTC = () => new Date().toISOString().slice(0, 10);
+
 /* ── in-memory game state ──────────────────────────────────────
    No localStorage save anymore: `profiles`/`tiles` in Postgres (via the
    RPCs in supabase.sql, keyed by auth.uid()) are the only source of truth.
@@ -370,6 +396,7 @@ const gameFromProfile = (uid, profile) => ({
   lastSeen: profile.last_seen ? new Date(profile.last_seen).getTime() : Date.now(),
   peakNetWorth: profile.peak_net_worth || 0,
   energy: profile.energy ?? statusFor(profile.peak_net_worth || 0).cap,
+  attacksSent: profile.attacks_sent_count || 0,
   rps: 0,
 });
 
@@ -809,6 +836,7 @@ function Game({ G, onExit, startFresh }) {
     g.boostReadyAt = data.boost_ready_at ? new Date(data.boost_ready_at).getTime() : 0;
     if (data.energy != null) g.energy = data.energy;
     if (data.peak_net_worth != null) g.peakNetWorth = data.peak_net_worth;
+    if (data.attacks_sent_count != null) g.attacksSent = data.attacks_sent_count;
     return data;
   }, [g]);
 
@@ -831,6 +859,29 @@ function Game({ G, onExit, startFresh }) {
     rebuildOwn();
     dirty.current = true;
   }, [g, rebuildOwn]);
+
+  /* ── PvP: surface "N of your attacks resolved" / "your territory was
+     raided N times" — same lazy claim-and-mark-seen pattern as collectBank
+     above, backed by battle_log/claim_battle_log() instead of
+     bank_ledger/claim_bank_ledger(). Money/ownership already moved
+     instantly inside attack_tile() — this only reports + acknowledges. ── */
+  const collectBattles = useCallback(async () => {
+    const { data, error } = await supabase.rpc("claim_battle_log");
+    if (error || !data || !data.length) return;
+    const { sent_win_count, sent_loss_count, sent_cost_total, received_count, received_lost_count } = data[0];
+    if (sent_win_count || sent_loss_count) {
+      toast(`Attack results: ${sent_win_count} won, ${sent_loss_count} lost (₲${fmt(sent_cost_total)} spent)`);
+    }
+    if (received_count) {
+      // a lost tile changes g.own out from under us with no local action —
+      // pull the real portfolio immediately rather than waiting for the
+      // next focus/visibility resync
+      if (received_lost_count) refreshOwnedTiles();
+      toast(received_lost_count
+        ? `Your territory was raided — ${received_lost_count} of ${received_count} attack${received_count === 1 ? "" : "s"} took a tile`
+        : `Your territory was raided ${received_count} time${received_count === 1 ? "" : "s"} — you held every tile`);
+    }
+  }, [g, toast, refreshOwnedTiles]);
 
   /* ── boot: pull real state from Supabase (profile was already fetched to
      get here; this fills in tiles + reconciles rent/streak) ── */
@@ -903,6 +954,7 @@ function Game({ G, onExit, startFresh }) {
       setReady(true);
       if (pendings.current.length) setModal(pendings.current.shift());
       collectBank();
+      collectBattles();
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -917,11 +969,11 @@ function Game({ G, onExit, startFresh }) {
       if (g.rps > 0) { g.bal += (g.rps * mult) / 4; dirty.current = true; }
       n++;
       if (n % 8 === 0) checkAch();
-      if (n % 80 === 0) { syncRent(); collectBank(); }
+      if (n % 80 === 0) { syncRent(); collectBank(); collectBattles(); }
       force();
     }, 250);
     return () => clearInterval(iv);
-  }, [ready, g, checkAch, syncRent, collectBank]);
+  }, [ready, g, checkAch, syncRent, collectBank, collectBattles]);
 
   /* Classification is fully vector-driven (see classifyFromVector above);
      there's no procedural mask/coastline-image fallback. */
@@ -1368,7 +1420,7 @@ function Game({ G, onExit, startFresh }) {
       // (owner, flip_royalty_to as of the flip feature), so PostgREST can no
       // longer infer which relationship an unqualified `profiles(username)`
       // embed means and rejects the whole query. Must stay qualified.
-      .select("qk,owner,cls,rarity,level,paid,list_price,flip_price,prestige,profiles!tiles_owner_fkey(username,peak_net_worth)")
+      .select("qk,owner,cls,rarity,level,paid,list_price,flip_price,prestige,attacks_received_count,attacks_received_date,profiles!tiles_owner_fkey(username,peak_net_worth)")
       .like("qk", `${prefix}%`);
     const t = {};
     if (error) {
@@ -1389,6 +1441,7 @@ function Game({ G, onExit, startFresh }) {
           o: row.owner, n: row.profiles?.username, pnw: row.profiles?.peak_net_worth || 0, r: row.rarity, l: row.level, pr: row.prestige || 0,
           cls: row.cls, pd: row.paid, ...(row.list_price != null ? { p: row.list_price } : {}),
           ...(row.flip_price != null ? { fp: row.flip_price } : {}),
+          arc: row.attacks_received_date === todayUTC() ? (row.attacks_received_count || 0) : 0,
         };
       }
     }
@@ -1542,6 +1595,17 @@ function Game({ G, onExit, startFresh }) {
     toast("New territory unlocked");
   };
 
+  // PvP: true if the player owns at least one orthogonal neighbor of qk —
+  // display/disabled-state mirror of attack_tile()'s adjacency check; the
+  // server re-derives this itself from `tiles`, this never gates the real
+  // outcome.
+  const attackableFrom = (qk) => neighborsOf(qk).some((nqk) => ownMap.current.has(nqk));
+
+  // mirrors attack_tile()'s cost/power formulas exactly — display/disabled-
+  // state only, the RPC is what actually charges and resolves the battle.
+  const attackCostFor = (rec) => Math.round(CLS[rec.cls].price * 0.5 * (1 + 0.5 * (rec.l || 0)));
+  const defPowerFor = (rec) => (1 + (rec.l || 0)) * RAR[rec.r || 0].m;
+
   const buyListed = async (qk) => {
     if (needName()) return;
     const rec = recOf(qk);
@@ -1555,6 +1619,65 @@ function Game({ G, onExit, startFresh }) {
     g.own.push({ qk, l: data.level, r: data.rarity, pr: data.prestige || 0, cls: data.cls, pd: data.paid });
     rebuildOwn(); checkAch(); dirty.current = true; save();
     toast(`Deed acquired from ${rec.n || "a player"}`);
+  };
+
+  // PvP: raid an orthogonally-adjacent enemy tile — cost is charged whether
+  // you win or lose (attack_tile() in supabase.sql owns the real formulas;
+  // this mirrors them for the optimistic debit + battle/reveal animation,
+  // but who actually wins is entirely server-decided).
+  const attackTile = async (qk) => {
+    if (roll || needName()) return;
+    const rec = recOf(qk);
+    if (!rec || rec.o == null || rec.o === g.uid) return;
+    if (!attackableFrom(qk)) { toast("You need to own a neighboring tile to attack this one."); return; }
+    const cost = attackCostFor(rec);
+    if (g.bal < cost) { toast("Not enough ₲ to launch this attack."); return; }
+    if ((g.attacksSent || 0) >= ATTACK_DAILY_CAP) {
+      toast(`No attacks left today (${ATTACK_DAILY_CAP}/day) — resets at midnight UTC`);
+      return;
+    }
+    if ((rec.arc || 0) >= ATTACK_RECEIVED_CAP) {
+      toast("This tile has already been attacked enough today — try again tomorrow.");
+      return;
+    }
+    setRoll({ qk, phase: "battle" });
+    const { data, error } = await supabase.rpc("attack_tile", { p_qk: qk });
+    if (error || !data || !data.length) {
+      setRoll(null);
+      toast(error?.message || "Attack failed — try again.");
+      return;
+    }
+    const result = data[0]; // { qk, won, cost, att_power, def_power }
+    g.bal -= Number(result.cost);
+    g.attacksSent = (g.attacksSent || 0) + 1;
+
+    // the target resets to Vacant either way (see attack_tile) — patch the
+    // shared region cache directly, same immediate-local-patch pattern
+    // flip() uses above, instead of waiting for the next region resync
+    const targetCls = rec.cls;
+    const r = regions.current.get(regionOf(qk));
+    if (r && r.t[qk]) {
+      r.t[qk] = {
+        ...r.t[qk], r: 0, l: 0, pr: 0, pd: CLS[targetCls].price, arc: (rec.arc || 0) + 1,
+        ...(result.won ? { o: g.uid, n: g.name, pnw: g.peakNetWorth } : {}),
+      };
+      delete r.t[qk].p;
+      delete r.t[qk].fp;
+    }
+
+    if (result.won) {
+      g.own.push({ qk, l: 0, r: 0, pr: 0, cls: targetCls, pd: CLS[targetCls].price });
+      const region = regionOf(qk);
+      unlockedRegions.current.add(region);
+      if (!homeRegionRef.current) homeRegionRef.current = region;
+      rebuildOwn(); checkAch();
+      if (!g.ach.conqueror) { g.ach.conqueror = 1; toast("Unlocked — Conqueror"); }
+    }
+    dirty.current = true; save();
+    setTimeout(() => setRoll({
+      qk, phase: "battle-done", won: result.won,
+      attPower: Number(result.att_power), defPower: Number(result.def_power),
+    }), reduced ? 50 : 1100);
   };
 
   const listTile = async (qk, price) => {
@@ -2210,6 +2333,7 @@ function Game({ G, onExit, startFresh }) {
       syncRent();
       refreshOwnedTiles();
       collectBank();
+      collectBattles();
       if (tab === "map") for (const q of prefixesFor(cam.current, size.current)) ensureRegion(q, true);
     };
     const onVis = () => { if (!document.hidden) resync(); };
@@ -2219,7 +2343,7 @@ function Game({ G, onExit, startFresh }) {
       document.removeEventListener("visibilitychange", onVis);
       window.removeEventListener("focus", resync);
     };
-  }, [ready, tab, syncRent, refreshOwnedTiles, collectBank, ensureRegion]);
+  }, [ready, tab, syncRent, refreshOwnedTiles, collectBank, collectBattles, ensureRegion]);
 
   useEffect(() => {
     const onE = (e) => {
@@ -2443,6 +2567,9 @@ function Game({ G, onExit, startFresh }) {
             {energyNow(g) < myStatus.cap && (
               <span className="pt10" style={{ ...mono, color: C.dim }}>resets in {hm(energySecsToReset())}</span>
             )}
+            <span className="pt10 font-bold" style={{ ...mono, color: (g.attacksSent || 0) < ATTACK_DAILY_CAP ? C.text : "#F08A8A", fontVariantNumeric: "tabular-nums" }} title="Attacks launched — resets once per day">
+              ⚔{Math.max(0, ATTACK_DAILY_CAP - (g.attacksSent || 0))}/{ATTACK_DAILY_CAP} today
+            </span>
           </div>
         </div>
         {boostOn ? (
@@ -2607,6 +2734,23 @@ function Game({ G, onExit, startFresh }) {
                   <div className="mt-1 text-xs" style={{ color: C.dim }}>Rent ×{RAR[roll.r].m} on this tile, forever.</div>
                 </div>
               )}
+              {roll && roll.qk === sel && roll.phase === "battle" && (
+                <div className="flex items-center justify-center gap-2.5 py-3 text-sm font-bold" style={{ ...display, color: C.amber }}>
+                  <span className="pt-anim-spin inline-block h-3.5 w-3.5 rounded-full" style={{ border: `2px solid ${C.amber}44`, borderTopColor: C.amber }} />
+                  Battle resolving…
+                </div>
+              )}
+              {roll && roll.qk === sel && roll.phase === "battle-done" && (
+                <div className="pt-anim-popIn py-2 text-center">
+                  <div className="text-2xl font-bold" style={{ ...display, color: roll.won ? C.amber : "#F08A8A", textShadow: `0 0 22px ${(roll.won ? C.amber : "#F08A8A")}88` }}>
+                    {roll.won ? "Victory!" : "Defeated"}
+                  </div>
+                  <div className="mt-1 text-xs" style={{ color: C.dim }}>
+                    {roll.won ? "Tile captured — the building was razed, but it's yours now." : "Scorched earth — the building's gone, but they keep the land."}
+                  </div>
+                  <div className="mt-1 pt10" style={{ ...mono, color: C.dim }}>Your power {roll.attPower.toFixed(2)} vs their {roll.defPower.toFixed(2)}</div>
+                </div>
+              )}
 
               {selLocked && !(roll && roll.qk === sel) && (
                 <div>
@@ -2655,7 +2799,7 @@ function Game({ G, onExit, startFresh }) {
                 </div>
               )}
 
-              {!selLocked && selRec && selRec.o != null && !selMine && !(roll && roll.qk === sel && roll.phase === "spin") && (
+              {!selLocked && selRec && selRec.o != null && !selMine && !(roll && roll.qk === sel && (roll.phase === "spin" || roll.phase === "battle")) && (
                 <div>
                   <div className="mb-2 flex flex-wrap items-center gap-2">
                     <Chip color={RAR[selRec.r || 0].color}>{RAR[selRec.r || 0].name}</Chip>
@@ -2670,10 +2814,30 @@ function Game({ G, onExit, startFresh }) {
                   ) : (
                     <div className="py-2 text-center text-xs" style={{ ...mono, color: C.dim }}>Not for sale. Try making friends.</div>
                   )}
+
+                  {attackableFrom(sel) && (
+                    <div className="mt-2 border-t pt-2" style={{ borderColor: C.hair }}>
+                      <div className="mb-1.5 flex items-center justify-between pt10" style={{ ...mono, color: C.dim }}>
+                        <span>attacks left today: {Math.max(0, ATTACK_DAILY_CAP - (g.attacksSent || 0))}/{ATTACK_DAILY_CAP}</span>
+                        <span>attacked {selRec.arc || 0}/{ATTACK_RECEIVED_CAP} today</span>
+                      </div>
+                      <div className="mb-1.5 pt10" style={{ ...mono, color: C.dim }}>
+                        your power {neighborsOf(sel).filter((nqk) => ownMap.current.has(nqk)).length} vs their power {defPowerFor(selRec).toFixed(2)} — more surrounding sides tip the odds
+                      </div>
+                      <Btn full tone="danger"
+                        onClick={() => attackTile(sel)}
+                        disabled={g.bal < attackCostFor(selRec) || (g.attacksSent || 0) >= ATTACK_DAILY_CAP || (selRec.arc || 0) >= ATTACK_RECEIVED_CAP}>
+                        {(g.attacksSent || 0) >= ATTACK_DAILY_CAP ? "No attacks left today"
+                          : (selRec.arc || 0) >= ATTACK_RECEIVED_CAP ? "Tile defended twice today"
+                          : g.bal < attackCostFor(selRec) ? "Not enough ₲ to attack"
+                          : `Attack — ₲${fmt(attackCostFor(selRec))}`}
+                      </Btn>
+                    </div>
+                  )}
                 </div>
               )}
 
-              {selMine && !(roll && roll.qk === sel && roll.phase === "spin") && (
+              {selMine && !(roll && roll.qk === sel && (roll.phase === "spin" || roll.phase === "battle")) && (
                 <div>
                   <div className="mb-2 flex flex-wrap items-center gap-2">
                     <Chip color={RAR[selMine.r].color}>{RAR[selMine.r].name}</Chip>
