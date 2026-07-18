@@ -1409,12 +1409,30 @@ begin
     raise exception 'insufficient balance';
   end if;
 
-  v_def_power := (1 + v_tile.level) * (case v_tile.rarity when 0 then 1 when 1 then 1.5 when 2 then 3 when 3 then 8 else 1 end);
-  -- independent ±15% roll per side, server-side only — can't be predicted
-  -- or influenced by the client
-  v_att_roll := v_att_power * (1 + (random() - 0.5) * 0.3);
-  v_def_roll := v_def_power * (1 + (random() - 0.5) * 0.3);
-  v_won := v_att_roll > v_def_roll;
+  -- prestige now counts toward defense (same multiplier shape as its rent
+  -- bonus) — safe to include ONLY because the probability floor below
+  -- guarantees no amount of investment ever reaches a true 100% defense.
+  -- Before this floor existed, attacker power was hard-capped at 4 (max
+  -- possible orthogonal neighbors) while defender power was unbounded —
+  -- a maxed legendary Tower (defPower 40) was already very close to
+  -- unconquerable by the old roll-and-compare method, and adding prestige
+  -- on top of THAT would have made it mathematically certain.
+  v_def_power := (1 + v_tile.level) * (case v_tile.rarity when 0 then 1 when 1 then 1.5 when 2 then 3 when 3 then 8 else 1 end) * (1 + 0.25 * v_tile.prestige);
+
+  -- win probability = power ratio, clamped so neither side is ever a sure
+  -- thing: a fully-encircled attack on a hopeless target caps at 90%, and
+  -- a lone probe against a maxed-out fortress never drops below 5% — the
+  -- floor is what makes prestige-in-defense safe (see above) and is also
+  -- what keeps conquest a real, standing threat against even the most
+  -- developed tiles, which is the actual point of a PvP system. Replaces
+  -- the old "roll each side ±15%, higher wins" method, which let whichever
+  -- side had the larger raw power ceiling win almost every time — the
+  -- jitter was nowhere near enough to bridge a 10x+ gap. att_roll/def_roll
+  -- (battle_log columns, kept for schema stability) now store the
+  -- probability split rather than literal rolled values.
+  v_att_roll := greatest(0.05, least(0.90, v_att_power / (v_att_power + v_def_power)));
+  v_def_roll := 1 - v_att_roll;
+  v_won := random() < v_att_roll;
 
   v_is_first_tile := v_won and not exists (select 1 from tiles where owner = v_uid);
 
