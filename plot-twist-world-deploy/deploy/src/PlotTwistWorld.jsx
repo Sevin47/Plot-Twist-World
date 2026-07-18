@@ -1651,18 +1651,21 @@ function Game({ G, onExit, startFresh }) {
     g.bal -= Number(result.cost);
     g.attacksSent = (g.attacksSent || 0) + 1;
 
-    // the target resets to Vacant either way (see attack_tile) — patch the
-    // shared region cache directly, same immediate-local-patch pattern
-    // flip() uses above, instead of waiting for the next region resync
+    // only a capture resets the target to Vacant (see attack_tile) — a
+    // successful defense leaves it completely untouched, so the defender's
+    // build is what actually won the fight. Patch the shared region cache
+    // directly either way, same immediate-local-patch pattern flip() uses
+    // above, instead of waiting for the next region resync.
     const targetCls = rec.cls;
     const r = regions.current.get(regionOf(qk));
     if (r && r.t[qk]) {
-      r.t[qk] = {
-        ...r.t[qk], r: 0, l: 0, pr: 0, pd: CLS[targetCls].price, arc: (rec.arc || 0) + 1,
-        ...(result.won ? { o: g.uid, n: g.name, pnw: g.peakNetWorth } : {}),
-      };
-      delete r.t[qk].p;
-      delete r.t[qk].fp;
+      if (result.won) {
+        r.t[qk] = { ...r.t[qk], o: g.uid, n: g.name, pnw: g.peakNetWorth, r: 0, l: 0, pr: 0, pd: CLS[targetCls].price, arc: (rec.arc || 0) + 1 };
+        delete r.t[qk].p;
+        delete r.t[qk].fp;
+      } else {
+        r.t[qk] = { ...r.t[qk], arc: (rec.arc || 0) + 1 };
+      }
     }
 
     if (result.won) {
@@ -2746,7 +2749,7 @@ function Game({ G, onExit, startFresh }) {
                     {roll.won ? "Victory!" : "Defeated"}
                   </div>
                   <div className="mt-1 text-xs" style={{ color: C.dim }}>
-                    {roll.won ? "Tile captured — the building was razed, but it's yours now." : "Scorched earth — the building's gone, but they keep the land."}
+                    {roll.won ? "Tile captured — the building was razed, but it's yours now." : "Repelled — their defenses held. Nothing lost on their side."}
                   </div>
                   <div className="mt-1 pt10" style={{ ...mono, color: C.dim }}>Your power {roll.attPower.toFixed(2)} vs their {roll.defPower.toFixed(2)}</div>
                 </div>

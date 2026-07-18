@@ -1209,7 +1209,14 @@ begin
   if not exists (select 1 from profiles where user_id = v_uid) then raise exception 'no profile'; end if;
   perform accrue_rent(v_uid); -- also resets attacks_sent_count/date, see accrue_rent above
 
-  select * into v_tile from tiles where qk = p_qk for update;
+  -- `tiles.` qualification below is load-bearing, not stylistic: this
+  -- function's `returns table(qk text, ...)` introduces an implicit
+  -- variable named `qk` in scope for the whole function body, which a bare
+  -- `qk` column reference in any query here is genuinely ambiguous against
+  -- ("column reference qk is ambiguous") — unlike every other function in
+  -- this file, which returns `tiles`/`void`/named-non-qk columns and never
+  -- hits this.
+  select * into v_tile from tiles where tiles.qk = p_qk for update;
   if not found then raise exception 'tile not found'; end if;
   if v_tile.owner is null then raise exception 'that tile is unowned — claim it instead of attacking it'; end if;
   if v_tile.owner = v_uid then raise exception 'you already own this tile'; end if;
@@ -1235,7 +1242,7 @@ begin
   end if;
 
   v_neighbors := qk_neighbors(p_qk);
-  v_att_power := (select count(*) from tiles where owner = v_uid and qk = any(v_neighbors));
+  v_att_power := (select count(*) from tiles where owner = v_uid and tiles.qk = any(v_neighbors));
   if v_att_power < 1 then
     raise exception 'you need to own an adjacent tile to attack this one';
   end if;
@@ -1262,17 +1269,28 @@ begin
         attacks_sent_date = v_today
     where user_id = v_uid;
 
-  -- scorched earth either way: level/rarity/prestige wiped, any listing
-  -- cleared, paid reset to the district's base price (mirrors flip_tile's
-  -- "tear it down" reset) — only `owner` differs by outcome
-  update tiles
-    set level = 0, rarity = 0, prestige = 0, paid = v_class.price,
-        list_price = null, flip_price = null, flip_royalty_to = null,
-        owner = case when v_won then v_uid else owner end,
-        attacks_received_count = v_tile.attacks_received_count + 1,
-        attacks_received_date = v_today,
-        updated_at = now()
-    where qk = p_qk;
+  -- only a CAPTURE resets the tile — level/rarity/prestige wiped, any
+  -- listing cleared, paid reset to the district's base price (mirrors
+  -- flip_tile's "tear it down" reset), ownership transferred. A successful
+  -- DEFENSE leaves the tile completely untouched — the defender's build is
+  -- what won the fight, so it has to survive the fight, or defending would
+  -- never be worth more than losing outright. Either outcome still bumps
+  -- the per-tile daily received-attack counter.
+  if v_won then
+    update tiles
+      set level = 0, rarity = 0, prestige = 0, paid = v_class.price,
+          list_price = null, flip_price = null, flip_royalty_to = null,
+          owner = v_uid,
+          attacks_received_count = v_tile.attacks_received_count + 1,
+          attacks_received_date = v_today,
+          updated_at = now()
+      where tiles.qk = p_qk;
+  else
+    update tiles
+      set attacks_received_count = v_tile.attacks_received_count + 1,
+          attacks_received_date = v_today
+      where tiles.qk = p_qk;
+  end if;
 
   if v_is_first_tile then
     insert into unlocked_regions (owner, region, is_home)
