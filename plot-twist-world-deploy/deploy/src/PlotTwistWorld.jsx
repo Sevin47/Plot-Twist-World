@@ -1553,8 +1553,8 @@ function Game({ G, onExit, startFresh }) {
   const refreshLog = useCallback(async () => {
     setLog({ loading: true, rows: null });
     const [bankRes, battleRes] = await Promise.all([
-      supabase.from("bank_ledger").select("id,amount,from_username,kind,created_at").eq("recipient", g.uid).order("created_at", { ascending: false }).limit(20),
-      supabase.from("battle_log").select("id,attacker,defender,attacker_won,cost,created_at").or(`attacker.eq.${g.uid},defender.eq.${g.uid}`).order("created_at", { ascending: false }).limit(20),
+      supabase.from("bank_ledger").select("id,amount,from_username,kind,qk,created_at").eq("recipient", g.uid).order("created_at", { ascending: false }).limit(20),
+      supabase.from("battle_log").select("id,attacker,defender,attacker_won,cost,qk,created_at").or(`attacker.eq.${g.uid},defender.eq.${g.uid}`).order("created_at", { ascending: false }).limit(20),
     ]);
     const bankRows = bankRes.data || [];
     const battleRows = battleRes.data || [];
@@ -1565,7 +1565,7 @@ function Game({ G, onExit, startFresh }) {
       names = Object.fromEntries((profRows || []).map((p) => [p.user_id, p.username]));
     }
     const bankEvents = bankRows.map((r) => ({
-      id: `bank-${r.id}`, ts: r.created_at,
+      id: `bank-${r.id}`, ts: r.created_at, qk: r.qk,
       text: r.kind === "repossession" ? `Tile repossessed for inactivity — ₲${fmt(r.amount)} refunded`
         : r.kind === "flip" ? `Flip royalty from ${r.from_username || "a player"} — +₲${fmt(r.amount)}`
         : `Sold to ${r.from_username || "a player"} — +₲${fmt(r.amount)}`,
@@ -1575,9 +1575,9 @@ function Game({ G, onExit, startFresh }) {
       const iAmAttacker = r.attacker === g.uid;
       const oppName = names[iAmAttacker ? r.defender : r.attacker] || "a player";
       return iAmAttacker
-        ? { id: `battle-${r.id}`, ts: r.created_at, tone: r.attacker_won ? "good" : "bad",
+        ? { id: `battle-${r.id}`, ts: r.created_at, qk: r.qk, tone: r.attacker_won ? "good" : "bad",
             text: r.attacker_won ? `Captured a tile from ${oppName} — ₲${fmt(r.cost)} spent` : `Attack on ${oppName} repelled — ₲${fmt(r.cost)} lost` }
-        : { id: `battle-${r.id}`, ts: r.created_at, tone: r.attacker_won ? "bad" : "good",
+        : { id: `battle-${r.id}`, ts: r.created_at, qk: r.qk, tone: r.attacker_won ? "bad" : "good",
             text: r.attacker_won ? `Lost a tile to ${oppName}'s attack` : `Defended against ${oppName}'s attack — nothing lost` };
     });
     const merged = [...bankEvents, ...battleEvents].sort((a, b) => new Date(b.ts) - new Date(a.ts)).slice(0, 30);
@@ -2161,6 +2161,22 @@ function Game({ G, onExit, startFresh }) {
             // at a glance while panning.
             ctx.fillStyle = RAR[1].color;
             ctx.beginPath(); ctx.arc(px + tilePx - 4, py + 4, 2.6, 0, 7); ctx.fill();
+          }
+          // owner name label — only readable at all once tiles are large
+          // enough to hold text, so gate to near the zoom ceiling (max
+          // tilePx is N*64/N = 64, see zoomAt's clamp). Own tiles skip this
+          // — the amber fill already says "mine" without needing a label.
+          if (!mine && tilePx >= 48 && rec.n) {
+            const label = rec.n.length > 10 ? rec.n.slice(0, 9) + "…" : rec.n;
+            ctx.font = "9px ui-monospace, Menlo, monospace";
+            ctx.textAlign = "left";
+            const textW = ctx.measureText(label).width;
+            const labelH = 12;
+            const lx = px + 2, ly = py + tilePx - labelH - 2;
+            ctx.fillStyle = hexA("#000000", 0.5);
+            ctx.fillRect(lx, ly, Math.min(tilePx - 4, textW + 6), labelH);
+            ctx.fillStyle = "#F0F4F8";
+            ctx.fillText(label, lx + 3, ly + 9);
           }
         }
       }
@@ -3271,10 +3287,20 @@ function Game({ G, onExit, startFresh }) {
                 <div className="pt11 py-2" style={{ ...mono, color: C.dim }}>Pulling records…</div>
               ) : log.rows && log.rows.length ? (
                 log.rows.map((e, idx) => (
-                  <div key={e.id} className="flex items-center justify-between gap-2 py-1.5 text-xs" style={{ ...mono, borderTop: idx ? `1px solid ${C.hair}` : "none", color: e.tone === "bad" ? "#F08A8A" : e.tone === "good" ? C.amber : C.dim }}>
+                  <button key={e.id} className="flex w-full items-center justify-between gap-2 py-1.5 text-left text-xs focus-visible:outline focus-visible:outline-2"
+                    style={{ ...mono, borderTop: idx ? `1px solid ${C.hair}` : "none", color: e.tone === "bad" ? "#F08A8A" : e.tone === "good" ? C.amber : C.dim, outlineColor: C.amber }}
+                    onClick={() => {
+                      if (!e.qk) return;
+                      setTab("map"); setSel(e.qk);
+                      const [wx, wy] = centerOfQk(e.qk);
+                      const { w, h } = size.current;
+                      const s = N * 16;
+                      cam.current = { s, x: w / 2 - wx * s, y: h / 2 - wy * s, init: true };
+                      ensureRegion(regionOf(e.qk), true);
+                    }}>
                     <span className="min-w-0 flex-1 truncate">{e.text}</span>
                     <span className="shrink-0" style={{ color: C.dim }}>{timeAgo(e.ts)}</span>
-                  </div>
+                  </button>
                 ))
               ) : (
                 <div className="pt11 py-2" style={{ ...mono, color: C.dim }}>Nothing yet — sales, repossessions, and battle results will show up here.</div>
