@@ -397,6 +397,7 @@ const gameFromProfile = (uid, profile) => ({
   peakNetWorth: profile.peak_net_worth || 0,
   energy: profile.energy ?? statusFor(profile.peak_net_worth || 0).cap,
   attacksSent: profile.attacks_sent_count || 0,
+  devMode: profile.dev_mode || false,
   rps: 0,
 });
 
@@ -837,6 +838,7 @@ function Game({ G, onExit, startFresh }) {
     if (data.energy != null) g.energy = data.energy;
     if (data.peak_net_worth != null) g.peakNetWorth = data.peak_net_worth;
     if (data.attacks_sent_count != null) g.attacksSent = data.attacks_sent_count;
+    if (data.dev_mode != null) g.devMode = data.dev_mode;
     return data;
   }, [g]);
 
@@ -1546,7 +1548,7 @@ function Game({ G, onExit, startFresh }) {
     // supabase.sql) — trading/upgrading tiles you already have doesn't.
     // Client-side check just saves a round-trip; the server enforces this
     // independently and for real.
-    if (energyNow(g) < 1) {
+    if (!g.devMode && energyNow(g) < 1) {
       toast(`Out of energy for today (${statusFor(g.peakNetWorth).cap}/day) — resets at midnight UTC`);
       return;
     }
@@ -1632,11 +1634,11 @@ function Game({ G, onExit, startFresh }) {
     if (!attackableFrom(qk)) { toast("You need to own a neighboring tile to attack this one."); return; }
     const cost = attackCostFor(rec);
     if (g.bal < cost) { toast("Not enough ₲ to launch this attack."); return; }
-    if ((g.attacksSent || 0) >= ATTACK_DAILY_CAP) {
+    if (!g.devMode && (g.attacksSent || 0) >= ATTACK_DAILY_CAP) {
       toast(`No attacks left today (${ATTACK_DAILY_CAP}/day) — resets at midnight UTC`);
       return;
     }
-    if ((rec.arc || 0) >= ATTACK_RECEIVED_CAP) {
+    if (!g.devMode && (rec.arc || 0) >= ATTACK_RECEIVED_CAP) {
       toast("This tile has already been attacked enough today — try again tomorrow.");
       return;
     }
@@ -2564,6 +2566,7 @@ function Game({ G, onExit, startFresh }) {
           </div>
           <div className="mt-0.5 flex items-center gap-1.5">
             <Chip color={C.amber}>{myStatus.name}</Chip>
+            {g.devMode && <Chip color="#F08A8A">DEV</Chip>}
             <span className="pt10 font-bold" style={{ ...mono, color: energyNow(g) > 0 ? C.amber : "#F08A8A", fontVariantNumeric: "tabular-nums" }} title="Energy — spent claiming unowned land, resets once per day">
               ⚡{energyNow(g)}/{myStatus.cap} today
             </span>
@@ -2829,9 +2832,9 @@ function Game({ G, onExit, startFresh }) {
                       </div>
                       <Btn full tone="danger"
                         onClick={() => attackTile(sel)}
-                        disabled={g.bal < attackCostFor(selRec) || (g.attacksSent || 0) >= ATTACK_DAILY_CAP || (selRec.arc || 0) >= ATTACK_RECEIVED_CAP}>
-                        {(g.attacksSent || 0) >= ATTACK_DAILY_CAP ? "No attacks left today"
-                          : (selRec.arc || 0) >= ATTACK_RECEIVED_CAP ? "Tile defended twice today"
+                        disabled={g.bal < attackCostFor(selRec) || (!g.devMode && ((g.attacksSent || 0) >= ATTACK_DAILY_CAP || (selRec.arc || 0) >= ATTACK_RECEIVED_CAP))}>
+                        {!g.devMode && (g.attacksSent || 0) >= ATTACK_DAILY_CAP ? "No attacks left today"
+                          : !g.devMode && (selRec.arc || 0) >= ATTACK_RECEIVED_CAP ? "Tile defended twice today"
                           : g.bal < attackCostFor(selRec) ? "Not enough ₲ to attack"
                           : `Attack — ₲${fmt(attackCostFor(selRec))}`}
                       </Btn>

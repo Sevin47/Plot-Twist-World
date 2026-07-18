@@ -625,10 +625,13 @@ declare
   v_row tiles;
   v_region text := left(p_qk, 8);
   v_is_first_tile boolean;
+  v_dev_mode boolean;
 begin
   if v_uid is null then raise exception 'not authenticated'; end if;
   if not exists (select 1 from profiles where user_id = v_uid) then raise exception 'no profile'; end if;
   perform accrue_rent(v_uid);
+
+  select dev_mode into v_dev_mode from profiles where user_id = v_uid;
 
   select * into v_class from tile_class where cls = p_cls;
   if not found or v_class.sellable = false then raise exception 'not purchasable'; end if;
@@ -639,8 +642,9 @@ begin
   -- energy gates claiming NEW unowned land specifically — the actual sprawl
   -- vector (zoom anywhere, buy instantly). buy_listed_tile (trading with
   -- another player) and upgrade_tile (investing in what you already own)
-  -- are deliberately left energy-free.
-  if (select energy from profiles where user_id = v_uid) < 1 then
+  -- are deliberately left energy-free. dev_mode accounts skip this gate
+  -- entirely (see the column comment above).
+  if not v_dev_mode and (select energy from profiles where user_id = v_uid) < 1 then
     raise exception 'no energy left today — resets tomorrow (your daily cap grows with status)';
   end if;
 
@@ -660,7 +664,10 @@ begin
   v_roll := random();
   v_rarity := case when v_roll < 0.02 then 3 when v_roll < 0.10 then 2 when v_roll < 0.30 then 1 else 0 end;
 
-  update profiles set balance = balance - v_class.price, energy = energy - 1 where user_id = v_uid;
+  update profiles
+    set balance = balance - v_class.price,
+        energy = case when v_dev_mode then energy else energy - 1 end
+    where user_id = v_uid;
   insert into tiles (qk, owner, cls, level, rarity, paid, updated_at)
   values (p_qk, v_uid, p_cls, 0, v_rarity, v_class.price, now())
   returning * into v_row;
@@ -1082,6 +1089,19 @@ grant select on leaderboard to anon, authenticated;
 alter table profiles add column if not exists attacks_sent_date date not null default (now() at time zone 'utc')::date;
 alter table profiles add column if not exists attacks_sent_count int not null default 0;
 
+-- ── dev_mode: per-account testing flag, deliberately NOT settable through
+--    any RPC or client action — the only way to grant it is a direct SQL
+--    UPDATE by whoever has SQL-editor access to this project, same as
+--    backdating a test account's created_at. A global env-var-style
+--    toggle would be dangerous here (this is a real shared multiplayer
+--    world) — this stays scoped to whichever specific accounts you flag.
+--    When true: buy_unowned_tile ignores the energy gate, and attack_tile
+--    ignores the 72h new-account grace, the attacker daily cap, and the
+--    per-tile received-attack cap — everything else (cost, balance checks,
+--    the actual power/roll math) stays real, so the mechanics you're
+--    testing still behave like they will for real players. ──
+alter table profiles add column if not exists dev_mode boolean not null default false;
+
 -- per-TILE daily received-attack cap, independent of who's attacking
 alter table tiles add column if not exists attacks_received_date date not null default (now() at time zone 'utc')::date;
 alter table tiles add column if not exists attacks_received_count int not null default 0;
@@ -1204,10 +1224,17 @@ declare
   v_today date := (now() at time zone 'utc')::date;
   v_is_first_tile boolean;
   v_region text := left(p_qk, 8);
+  v_dev_mode boolean;
 begin
   if v_uid is null then raise exception 'not authenticated'; end if;
   if not exists (select 1 from profiles where user_id = v_uid) then raise exception 'no profile'; end if;
   perform accrue_rent(v_uid); -- also resets attacks_sent_count/date, see accrue_rent above
+
+  -- dev_mode is the ATTACKER's own flag (see the column comment near its
+  -- alter table above) — a flagged tester account can attack past the
+  -- age-grace/cooldowns below regardless of who owns the target. Cost,
+  -- balance, and the actual power/roll math are never bypassed.
+  select dev_mode into v_dev_mode from profiles where user_id = v_uid;
 
   -- `tiles.` qualification below is load-bearing, not stylistic: this
   -- function's `returns table(qk text, ...)` introduces an implicit
@@ -1223,7 +1250,7 @@ begin
 
   select * into v_defender from profiles where user_id = v_tile.owner;
   if not found then raise exception 'target has no profile'; end if;
-  if v_defender.created_at > now() - interval '72 hours' then
+  if not v_dev_mode and v_defender.created_at > now() - interval '72 hours' then
     raise exception 'that player is too new to attack — protected for 72 hours';
   end if;
 
@@ -1233,11 +1260,11 @@ begin
   if v_tile.attacks_received_date < v_today then
     v_tile.attacks_received_count := 0;
   end if;
-  if v_tile.attacks_received_count >= 2 then
+  if not v_dev_mode and v_tile.attacks_received_count >= 2 then
     raise exception 'this tile has already been attacked twice today — try again tomorrow';
   end if;
 
-  if (select attacks_sent_count from profiles where user_id = v_uid) >= 3 then
+  if not v_dev_mode and (select attacks_sent_count from profiles where user_id = v_uid) >= 3 then
     raise exception 'no attacks left today — resets tomorrow';
   end if;
 
