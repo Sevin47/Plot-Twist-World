@@ -982,141 +982,32 @@ $$;
 revoke all on function redevelop_tile(text) from public;
 grant execute on function redevelop_tile(text) to authenticated;
 
--- ── flip_tile: cash out a maxed-out (level 4) tile instead of prestiging
---    it. Tears the building down, wipes rarity/prestige, and releases the
---    tile (owner -> null) at an asking price of 2x the district's own base
---    price (tile_class.price) — see buy_flipped_tile below for the other
---    half of this trade.
+-- ── flip/buy_flipped: CUT (2026-07). The mechanic never found a real niche
+--    once PvP existed — abandon_tile (50% of paid, instant, any level)
+--    paid out roughly 10x more than flip in every realistic case, and
+--    listing already covers voluntary sale. flip's only unique property
+--    (owner -> null removes attack exposure immediately, same as abandon,
+--    but keeps the tile claimable instead of erasing it) wasn't enough to
+--    carry it as a standalone mechanic. May come back later in a different
+--    shape — see the design discussion for context if reviving this.
 --
---    Deliberately priced off the DISTRICT, not tiles.paid (total historical
---    investment). A buy_flipped_tile purchase resets level/rarity/prestige
---    to a blank slate — the buyer receives none of the seller's build
---    history, so pricing off it was economically incoherent (and on a
---    heavily-redeveloped tile, paid grows unbounded — upgrade_tile's cost
---    scales with prestige and never resets on redevelop — so a price tied
---    to it eventually asks buyers to pay millions for a Vacant lot, which
---    never sells: a permanent soft-lock, not a steep-but-real price). 2x
---    base price is a flat convenience premium for skipping the energy
---    gate and region-unlock requirement, same idea in both directions —
---    always a sane, clearable price regardless of the seller's history.
---    abandon_tile (50% of paid) remains the right tool for recouping sunk
---    cost; flip is "release to market at fair value, take a real cut". ──
-create or replace function flip_tile(p_qk text)
-returns tiles
-language plpgsql
-security definer
-set search_path = public
-as $$
-declare
-  v_uid uuid := auth.uid();
-  v_tile tiles;
-  v_class tile_class;
-  v_price bigint;
-begin
-  if v_uid is null then raise exception 'not authenticated'; end if;
-  perform accrue_rent(v_uid);
-
-  select * into v_tile from tiles where qk = p_qk and owner = v_uid for update;
-  if not found then raise exception 'tile not found or not yours'; end if;
-  if v_tile.level < 4 then raise exception 'not fully built yet'; end if;
-
-  select * into v_class from tile_class where cls = v_tile.cls;
-  v_price := round(v_class.price * 2);
-
-  update tiles
-    set owner = null, level = 0, rarity = 0, prestige = 0, paid = 0,
-        list_price = null, flip_price = v_price, flip_royalty_to = v_uid,
-        updated_at = now()
-  where qk = p_qk
-  returning * into v_tile;
-
-  return v_tile;
-end;
-$$;
-revoke all on function flip_tile(text) from public;
-grant execute on function flip_tile(text) to authenticated;
-
--- ── buy_flipped_tile: buy a tile released via flip_tile. Pays a fixed 28%
---    royalty to whoever flipped it (bank_ledger 'flip' entry, same "paid
---    while you were away" pipe as a normal sale via claim_bank_ledger); the
---    remaining 72% is a deliberate sink, same as buy_unowned_tile — the
---    buyer is paying a premium for an already-classified, pre-cleared tile,
---    not funding the previous owner 1:1. Energy-free and not region-gated,
---    same as buy_listed_tile — this is a trade, not a land grab. The buyer
---    gets a freshly-rolled deed (matches "starts over" framing), not the
---    flipper's old rarity. ──
-create or replace function buy_flipped_tile(p_qk text, p_expected_price bigint)
-returns tiles
-language plpgsql
-security definer
-set search_path = public
-as $$
-declare
-  v_uid uuid := auth.uid();
-  v_tile tiles;
-  v_royalty bigint;
-  v_roll numeric;
-  v_rarity int;
-  v_buyer_name text;
-  v_region text;
-  v_is_first_tile boolean;
-begin
-  if v_uid is null then raise exception 'not authenticated'; end if;
-  if not exists (select 1 from profiles where user_id = v_uid) then raise exception 'no profile'; end if;
-  perform accrue_rent(v_uid);
-
-  select * into v_tile from tiles where qk = p_qk for update;
-  if not found then raise exception 'tile not found'; end if;
-  if v_tile.owner is not null then raise exception 'no longer available'; end if;
-  if v_tile.flip_price is null or v_tile.flip_price <> p_expected_price then
-    raise exception 'listing changed';
-  end if;
-  if v_tile.flip_royalty_to = v_uid then raise exception 'cannot buy back your own flip'; end if;
-  if (select balance from profiles where user_id = v_uid) < p_expected_price then
-    raise exception 'insufficient balance';
-  end if;
-
-  -- Same region gate as buy_listed_tile (see that function's comment) —
-  -- kept consistent so "which regions can I trade in" is one rule, not a
-  -- different rule per market surface.
-  v_region := left(p_qk, 8);
-  v_is_first_tile := not exists (select 1 from tiles where owner = v_uid);
-  if not v_is_first_tile and not exists (
-    select 1 from unlocked_regions where owner = v_uid and region = v_region
-  ) then
-    raise exception 'region not unlocked — travel here first';
-  end if;
-
-  v_royalty := round(p_expected_price * 0.28);
-  v_roll := random();
-  v_rarity := case when v_roll < 0.02 then 3 when v_roll < 0.10 then 2 when v_roll < 0.30 then 1 else 0 end;
-  select username into v_buyer_name from profiles where user_id = v_uid;
-
-  update profiles set balance = balance - p_expected_price where user_id = v_uid;
-  if v_tile.flip_royalty_to is not null then
-    update profiles set balance = balance + v_royalty where user_id = v_tile.flip_royalty_to;
-    insert into bank_ledger (recipient, amount, from_username, qk, kind)
-    values (v_tile.flip_royalty_to, v_royalty, v_buyer_name, p_qk, 'flip');
-  end if;
-
-  update tiles
-    set owner = v_uid, level = 0, rarity = v_rarity,
-        paid = p_expected_price, flip_price = null, flip_royalty_to = null,
-        updated_at = now()
-  where qk = p_qk
-  returning * into v_tile;
-
-  if v_is_first_tile then
-    insert into unlocked_regions (owner, region, is_home)
-    values (v_uid, v_region, true)
-    on conflict (owner, region) do nothing;
-  end if;
-
-  return v_tile;
-end;
-$$;
-revoke all on function buy_flipped_tile(text, bigint) from public;
-grant execute on function buy_flipped_tile(text, bigint) to authenticated;
+--    tiles.flip_price/flip_royalty_to columns are left in place (this file
+--    never drops columns from a live table) but are permanently null going
+--    forward — nothing writes them anymore. Any tile flip-listed before
+--    this cutover is deleted outright below rather than left owner=null
+--    forever with no buy path: buy_unowned_tile only succeeds when NO row
+--    exists for a qk (its insert relies on a primary-key conflict to
+--    detect "already claimed"), so an orphaned owner=null row with
+--    flip_price set — unreachable now that buy_flipped_tile is gone —
+--    would otherwise sit permanently unclaimable AND unrepossessable
+--    (repossess_stale_tiles deliberately excludes flip_price is not null
+--    rows, to avoid sweeping up live flip listings). Deleting returns that
+--    land to genuinely-never-claimed status, buyable fresh like any other
+--    unclaimed tile. One-time, safe to leave in on re-runs (no-op once
+--    there are none left). ──
+drop function if exists flip_tile(text);
+drop function if exists buy_flipped_tile(text, bigint);
+delete from tiles where flip_price is not null;
 
 -- ── abandon_tile: 50% refund, matching the client's current rule ──
 create or replace function abandon_tile(p_qk text)
