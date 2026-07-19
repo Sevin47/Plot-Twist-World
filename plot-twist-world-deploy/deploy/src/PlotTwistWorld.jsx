@@ -3126,7 +3126,21 @@ function Game({ G, onExit, startFresh }) {
                     <span className="text-xs" style={{ ...mono, color: C.amber }}>₲{fmt1(rentOf(selMine))}/s</span>
                     {selMine.p && <Chip color={C.amber}>Listed ₲{fmt(selMine.p)}</Chip>}
                   </div>
-                  {selMine.l < MAX_LVL ? (
+                  {selLandmark && !selMine.bu ? (
+                    <div className="flex flex-col gap-2">
+                      <div className="rounded-xl p-3 text-center text-xs" style={{ ...cardSty, color: C.dim }}>
+                        {selLandmark.emoji} Landmark tiles can't be developed — the landmark itself is the attraction.
+                      </div>
+                      <div className="flex gap-2">
+                        {selMine.p ? (
+                          <Btn tone="ghost" onClick={() => unlist(sel)}>Unlist</Btn>
+                        ) : (
+                          <Btn tone="ghost" onClick={() => { setPriceDraft(String(Math.round((selMine.pd || CLS[selCls].price) * 1.5))); setModal({ kind: "list", qk: sel }); }}>List…</Btn>
+                        )}
+                        <Btn tone="danger" onClick={() => abandon(sel)}>50%</Btn>
+                      </div>
+                    </div>
+                  ) : selMine.l < MAX_LVL ? (
                     selMine.bu ? (
                       <div className="flex flex-col gap-2">
                         <div className="rounded-xl p-2.5" style={cardSty}>
@@ -3273,6 +3287,8 @@ function Game({ G, onExit, startFresh }) {
                   <div className="flex gap-1.5">
                     {t.bu ? (
                       <Btn small onClick={() => rushBuild(t.qk)} disabled={g.bal < rushCostFor(t)}>Rush ₲{fmt(rushCostFor(t))}</Btn>
+                    ) : landmarksByQk.current.has(t.qk) ? (
+                      <span className="pt10 px-1" style={{ ...mono, color: C.dim }}>🏛️ landmark</span>
                     ) : t.l < MAX_LVL ? (
                       <Btn small onClick={() => upgrade(t.qk)} disabled={g.bal < upCost(t)}>₲{fmt(upCost(t))}</Btn>
                     ) : (
@@ -3324,36 +3340,6 @@ function Game({ G, onExit, startFresh }) {
             ))}
             <div className="pt10 mt-2 mb-4 text-center" style={{ ...mono, color: C.dim }}>
               Only shows listings in territory you've unlocked. Sales pay the seller even while they're offline.
-            </div>
-
-            <Eyebrow>Landmarks · worldwide</Eyebrow>
-            <div className="mb-3" />
-            {landmarksList.current.map((lm) => {
-              const mine = myLandmarkPieces(lm.landmarkId);
-              return (
-                <div key={lm.landmarkId} className="mb-2 rounded-xl p-3 transition-transform duration-150 hover:-translate-y-0.5" style={cardSty}>
-                  <button className="flex w-full items-center justify-between text-left focus-visible:outline focus-visible:outline-2" style={{ outlineColor: C.amber }}
-                    onClick={() => {
-                      const qk = lm.qks[0];
-                      setTab("map"); setSel(qk);
-                      const [wx, wy] = centerOfQk(qk);
-                      const { w, h } = size.current;
-                      const s = N * 24;
-                      cam.current = { s, x: w / 2 - wx * s, y: h / 2 - wy * s, init: true };
-                      ensureRegion(regionOf(qk), true);
-                    }}>
-                    <div className="flex min-w-0 items-center gap-2">
-                      <span style={{ fontSize: "1.1rem" }}>{lm.emoji}</span>
-                      <span className="truncate text-sm font-bold" style={mono}>{lm.name}</span>
-                      <Chip color="#FFD700">{lm.perkType.replace("_", " ")}</Chip>
-                    </div>
-                    <span className="shrink-0 text-xs" style={{ ...mono, color: mine ? C.amber : C.dim }}>you own {mine}/9</span>
-                  </button>
-                </div>
-              );
-            })}
-            <div className="pt10 mt-2 mb-4 text-center" style={{ ...mono, color: C.dim }}>
-              9 tiles per landmark, claim price ₲{fmt(1000000)} each — multiple players can hold pieces of the same landmark. Tap one to fly there and see who owns what.
             </div>
           </div>
         )}
@@ -3491,6 +3477,48 @@ function Game({ G, onExit, startFresh }) {
                 <div className="pt11 py-2" style={{ ...mono, color: C.dim }}>{g.name ? "No landlords on record yet." : "Set a name to appear here."}</div>
               )}
             </div>
+
+            {/* zone: landmarks — only shows landmarks you actually own at
+                least one piece of; browsing unowned ones happens by just
+                finding their gold marker on the map. */}
+            {landmarksList.current.some((lm) => myLandmarkPieces(lm.landmarkId) > 0) && (
+              <>
+                <div className="mb-2 mt-1 flex items-center gap-2">
+                  <span className="text-xs font-bold uppercase tracking-wide" style={{ ...display, color: C.text }}>Landmarks</span>
+                  <div className="h-px flex-1" style={{ background: C.hair }} />
+                </div>
+                <div className="mb-3 rounded-xl p-3" style={cardSty}>
+                  {landmarksList.current.filter((lm) => myLandmarkPieces(lm.landmarkId) > 0).map((lm, idx) => {
+                    const mine = myLandmarkPieces(lm.landmarkId);
+                    const perkAmount = Math.min(lm.perkValue * mine, lm.perkCap);
+                    const perkDesc = lm.perkType === "energy_boost"
+                      ? `+${lm.perkValue * mine} daily energy`
+                      : `−${perkAmount.toFixed(0)}% ${lm.perkType.replace("_", " ")} in this region`;
+                    return (
+                      <button key={lm.landmarkId} className="flex w-full items-center justify-between py-1.5 text-left focus-visible:outline focus-visible:outline-2" style={{ borderTop: idx ? `1px solid ${C.hair}` : "none", outlineColor: C.amber }}
+                        onClick={() => {
+                          const qk = lm.qks[0];
+                          setTab("map"); setSel(qk);
+                          const [wx, wy] = centerOfQk(qk);
+                          const { w, h } = size.current;
+                          const s = N * 24;
+                          cam.current = { s, x: w / 2 - wx * s, y: h / 2 - wy * s, init: true };
+                          ensureRegion(regionOf(qk), true);
+                        }}>
+                        <div className="flex min-w-0 items-center gap-2">
+                          <span style={{ fontSize: "1.1rem" }}>{lm.emoji}</span>
+                          <div className="min-w-0">
+                            <div className="truncate text-sm font-bold" style={mono}>{lm.name}</div>
+                            <div className="pt10" style={{ ...mono, color: "#FFD700" }}>{perkDesc}</div>
+                          </div>
+                        </div>
+                        <span className="shrink-0 text-xs" style={{ ...mono, color: C.dim }}>{mine}/9</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </>
+            )}
 
             {/* zone: activity — sales, repossessions, battle results */}
             <div className="mb-2 mt-1 flex items-center gap-2">
