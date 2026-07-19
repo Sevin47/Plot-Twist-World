@@ -101,6 +101,7 @@ const C = {
   ink: "#0A1622", panel: "#111C2B", hair: "#243146",
   ocean: "#0A2233", oceanDeep: "#081B2A", landFill: "#22384A",
   amber: "#FFC24B", text: "#E8EDF5", dim: "#8DA0B8",
+  mine: "#4DA6FF", // border accent for your own tiles on the map — deliberately not reused anywhere else as a semantic color, so "blue border" only ever means "yours"
 
   // ── premium-pass additions (purely additive — nothing above this line
   // changed, so every existing usage keeps rendering exactly as before) ──
@@ -341,6 +342,11 @@ const upCost = (t) => Math.round(CLS[t.cls].price * 0.8 * Math.pow(t.l + 1, 1.6)
 const BUILD_SECONDS = { 1: 300, 2: 1800, 3: 7200, 4: 28800 };
 const buildDurationSecs = (targetLevel, prestige) => BUILD_SECONDS[targetLevel] * (1 + 0.25 * (prestige || 0));
 const buildSecsLeft = (t) => t.bu ? Math.max(0, Math.round((new Date(t.bu).getTime() - Date.now()) / 1000)) : 0;
+const buildProgressPct = (t) => {
+  if (!t.bu) return 100;
+  const total = buildDurationSecs(t.l + 1, t.pr);
+  return Math.max(0, Math.min(100, Math.round((1 - buildSecsLeft(t) / Math.max(total, 1)) * 100)));
+};
 // mirrors rush_build()'s proportional-remaining-time pricing exactly
 const rushCostFor = (t) => {
   const totalSecs = buildDurationSecs(t.l + 1, t.pr);
@@ -2221,7 +2227,15 @@ function Game({ G, onExit, startFresh }) {
           const mine = rec.o === g.uid;
           ctx.fillStyle = hexA(mine ? C.amber : CLS[classifyTxy(tx, ty).c].color, mine ? 0.28 : 0.3);
           ctx.fillRect(px + 1, py + 1, tilePx - 2, tilePx - 2);
-          if (!mine) {
+          if (mine) {
+            // your own tile — a bold blue border on top of the amber fill
+            // so "mine" is unmistakable at a glance, not just a slightly
+            // different fill shade next to every other district color.
+            ctx.strokeStyle = hexA(C.mine, 0.85);
+            ctx.lineWidth = 2;
+            ctx.strokeRect(px + 1.5, py + 1.5, tilePx - 3, tilePx - 3);
+            ctx.lineWidth = 1;
+          } else {
             // owned-by-someone-else marker — otherwise an enemy tile is
             // pixel-identical to unowned land of the same district until
             // you click it. Reuses the existing danger red so "bordered in
@@ -3030,9 +3044,14 @@ function Game({ G, onExit, startFresh }) {
                   {selMine.l < MAX_LVL ? (
                     selMine.bu ? (
                       <div className="flex flex-col gap-2">
-                        <div className="flex items-center justify-between rounded-xl p-2.5 text-sm" style={cardSty}>
-                          <span style={{ ...mono, color: C.dim }}>Building {LVL[selMine.l + 1]}…</span>
-                          <span className="font-bold" style={{ ...mono, fontVariantNumeric: "tabular-nums" }}>{hm(buildSecsLeft(selMine))}</span>
+                        <div className="rounded-xl p-2.5" style={cardSty}>
+                          <div className="mb-1.5 flex items-center justify-between text-sm">
+                            <span style={{ ...mono, color: C.dim }}>Building {LVL[selMine.l + 1]}…</span>
+                            <span className="font-bold" style={{ ...mono, fontVariantNumeric: "tabular-nums" }}>{buildProgressPct(selMine)}% · {hm(buildSecsLeft(selMine))} left</span>
+                          </div>
+                          <div className="h-1.5 w-full overflow-hidden rounded-full" style={{ background: C.hair }}>
+                            <div className="h-full rounded-full" style={{ width: `${buildProgressPct(selMine)}%`, background: C.amber, transition: "width 1s linear" }} />
+                          </div>
                         </div>
                         <div className="flex gap-2">
                           <Btn full tone="ghost" onClick={() => rushBuild(sel)} disabled={g.bal < rushCostFor(selMine)}>
@@ -3160,9 +3179,14 @@ function Game({ G, onExit, startFresh }) {
                   </div>
                   <span className="text-xs" style={{ ...mono, color: C.amber }}>₲{fmt1(rentOf(t))}/s</span>
                 </button>
+                {t.bu && (
+                  <div className="mt-2 h-1 w-full overflow-hidden rounded-full" style={{ background: C.hair }}>
+                    <div className="h-full rounded-full" style={{ width: `${buildProgressPct(t)}%`, background: C.amber, transition: "width 1s linear" }} />
+                  </div>
+                )}
                 <div className="mt-2 flex items-center justify-between">
                   <span className="pt11" style={{ ...mono, color: t.bu ? C.amber : C.dim }}>
-                    {t.bu ? `Building ${LVL[t.l + 1]}… ${hm(buildSecsLeft(t))}` : `${LVL[t.l]} · Lv ${t.l}/${MAX_LVL}${t.p ? ` · listed ₲${fmt(t.p)}` : ""}`}
+                    {t.bu ? `Building ${LVL[t.l + 1]}… ${buildProgressPct(t)}% · ${hm(buildSecsLeft(t))} left` : `${LVL[t.l]} · Lv ${t.l}/${MAX_LVL}${t.p ? ` · listed ₲${fmt(t.p)}` : ""}`}
                   </span>
                   <div className="flex gap-1.5">
                     {t.bu ? (
