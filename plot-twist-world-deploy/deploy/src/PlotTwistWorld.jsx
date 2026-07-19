@@ -347,18 +347,25 @@ const upCost = (t) => Math.round(CLS[t.cls].price * 0.8 * Math.pow(t.l + 1, 1.6)
 // upgrade_tile()/rush_build() in supabase.sql exactly. Display/disabled-
 // state only; the server owns the real countdown and completion.
 const BUILD_SECONDS = { 1: 300, 2: 1800, 3: 7200, 4: 28800 };
-const buildDurationSecs = (targetLevel, prestige) => BUILD_SECONDS[targetLevel] * (1 + 0.25 * Math.min(prestige || 0, PRESTIGE_COST_CAP));
+// perkPct = a landmark build_speed contribution (0-30), optional — see
+// landmarkPerkPct() in the component below, which computes the real
+// region-scoped value; module-level callers with no landmark context
+// just omit it and get the un-perked formula.
+const buildDurationSecs = (targetLevel, prestige, perkPct = 0) => BUILD_SECONDS[targetLevel] * (1 + 0.25 * Math.min(prestige || 0, PRESTIGE_COST_CAP)) * (1 - (perkPct || 0) / 100);
 const buildSecsLeft = (t) => t.bu ? Math.max(0, Math.round((new Date(t.bu).getTime() - Date.now()) / 1000)) : 0;
-const buildProgressPct = (t) => {
+const buildProgressPct = (t, perkPct = 0) => {
   if (!t.bu) return 100;
-  const total = buildDurationSecs(t.l + 1, t.pr);
+  const total = buildDurationSecs(t.l + 1, t.pr, perkPct);
   return Math.max(0, Math.min(100, Math.round((1 - buildSecsLeft(t) / Math.max(total, 1)) * 100)));
 };
-// mirrors rush_build()'s proportional-remaining-time pricing exactly
-const rushCostFor = (t) => {
-  const totalSecs = buildDurationSecs(t.l + 1, t.pr);
+// mirrors rush_build()'s proportional-remaining-time pricing exactly.
+// buildSpeedPct must match whatever build_speed perk was in effect when
+// build_until was actually set, or the remaining-fraction math (and thus
+// this estimate) skews — see rush_build()'s own comment on this.
+const rushCostFor = (t, buildSpeedPct = 0, rushDiscountPct = 0) => {
+  const totalSecs = buildDurationSecs(t.l + 1, t.pr, buildSpeedPct);
   const frac = Math.min(1, buildSecsLeft(t) / Math.max(totalSecs, 1));
-  return Math.ceil(upCost(t) * frac);
+  return Math.ceil(upCost(t) * frac * (1 - (rushDiscountPct || 0) / 100));
 };
 
 function rollRarity() {
@@ -799,6 +806,13 @@ function Game({ G, onExit, startFresh }) {
   const dirty = useRef(false);
   const regions = useRef(new Map()); // prefix -> {t:{qk:rec}, at}
   const busyRegions = useRef(new Set());
+  // landmarks: small, near-static reference data (24 landmarks, 216 tiles)
+  // — fetched once at boot, not per-region like ordinary tile ownership.
+  // landmarksByQk: qk -> {landmarkId, name, emoji, perkType, perkValue,
+  // perkCap, defenseMult, claimPrice}. landmarksList: the same landmarks,
+  // deduped, for the discovery list.
+  const landmarksByQk = useRef(new Map());
+  const landmarksList = useRef([]);
   const dbgRef = useRef({ fps: 0, avg: 0, max: 0, s: 0, tilePx: 0, cnt: 0, gridOn: false, long: 0, longMax: 0, errs: [], lastEvt: "-" });
   const logEvt = (n) => { dbgRef.current.lastEvt = n; };
 
@@ -930,6 +944,7 @@ function Game({ G, onExit, startFresh }) {
      get here; this fills in tiles + reconciles rent/streak) ── */
   useEffect(() => {
     (async () => {
+      fetchLandmarks(); // small/static, fire without blocking the rest of boot
       const before = g.bal;
       const fresh = await syncRent();
       if (fresh) {
@@ -1477,7 +1492,7 @@ function Game({ G, onExit, startFresh }) {
       // (owner, flip_royalty_to as of the flip feature), so PostgREST can no
       // longer infer which relationship an unqualified `profiles(username)`
       // embed means and rejects the whole query. Must stay qualified.
-      .select("qk,owner,cls,rarity,level,paid,list_price,prestige,attacks_received_count,attacks_received_date,build_until,profiles!tiles_owner_fkey(username,peak_net_worth)")
+      .select("qk,owner,cls,rarity,level,paid,list_price,prestige,attacks_received_count,attacks_received_date,build_until,owner_since,profiles!tiles_owner_fkey(username,peak_net_worth)")
       .like("qk", `${prefix}%`);
     const t = {};
     if (error) {
@@ -1499,6 +1514,7 @@ function Game({ G, onExit, startFresh }) {
           cls: row.cls, pd: row.paid, ...(row.list_price != null ? { p: row.list_price } : {}),
           arc: row.attacks_received_date === todayUTC() ? (row.attacks_received_count || 0) : 0,
           ...(row.build_until != null ? { bu: row.build_until } : {}),
+          ...(row.owner_since != null ? { os: row.owner_since } : {}),
         };
       }
     }
@@ -1608,6 +1624,58 @@ function Game({ G, onExit, startFresh }) {
   }, [g]);
   useEffect(() => { if (tab === "hq") { refreshLog(); g.hasUnseenLoss = false; } }, [tab, refreshLog, g]);
 
+  // ── landmarks: small, near-static reference data — fetched once at
+  //    boot (see the boot effect below), not per-region. Populates both
+  //    landmarksByQk (render-time O(1) lookup) and landmarksList (the
+  //    discovery list), deriving both from one join query. ──
+  const fetchLandmarks = useCallback(async () => {
+    const { data, error } = await supabase
+      .from("landmark_tiles")
+      .select("qk,claim_price,landmarks(id,name,emoji,perk_type,perk_value_per_tile,perk_pct_cap,defense_mult)");
+    if (error || !data) return;
+    const byQk = new Map();
+    const byLandmark = new Map();
+    for (const row of data) {
+      const lm = row.landmarks;
+      if (!lm) continue;
+      const entry = {
+        landmarkId: lm.id, name: lm.name, emoji: lm.emoji, perkType: lm.perk_type,
+        perkValue: Number(lm.perk_value_per_tile), perkCap: Number(lm.perk_pct_cap),
+        defenseMult: Number(lm.defense_mult), claimPrice: Number(row.claim_price),
+      };
+      byQk.set(row.qk, entry);
+      if (!byLandmark.has(lm.id)) byLandmark.set(lm.id, { ...entry, qks: [] });
+      byLandmark.get(lm.id).qks.push(row.qk);
+    }
+    landmarksByQk.current = byQk;
+    landmarksList.current = [...byLandmark.values()];
+  }, []);
+
+  // sum of a player's own landmark tiles' perk contribution for a given
+  // perk type within one region (REGION_LEN=8 prefix) — mirrors the
+  // region-scoped live-sum SQL in upgrade_tile/rush_build/attack_tile,
+  // display/estimate only. Uses g.own (already-known owned tiles), not a
+  // fresh query, so it's instant but only as fresh as g.own itself.
+  const landmarkPerkPct = (region, perkType) => {
+    let sum = 0, cap = 30;
+    for (const t of g.own) {
+      if (regionOf(t.qk) !== region) continue;
+      const lm = landmarksByQk.current.get(t.qk);
+      if (lm && lm.perkType === perkType) { sum += lm.perkValue; cap = lm.perkCap; }
+    }
+    return Math.min(sum, cap);
+  };
+  // energy_boost is account-wide, not region-scoped — mirrors reset_daily_energy
+  const landmarkEnergyBonus = () => {
+    let sum = 0;
+    for (const t of g.own) {
+      const lm = landmarksByQk.current.get(t.qk);
+      if (lm && lm.perkType === "energy_boost") sum += lm.perkValue;
+    }
+    return sum;
+  };
+  const myLandmarkPieces = (landmarkId) => g.own.filter((t) => landmarksByQk.current.get(t.qk)?.landmarkId === landmarkId).length;
+
   /* ── actions: every one of these is a security-definer RPC call — price,
      rarity, balance and ownership are all decided server-side (see
      supabase.sql). The client applies the same debit optimistically for a
@@ -1686,11 +1754,23 @@ function Game({ G, onExit, startFresh }) {
   // client-side, which meant the button showed/gated on the pre-floor
   // price even though the server was already charging the real (higher,
   // for wealthy attackers) amount.
-  const attackCostFor = (rec) => Math.max(
-    Math.round(CLS[rec.cls].price * 0.5 * (1 + 0.5 * (rec.l || 0))),
-    Math.round((g.peakNetWorth || 0) * 0.002)
-  );
-  const defPowerFor = (rec) => (1 + (rec.l || 0)) * RAR[rec.r || 0].m * (1 + 0.25 * (rec.pr || 0));
+  // qk is optional but needed to price/defend a landmark tile correctly —
+  // every call site has it available (it's the tile being looked at).
+  const attackCostFor = (rec, qk) => {
+    const lm = qk ? landmarksByQk.current.get(qk) : undefined;
+    const base = lm ? lm.claimPrice : CLS[rec.cls].price;
+    const region = qk ? regionOf(qk) : null;
+    const siegeDiscount = region ? landmarkPerkPct(region, "siege_discount") : 0;
+    return Math.max(
+      Math.round(base * 0.5 * (1 + 0.5 * (rec.l || 0)) * (1 - siegeDiscount / 100)),
+      Math.round((g.peakNetWorth || 0) * 0.002)
+    );
+  };
+  const defPowerFor = (rec, qk) => {
+    const lm = qk ? landmarksByQk.current.get(qk) : undefined;
+    const base = (1 + (rec.l || 0)) * RAR[rec.r || 0].m * (1 + 0.25 * (rec.pr || 0));
+    return lm ? base * lm.defenseMult : base;
+  };
   // win probability from the attacker's side, same clamp as attack_tile()
   const winProbFor = (attPower, defPower) => Math.max(0.05, Math.min(0.90, attPower / (attPower + defPower)));
 
@@ -1718,7 +1798,7 @@ function Game({ G, onExit, startFresh }) {
     const rec = recOf(qk);
     if (!rec || rec.o == null || rec.o === g.uid) return;
     if (!attackableFrom(qk)) { toast("You need to own a neighboring tile to attack this one."); return; }
-    const cost = attackCostFor(rec);
+    const cost = attackCostFor(rec, qk);
     if (g.bal < cost) { toast("Not enough ₲ to launch this attack."); return; }
     if (!g.devMode && (g.attacksSent || 0) >= ATTACK_DAILY_CAP) {
       toast(`No attacks left today (${ATTACK_DAILY_CAP}/day) — resets at midnight UTC`);
@@ -2162,6 +2242,47 @@ function Game({ G, onExit, startFresh }) {
       for (let ty = ty0; ty <= ty1 + 1; ty++) { const py = oy + ty * tilePx; ctx.moveTo(dx, py); ctx.lineTo(dx1, py); }
       ctx.stroke();
 
+      /* landmark markers — small, fixed set (216 tiles worldwide), drawn
+         regardless of ownership. An unclaimed landmark tile has no `tiles`
+         row at all, so it would never appear in the owned/listed loop
+         below — this has to be its own pass. Cheap enough to iterate the
+         whole set every frame and cull to viewport bounds. Drawn BEFORE
+         the owned/listed loop so mine/enemy borders and building icons
+         still layer on top for a claimed piece. */
+      if (landmarksByQk.current.size) {
+        ctx.lineWidth = 2;
+        for (const [lqk, lm] of landmarksByQk.current) {
+          const [ltx, lty] = txyOf(lqk);
+          if (ltx < tx0 || ltx > tx1 || lty < ty0 || lty > ty1) continue;
+          const lpx = ox + ltx * tilePx, lpy = oy + lty * tilePx;
+          ctx.strokeStyle = hexA("#FFD700", 0.9);
+          ctx.strokeRect(lpx + 1, lpy + 1, tilePx - 2, tilePx - 2);
+          if (tilePx >= 16) {
+            ctx.font = `${Math.min(18, Math.max(9, tilePx * 0.4))}px system-ui, sans-serif`;
+            ctx.textAlign = "center";
+            ctx.textBaseline = "middle";
+            ctx.fillText(lm.emoji, lpx + tilePx / 2, lpy + tilePx / 2);
+            ctx.textAlign = "left";
+            ctx.textBaseline = "alphabetic";
+          }
+          // name label near max zoom, pinned to the TOP of the tile so it
+          // never collides with the owner-name label (which uses the
+          // bottom) on a claimed piece.
+          if (tilePx >= 48) {
+            ctx.font = "9px ui-monospace, Menlo, monospace";
+            const label = lm.name.length > 12 ? lm.name.slice(0, 11) + "…" : lm.name;
+            const textW = ctx.measureText(label).width;
+            const labelH = 12;
+            const lx2 = lpx + 2, ly2 = lpy + 2;
+            ctx.fillStyle = hexA("#000000", 0.5);
+            ctx.fillRect(lx2, ly2, Math.min(tilePx - 4, textW + 6), labelH);
+            ctx.fillStyle = "#FFD700";
+            ctx.fillText(label, lx2 + 3, ly2 + 9);
+          }
+        }
+        ctx.lineWidth = 1;
+      }
+
       /* owned & listed tiles: iterate sparse region records, not every tile */
       for (const prefix of prefixesFor(cam.current, size.current)) {
         const reg = regions.current.get(prefix);
@@ -2556,6 +2677,10 @@ function Game({ G, onExit, startFresh }) {
   // that exemption here so a brand-new player sees their first claim as a
   // normal buy, not an "unlock this region for ₲1000" prompt.
   const selLocked = sel && g.own.length > 0 ? !unlockedRegions.current.has(regionOf(sel)) : false;
+  const selLandmark = sel ? landmarksByQk.current.get(sel) : undefined;
+  const selLandmarkGraceLeft = (selRec?.os && selLandmark)
+    ? Math.max(0, 48 * 3600 - Math.round((Date.now() - new Date(selRec.os).getTime()) / 1000))
+    : 0;
   const tilePxNow = cam.current.s / N;
 
   // Only actually filters/sorts when the Assets tab is showing — skipped
@@ -2696,7 +2821,7 @@ function Game({ G, onExit, startFresh }) {
             <Chip color={C.amber}>{myStatus.name}</Chip>
             {g.devMode && <Chip color="#F08A8A">DEV</Chip>}
             <span className="pt10 font-bold" style={{ ...mono, color: energyNow(g) > 0 ? C.amber : "#F08A8A", fontVariantNumeric: "tabular-nums" }} title="Energy — spent claiming unowned land, resets once per day">
-              ⚡{energyNow(g)}/{myStatus.cap} today
+              ⚡{energyNow(g)}/{myStatus.cap + landmarkEnergyBonus()} today
             </span>
             {energyNow(g) < myStatus.cap && (
               <span className="pt10" style={{ ...mono, color: C.dim }}>resets in {hm(energySecsToReset())}</span>
@@ -2915,12 +3040,18 @@ function Game({ G, onExit, startFresh }) {
 
               {!selLocked && !selRec && CLS[selCls].sale !== false && !(roll && roll.qk === sel) && (
                 <div>
+                  {selLandmark && (
+                    <div className="mb-2 flex items-center gap-2">
+                      <Chip color="#FFD700">{selLandmark.emoji} {selLandmark.name}</Chip>
+                      <span className="pt10" style={{ ...mono, color: C.dim }}>{selLandmark.perkType.replace("_", " ")} perk</span>
+                    </div>
+                  )}
                   <div className="mb-3 flex items-center justify-between text-sm" style={mono}>
-                    <span style={{ color: C.dim }}>Unclaimed · deed price</span>
-                    <span className="font-bold">₲{fmt(CLS[selCls].price)}</span>
+                    <span style={{ color: C.dim }}>{selLandmark ? "Landmark tile · claim price" : "Unclaimed · deed price"}</span>
+                    <span className="font-bold" style={selLandmark ? { color: "#FFD700" } : undefined}>₲{fmt(selLandmark ? selLandmark.claimPrice : CLS[selCls].price)}</span>
                   </div>
-                  <Btn full onClick={() => buyUnowned(sel)} disabled={g.bal < CLS[selCls].price}>
-                    {g.bal < CLS[selCls].price ? "Not enough ₲" : `Claim deed — ₲${fmt(CLS[selCls].price)}`}
+                  <Btn full onClick={() => buyUnowned(sel)} disabled={g.bal < (selLandmark ? selLandmark.claimPrice : CLS[selCls].price)}>
+                    {g.bal < (selLandmark ? selLandmark.claimPrice : CLS[selCls].price) ? "Not enough ₲" : `Claim deed — ₲${fmt(selLandmark ? selLandmark.claimPrice : CLS[selCls].price)}`}
                   </Btn>
                 </div>
               )}
@@ -2928,6 +3059,7 @@ function Game({ G, onExit, startFresh }) {
               {!selLocked && selRec && selRec.o != null && !selMine && !(roll && roll.qk === sel && (roll.phase === "spin" || roll.phase === "battle")) && (
                 <div>
                   <div className="mb-2 flex flex-wrap items-center gap-2">
+                    {selLandmark && <Chip color="#FFD700">{selLandmark.emoji} {selLandmark.name}</Chip>}
                     <Chip color={RAR[selRec.r || 0].color}>{RAR[selRec.r || 0].name}</Chip>
                     <Chip color={CLS[selCls].color}>{LVL[selRec.l || 0]}</Chip>
                     <span className="text-xs" style={{ ...mono, color: C.dim }}>owned by {selRec.n || "a player"}</span>
@@ -2941,26 +3073,35 @@ function Game({ G, onExit, startFresh }) {
                     <div className="py-2 text-center text-xs" style={{ ...mono, color: C.dim }}>Not for sale. Try making friends.</div>
                   )}
 
-                  {attackableFrom(sel) && (
+                  {selLandmarkGraceLeft > 0 && !g.devMode ? (
+                    <div className="mt-2 border-t pt-2 text-center" style={{ borderColor: C.hair }}>
+                      <div className="pt11 font-bold" style={{ ...mono, color: "#FFD700" }}>
+                        🛡️ Protected — changed hands recently
+                      </div>
+                      <div className="pt10 mt-1" style={{ ...mono, color: C.dim }}>
+                        Attackable again in {hm(selLandmarkGraceLeft)}
+                      </div>
+                    </div>
+                  ) : attackableFrom(sel) && (
                     <div className="mt-2 border-t pt-2" style={{ borderColor: C.hair }}>
                       <div className="mb-1.5 flex items-center justify-between pt10" style={{ ...mono, color: C.dim }}>
                         <span>attacks left today: {Math.max(0, ATTACK_DAILY_CAP - (g.attacksSent || 0))}/{ATTACK_DAILY_CAP}</span>
                         <span>attacked {selRec.arc || 0}/{ATTACK_RECEIVED_CAP} today</span>
                       </div>
                       <div className="mb-1.5 pt10" style={{ ...mono, color: C.dim }}>
-                        your power {neighborsOf(sel).filter((nqk) => ownMap.current.has(nqk)).length} vs their power {defPowerFor(selRec).toFixed(2)}
+                        your power {neighborsOf(sel).filter((nqk) => ownMap.current.has(nqk)).length} vs their power {defPowerFor(selRec, sel).toFixed(2)}
                         {" — "}
                         <span style={{ color: C.amber, fontWeight: 700 }}>
-                          {Math.round(winProbFor(neighborsOf(sel).filter((nqk) => ownMap.current.has(nqk)).length, defPowerFor(selRec)) * 100)}% chance to win
+                          {Math.round(winProbFor(neighborsOf(sel).filter((nqk) => ownMap.current.has(nqk)).length, defPowerFor(selRec, sel)) * 100)}% chance to win
                         </span>
                       </div>
                       <Btn full tone="danger"
                         onClick={() => attackTile(sel)}
-                        disabled={g.bal < attackCostFor(selRec) || (!g.devMode && ((g.attacksSent || 0) >= ATTACK_DAILY_CAP || (selRec.arc || 0) >= ATTACK_RECEIVED_CAP))}>
+                        disabled={g.bal < attackCostFor(selRec, sel) || (!g.devMode && ((g.attacksSent || 0) >= ATTACK_DAILY_CAP || (selRec.arc || 0) >= ATTACK_RECEIVED_CAP))}>
                         {!g.devMode && (g.attacksSent || 0) >= ATTACK_DAILY_CAP ? "No attacks left today"
                           : !g.devMode && (selRec.arc || 0) >= ATTACK_RECEIVED_CAP ? "Tile defended twice today"
-                          : g.bal < attackCostFor(selRec) ? "Not enough ₲ to attack"
-                          : `Attack — ₲${fmt(attackCostFor(selRec))}`}
+                          : g.bal < attackCostFor(selRec, sel) ? "Not enough ₲ to attack"
+                          : `Attack — ₲${fmt(attackCostFor(selRec, sel))}`}
                       </Btn>
                     </div>
                   )}
@@ -2969,6 +3110,15 @@ function Game({ G, onExit, startFresh }) {
 
               {selMine && !(roll && roll.qk === sel && (roll.phase === "spin" || roll.phase === "battle")) && (
                 <div>
+                  {selLandmark && (
+                    <div className="mb-1.5 flex items-center gap-2">
+                      <Chip color="#FFD700">{selLandmark.emoji} {selLandmark.name}</Chip>
+                      <span className="pt10" style={{ ...mono, color: C.dim }}>
+                        you own {myLandmarkPieces(selLandmark.landmarkId)}/9 · {selLandmark.perkType.replace("_", " ")} perk
+                        {selLandmarkGraceLeft > 0 && !g.devMode ? ` · protected ${hm(selLandmarkGraceLeft)}` : ""}
+                      </span>
+                    </div>
+                  )}
                   <div className="mb-2 flex flex-wrap items-center gap-2">
                     <Chip color={RAR[selMine.r].color}>{RAR[selMine.r].name}</Chip>
                     <Chip color={CLS[selCls].color}>{LVL[selMine.l]}</Chip>
@@ -2982,15 +3132,15 @@ function Game({ G, onExit, startFresh }) {
                         <div className="rounded-xl p-2.5" style={cardSty}>
                           <div className="mb-1.5 flex items-center justify-between text-sm">
                             <span style={{ ...mono, color: C.dim }}>Building {LVL[selMine.l + 1]}…</span>
-                            <span className="font-bold" style={{ ...mono, fontVariantNumeric: "tabular-nums" }}>{buildProgressPct(selMine)}% · {hm(buildSecsLeft(selMine))} left</span>
+                            <span className="font-bold" style={{ ...mono, fontVariantNumeric: "tabular-nums" }}>{buildProgressPct(selMine, landmarkPerkPct(regionOf(sel), "build_speed"))}% · {hm(buildSecsLeft(selMine))} left</span>
                           </div>
                           <div className="h-1.5 w-full overflow-hidden rounded-full" style={{ background: C.hair }}>
-                            <div className="h-full rounded-full" style={{ width: `${buildProgressPct(selMine)}%`, background: C.amber, transition: "width 1s linear" }} />
+                            <div className="h-full rounded-full" style={{ width: `${buildProgressPct(selMine, landmarkPerkPct(regionOf(sel), "build_speed"))}%`, background: C.amber, transition: "width 1s linear" }} />
                           </div>
                         </div>
                         <div className="flex gap-2">
-                          <Btn full tone="ghost" onClick={() => rushBuild(sel)} disabled={g.bal < rushCostFor(selMine)}>
-                            Rush — ₲{fmt(rushCostFor(selMine))}
+                          <Btn full tone="ghost" onClick={() => rushBuild(sel)} disabled={g.bal < rushCostFor(selMine, landmarkPerkPct(regionOf(sel), "build_speed"), landmarkPerkPct(regionOf(sel), "rush_discount"))}>
+                            Rush — ₲{fmt(rushCostFor(selMine, landmarkPerkPct(regionOf(sel), "build_speed"), landmarkPerkPct(regionOf(sel), "rush_discount")))}
                           </Btn>
                           <Btn tone="danger" onClick={() => abandon(sel)}>50%</Btn>
                         </div>
@@ -3174,6 +3324,36 @@ function Game({ G, onExit, startFresh }) {
             ))}
             <div className="pt10 mt-2 mb-4 text-center" style={{ ...mono, color: C.dim }}>
               Only shows listings in territory you've unlocked. Sales pay the seller even while they're offline.
+            </div>
+
+            <Eyebrow>Landmarks · worldwide</Eyebrow>
+            <div className="mb-3" />
+            {landmarksList.current.map((lm) => {
+              const mine = myLandmarkPieces(lm.landmarkId);
+              return (
+                <div key={lm.landmarkId} className="mb-2 rounded-xl p-3 transition-transform duration-150 hover:-translate-y-0.5" style={cardSty}>
+                  <button className="flex w-full items-center justify-between text-left focus-visible:outline focus-visible:outline-2" style={{ outlineColor: C.amber }}
+                    onClick={() => {
+                      const qk = lm.qks[0];
+                      setTab("map"); setSel(qk);
+                      const [wx, wy] = centerOfQk(qk);
+                      const { w, h } = size.current;
+                      const s = N * 24;
+                      cam.current = { s, x: w / 2 - wx * s, y: h / 2 - wy * s, init: true };
+                      ensureRegion(regionOf(qk), true);
+                    }}>
+                    <div className="flex min-w-0 items-center gap-2">
+                      <span style={{ fontSize: "1.1rem" }}>{lm.emoji}</span>
+                      <span className="truncate text-sm font-bold" style={mono}>{lm.name}</span>
+                      <Chip color="#FFD700">{lm.perkType.replace("_", " ")}</Chip>
+                    </div>
+                    <span className="shrink-0 text-xs" style={{ ...mono, color: mine ? C.amber : C.dim }}>you own {mine}/9</span>
+                  </button>
+                </div>
+              );
+            })}
+            <div className="pt10 mt-2 mb-4 text-center" style={{ ...mono, color: C.dim }}>
+              9 tiles per landmark, claim price ₲{fmt(1000000)} each — multiple players can hold pieces of the same landmark. Tap one to fly there and see who owns what.
             </div>
           </div>
         )}

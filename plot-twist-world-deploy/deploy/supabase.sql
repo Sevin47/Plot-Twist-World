@@ -361,6 +361,7 @@ as $$
 declare
   v_today date := (now() at time zone 'utc')::date;
   v_cap int;
+  v_energy_bonus int;
 begin
   select st.daily_energy_cap into v_cap
   from status_tier st
@@ -368,7 +369,18 @@ begin
   order by st.min_net_worth desc
   limit 1;
 
-  update profiles set energy = coalesce(v_cap, 10), energy_date = v_today
+  -- energy_boost: flat, account-wide (energy itself isn't regional, unlike
+  -- the other three perk types) — not capped by perk_pct_cap, wrong unit
+  -- for a flat count; natural ceiling is how many energy_boost landmark
+  -- tiles exist in the world at all (6 landmarks x 9 tiles = 54 max,
+  -- across every player combined).
+  select coalesce(sum(l.perk_value_per_tile), 0) into v_energy_bonus
+  from tiles t
+  join landmark_tiles lt on lt.qk = t.qk
+  join landmarks l on l.id = lt.landmark_id
+  where t.owner = p_uid and l.perk_type = 'energy_boost';
+
+  update profiles set energy = coalesce(v_cap, 10) + coalesce(v_energy_bonus, 0), energy_date = v_today
   where user_id = p_uid and energy_date < v_today;
 end;
 $$;
@@ -633,6 +645,7 @@ declare
   v_region text := left(p_qk, 8);
   v_is_first_tile boolean;
   v_dev_mode boolean;
+  v_price bigint;
 begin
   if v_uid is null then raise exception 'not authenticated'; end if;
   if not exists (select 1 from profiles where user_id = v_uid) then raise exception 'no profile'; end if;
@@ -643,7 +656,14 @@ begin
   select * into v_class from tile_class where cls = p_cls;
   if not found or v_class.sellable = false then raise exception 'not purchasable'; end if;
 
-  if (select balance from profiles where user_id = v_uid) < v_class.price then
+  -- landmark tiles claim at their own steep flat price instead of the
+  -- district price — see the "Landmarks" section above. Energy gate,
+  -- region-unlock gate, and rarity roll are all unaffected; this is a
+  -- claim like any other, just far more expensive.
+  select claim_price into v_price from landmark_tiles where qk = p_qk;
+  v_price := coalesce(v_price, v_class.price);
+
+  if (select balance from profiles where user_id = v_uid) < v_price then
     raise exception 'insufficient balance';
   end if;
   -- energy gates claiming NEW unowned land specifically — the actual sprawl
@@ -672,11 +692,11 @@ begin
   v_rarity := case when v_roll < 0.02 then 3 when v_roll < 0.10 then 2 when v_roll < 0.30 then 1 else 0 end;
 
   update profiles
-    set balance = balance - v_class.price,
+    set balance = balance - v_price,
         energy = case when v_dev_mode then energy else energy - 1 end
     where user_id = v_uid;
-  insert into tiles (qk, owner, cls, level, rarity, paid, updated_at)
-  values (p_qk, v_uid, p_cls, 0, v_rarity, v_class.price, now())
+  insert into tiles (qk, owner, cls, level, rarity, paid, owner_since, updated_at)
+  values (p_qk, v_uid, p_cls, 0, v_rarity, v_price, now(), now())
   returning * into v_row;
 
   if v_is_first_tile then
@@ -742,7 +762,7 @@ begin
   update profiles set balance = balance - p_expected_price where user_id = v_uid;
   update profiles set balance = balance + p_expected_price where user_id = v_seller;
 
-  update tiles set owner = v_uid, paid = p_expected_price, list_price = null, updated_at = now()
+  update tiles set owner = v_uid, paid = p_expected_price, list_price = null, owner_since = now(), updated_at = now()
   where qk = p_qk
   returning * into v_tile;
 
@@ -832,6 +852,7 @@ declare
   v_active_builds int;
   v_slot_cap int;
   v_duration interval;
+  v_build_speed_pct numeric;
 begin
   if v_uid is null then raise exception 'not authenticated'; end if;
   if not exists (select 1 from profiles where user_id = v_uid) then raise exception 'no profile'; end if;
@@ -891,6 +912,20 @@ begin
         when 3 then interval '2 hours'
         when 4 then interval '8 hours'
       end) * (1 + 0.25 * least(v_tile.prestige, 10));
+
+    -- build_speed: sum of this player's landmark tiles' perk contribution
+    -- in THIS tile's region (REGION_LEN=8 prefix, reusing the existing
+    -- region concept — no new geometry). Live sum, never stored, so it
+    -- tracks ownership changes automatically. Capped per-landmark at
+    -- perk_pct_cap (30) so it can never approach a free build.
+    select least(coalesce(sum(l.perk_value_per_tile), 0), coalesce(max(l.perk_pct_cap), 30))
+      into v_build_speed_pct
+    from tiles t2
+    join landmark_tiles lt2 on lt2.qk = t2.qk
+    join landmarks l on l.id = lt2.landmark_id
+    where t2.owner = v_uid and l.perk_type = 'build_speed' and left(t2.qk, 8) = left(p_qk, 8);
+    v_duration := v_duration * (1 - coalesce(v_build_speed_pct, 0) / 100);
+
     update tiles set paid = paid + v_cost, build_until = now() + v_duration, updated_at = now()
     where tiles.qk = p_qk
     returning * into v_tile;
@@ -921,6 +956,8 @@ declare
   v_remaining_secs numeric;
   v_frac numeric;
   v_rush_cost bigint;
+  v_build_speed_pct numeric;
+  v_rush_discount_pct numeric;
 begin
   if v_uid is null then raise exception 'not authenticated'; end if;
   perform accrue_rent(v_uid);
@@ -933,6 +970,16 @@ begin
   -- same prestige cap as upgrade_tile — see that function's comment
   v_full_cost := round(v_class.price * 0.8 * power(v_tile.level + 1, 1.6) * (1 + 0.5 * least(v_tile.prestige, 10)));
 
+  -- must match the SAME effective duration upgrade_tile used when it set
+  -- build_until (including the build_speed perk), or v_frac below would
+  -- be computed against the wrong total and misprice the rush.
+  select least(coalesce(sum(l.perk_value_per_tile), 0), coalesce(max(l.perk_pct_cap), 30))
+    into v_build_speed_pct
+  from tiles t2
+  join landmark_tiles lt2 on lt2.qk = t2.qk
+  join landmarks l on l.id = lt2.landmark_id
+  where t2.owner = v_uid and l.perk_type = 'build_speed' and left(t2.qk, 8) = left(p_qk, 8);
+
   v_total_secs := extract(epoch from (
     (case v_tile.level + 1
         when 1 then interval '5 minutes'
@@ -940,10 +987,23 @@ begin
         when 3 then interval '2 hours'
         when 4 then interval '8 hours'
       end) * (1 + 0.25 * least(v_tile.prestige, 10))
-  ));
+  )) * (1 - coalesce(v_build_speed_pct, 0) / 100);
   v_remaining_secs := greatest(0, extract(epoch from (v_tile.build_until - now())));
   v_frac := least(1, v_remaining_secs / greatest(v_total_secs, 1));
   v_rush_cost := ceil(v_full_cost * v_frac);
+
+  -- rush_discount: same region-scoped live-sum pattern, applied to the
+  -- final rush price (independent lever from build_speed — a shorter
+  -- perked duration already makes rushes cheaper at the same remaining
+  -- fraction; this discounts the price itself on top of that, the two
+  -- compose without double-counting since they act on different factors).
+  select least(coalesce(sum(l.perk_value_per_tile), 0), coalesce(max(l.perk_pct_cap), 30))
+    into v_rush_discount_pct
+  from tiles t2
+  join landmark_tiles lt2 on lt2.qk = t2.qk
+  join landmarks l on l.id = lt2.landmark_id
+  where t2.owner = v_uid and l.perk_type = 'rush_discount' and left(t2.qk, 8) = left(p_qk, 8);
+  v_rush_cost := ceil(v_rush_cost * (1 - coalesce(v_rush_discount_pct, 0) / 100));
 
   if v_rush_cost > 0 and (select balance from profiles where user_id = v_uid) < v_rush_cost then
     raise exception 'insufficient balance to rush';
@@ -1252,6 +1312,9 @@ declare
   v_is_first_tile boolean;
   v_region text := left(p_qk, 8);
   v_dev_mode boolean;
+  v_landmark_price bigint;
+  v_defense_mult numeric;
+  v_siege_discount_pct numeric;
 begin
   if v_uid is null then raise exception 'not authenticated'; end if;
   if not exists (select 1 from profiles where user_id = v_uid) then raise exception 'no profile'; end if;
@@ -1274,6 +1337,28 @@ begin
   if not found then raise exception 'tile not found'; end if;
   if v_tile.owner is null then raise exception 'that tile is unowned — claim it instead of attacking it'; end if;
   if v_tile.owner = v_uid then raise exception 'you already own this tile'; end if;
+
+  -- landmark lookup, once, reused below for the grace check, the defense
+  -- multiplier, and the base attack-cost premium. v_landmark_price stays
+  -- null for an ordinary tile — every landmark branch below is gated on
+  -- "is this not null", never a separate existence query.
+  select lt.claim_price, l.defense_mult
+    into v_landmark_price, v_defense_mult
+  from landmark_tiles lt join landmarks l on l.id = lt.landmark_id
+  where lt.qk = p_qk;
+
+  -- 48h post-ownership-change grace, landmark tiles only: at a
+  -- ₲1,000,000+ claim price, "bought it, lost it to a snipe the next day"
+  -- is a real bad-feeling failure mode worth designing against directly
+  -- (see LANDMARKS-PLAN.md) — unlike OSRS's Wilderness, owning a landmark
+  -- tile isn't opt-in, so this grace is the substitute for "choosing not
+  -- to bring your risky item into danger". Applies equally whether
+  -- owner_since was set by an original claim or by a previous capture
+  -- (see the win branch below) — `null > ...` is falsy, so a tile that
+  -- somehow has no owner_since simply isn't gated by this.
+  if v_landmark_price is not null and not v_dev_mode and v_tile.owner_since > now() - interval '48 hours' then
+    raise exception 'this landmark tile changed hands recently — protected for 48 hours';
+  end if;
 
   -- lazily complete a finished-but-not-yet-processed build on the TARGET
   -- before computing defense power — otherwise a defender whose Tower
@@ -1314,14 +1399,31 @@ begin
   end if;
 
   select * into v_class from tile_class where cls = v_tile.cls;
+
+  -- siege_discount: attacker's own landmark tiles in the TARGET's region
+  -- discount the BASE cost formula only (before the wealth floor below),
+  -- same region-scoped live-sum pattern as build_speed/rush_discount —
+  -- see upgrade_tile/rush_build. Capped per-landmark at perk_pct_cap (30).
+  select least(coalesce(sum(l.perk_value_per_tile), 0), coalesce(max(l.perk_pct_cap), 30))
+    into v_siege_discount_pct
+  from tiles t2
+  join landmark_tiles lt2 on lt2.qk = t2.qk
+  join landmarks l on l.id = lt2.landmark_id
+  where t2.owner = v_uid and l.perk_type = 'siege_discount' and left(t2.qk, 8) = v_region;
+
   -- wealth-indexed floor: attacking DOWN (a wealthy player raiding modest
   -- land) costs at least 0.2% of the attacker's own peak net worth, so a
   -- ₲5M player pays ≥₲10k per attack instead of the base formula's trivial
   -- ₲25-1,200. Attacking UP stays cheap — a newcomer's floor is pennies,
   -- so the base formula still governs for them. greatest() means whichever
-  -- number is actually bigger wins, never both charged.
+  -- number is actually bigger wins, never both charged — siege_discount
+  -- only reduces the base, so a wealthy attacker can never perk their way
+  -- under the wealth floor; the discount only helps players who aren't
+  -- already hitting it. A landmark TARGET uses its own steep claim price
+  -- as the base instead of the district price — sieging a landmark costs
+  -- real money up front, not just defending one.
   v_cost := greatest(
-    round(v_class.price * 0.5 * (1 + 0.5 * v_tile.level)),
+    round(coalesce(v_landmark_price, v_class.price) * 0.5 * (1 + 0.5 * v_tile.level) * (1 - coalesce(v_siege_discount_pct, 0) / 100)),
     round((select peak_net_worth from profiles where user_id = v_uid) * 0.002)
   );
   if (select balance from profiles where user_id = v_uid) < v_cost then
@@ -1337,6 +1439,12 @@ begin
   -- unconquerable by the old roll-and-compare method, and adding prestige
   -- on top of THAT would have made it mathematically certain.
   v_def_power := (1 + v_tile.level) * (case v_tile.rarity when 0 then 1 when 1 then 1.5 when 2 then 3 when 3 then 8 else 1 end) * (1 + 0.25 * v_tile.prestige);
+  -- "fortress of status" — any landmark tile defends harder on top of the
+  -- normal level/rarity/prestige formula, still bounded by the same
+  -- probability floor so it's never truly unconquerable.
+  if v_defense_mult is not null then
+    v_def_power := v_def_power * v_defense_mult;
+  end if;
 
   -- win probability = power ratio, clamped so neither side is ever a sure
   -- thing: a fully-encircled attack on a hopeless target caps at 90%, and
@@ -1374,10 +1482,10 @@ begin
   -- Either outcome still bumps the per-tile daily received-attack counter.
   if v_won then
     update tiles
-      set level = 0, rarity = 0, prestige = 0, paid = v_class.price,
+      set level = 0, rarity = 0, prestige = 0, paid = coalesce(v_landmark_price, v_class.price),
           list_price = null, flip_price = null, flip_royalty_to = null,
           build_until = null,
-          owner = v_uid,
+          owner = v_uid, owner_since = now(),
           attacks_received_count = v_tile.attacks_received_count + 1,
           attacks_received_date = v_today,
           updated_at = now()
@@ -1479,6 +1587,318 @@ begin
 end;
 $$;
 revoke all on function finish_builds(uuid) from public;
+
+-- ═════════════════════════════════════════════════════════════
+-- Landmarks: real-world trophy tile clusters. A landmark is a 3x3 block
+-- of ordinary `tiles` rows, tagged via landmark_tiles — NOT a parallel
+-- ownership structure. Every existing acquisition path (claim, attack,
+-- decay, listing) already works on a landmark tile unchanged; this
+-- section only adds a price premium, a defense bonus, a perk
+-- contribution, and a post-ownership-change grace period, layered on
+-- top of functions that already exist. Perks buy tempo/convenience only
+-- — never raw income (see each perk's touch-point below) — a win-more
+-- engine compounds existing advantage instead of creating a real
+-- decision. See LANDMARKS-PLAN.md for the full design discussion.
+-- ═════════════════════════════════════════════════════════════
+
+-- perk_value_per_tile's UNIT depends on perk_type: a percentage point
+-- for build_speed/rush_discount/siege_discount, a flat integer amount
+-- for energy_boost. perk_pct_cap only constrains the percentage-style
+-- perks — see reset_daily_energy below for why energy_boost doesn't
+-- need it (its own scarcity already bounds it).
+create table if not exists landmarks (
+  id serial primary key,
+  name text not null,
+  emoji text not null default '🏛️',
+  perk_type text not null default 'build_speed',
+  perk_value_per_tile numeric not null default 2,
+  perk_pct_cap numeric not null default 30,
+  defense_mult numeric not null default 1.5
+);
+
+-- membership: which quadkeys belong to which landmark, and what an
+-- unowned piece costs to claim (overrides tile_class.price for these qks)
+create table if not exists landmark_tiles (
+  qk text primary key,
+  landmark_id int not null references landmarks(id) on delete cascade,
+  claim_price bigint not null default 1000000
+);
+create index if not exists idx_landmark_tiles_landmark on landmark_tiles(landmark_id);
+
+alter table landmarks enable row level security;
+drop policy if exists "read landmarks" on landmarks;
+create policy "read landmarks" on landmarks for select using (true);
+grant select on landmarks to anon, authenticated;
+
+alter table landmark_tiles enable row level security;
+drop policy if exists "read landmark_tiles" on landmark_tiles;
+create policy "read landmark_tiles" on landmark_tiles for select using (true);
+grant select on landmark_tiles to anon, authenticated;
+
+-- ── owner_since: when the CURRENT owner most recently became the owner —
+--    set only by ownership-establishing/transferring writes (claim, trade,
+--    capture), left untouched by everything else (upgrade, list,
+--    redevelop, a defended attack). Generic on `tiles` (not landmark-
+--    specific) since "since when has the current owner owned this" is a
+--    sensible concept for any tile, but the only reader right now is
+--    attack_tile's 48h landmark grace-period check below — existing rows
+--    staying null is fine, it's only meaningful for landmark tiles, which
+--    didn't exist before this migration. ──
+alter table tiles add column if not exists owner_since timestamptz;
+
+-- ── seed: 24 landmarks worldwide, 9 tiles each (216 total), computed
+--    offline from real lat/lon via the client's own qkOf/lonToWx/latToWy
+--    math (Z=17) — see LANDMARKS-PLAN.md for the source coordinate list
+--    and the build script. Explicit ids so landmark_tiles can reference
+--    them directly without a round-trip; setval afterward keeps future
+--    serial-generated ids from colliding if more landmarks are added by
+--    hand later. ──
+insert into landmarks (id, name, emoji, perk_type) values
+  (1, 'Eiffel Tower', '🗼', 'build_speed'),
+  (2, 'Sagrada Familia', '⛪', 'build_speed'),
+  (3, 'Neuschwanstein Castle', '🏰', 'build_speed'),
+  (4, 'Tokyo Tower', '🗼', 'build_speed'),
+  (5, 'CN Tower', '🗼', 'build_speed'),
+  (6, 'Space Needle', '🚀', 'build_speed'),
+  (7, 'Great Wall of China', '🧱', 'siege_discount'),
+  (8, 'Colosseum', '🏛️', 'siege_discount'),
+  (9, 'Kremlin', '⭐', 'siege_discount'),
+  (10, 'Petra', '🏜️', 'siege_discount'),
+  (11, 'Machu Picchu', '⛰️', 'siege_discount'),
+  (12, 'Angkor Wat', '🕌', 'siege_discount'),
+  (13, 'Statue of Liberty', '🗽', 'energy_boost'),
+  (14, 'Golden Gate Bridge', '🌉', 'energy_boost'),
+  (15, 'Burj Khalifa', '🏙️', 'energy_boost'),
+  (16, 'Mount Rushmore', '🗿', 'energy_boost'),
+  (17, 'Table Mountain', '⛰️', 'energy_boost'),
+  (18, 'Acropolis of Athens', '🏛️', 'energy_boost'),
+  (19, 'Big Ben', '🕰️', 'rush_discount'),
+  (20, 'Taj Mahal', '🕌', 'rush_discount'),
+  (21, 'Great Pyramid of Giza', '🔺', 'rush_discount'),
+  (22, 'Sydney Opera House', '🎭', 'rush_discount'),
+  (23, 'Christ the Redeemer', '✝️', 'rush_discount'),
+  (24, 'Leaning Tower of Pisa', '🗼', 'rush_discount')
+on conflict (id) do update set name = excluded.name, emoji = excluded.emoji, perk_type = excluded.perk_type;
+select setval(pg_get_serial_sequence('landmarks','id'), (select max(id) from landmarks));
+
+insert into landmark_tiles (qk, landmark_id) values
+  ('12022001101200030', 1),
+  ('12022001101200031', 1),
+  ('12022001101200120', 1),
+  ('12022001101200032', 1),
+  ('12022001101200033', 1),
+  ('12022001101200122', 1),
+  ('12022001101200210', 1),
+  ('12022001101200211', 1),
+  ('12022001101200300', 1),
+  ('12022223300230112', 2),
+  ('12022223300230113', 2),
+  ('12022223300231002', 2),
+  ('12022223300230130', 2),
+  ('12022223300230131', 2),
+  ('12022223300231020', 2),
+  ('12022223300230132', 2),
+  ('12022223300230133', 2),
+  ('12022223300231022', 2),
+  ('12022113123203002', 3),
+  ('12022113123203003', 3),
+  ('12022113123203012', 3),
+  ('12022113123203020', 3),
+  ('12022113123203021', 3),
+  ('12022113123203030', 3),
+  ('12022113123203022', 3),
+  ('12022113123203023', 3),
+  ('12022113123203032', 3),
+  ('13300211230311330', 4),
+  ('13300211230311331', 4),
+  ('13300211231200220', 4),
+  ('13300211230311332', 4),
+  ('13300211230311333', 4),
+  ('13300211231200222', 4),
+  ('13300211230313110', 4),
+  ('13300211230313111', 4),
+  ('13300211231202000', 4),
+  ('03022313122032333', 5),
+  ('03022313122033222', 5),
+  ('03022313122033223', 5),
+  ('03022313122210111', 5),
+  ('03022313122211000', 5),
+  ('03022313122211001', 5),
+  ('03022313122210113', 5),
+  ('03022313122211002', 5),
+  ('03022313122211003', 5),
+  ('02123002133111322', 6),
+  ('02123002133111323', 6),
+  ('02123002133111332', 6),
+  ('02123002133113100', 6),
+  ('02123002133113101', 6),
+  ('02123002133113110', 6),
+  ('02123002133113102', 6),
+  ('02123002133113103', 6),
+  ('02123002133113112', 6),
+  ('13210010311001220', 7),
+  ('13210010311001221', 7),
+  ('13210010311001230', 7),
+  ('13210010311001222', 7),
+  ('13210010311001223', 7),
+  ('13210010311001232', 7),
+  ('13210010311003000', 7),
+  ('13210010311003001', 7),
+  ('13210010311003010', 7),
+  ('12023222113000211', 8),
+  ('12023222113000300', 8),
+  ('12023222113000301', 8),
+  ('12023222113000213', 8),
+  ('12023222113000302', 8),
+  ('12023222113000303', 8),
+  ('12023222113000231', 8),
+  ('12023222113000320', 8),
+  ('12023222113000321', 8),
+  ('12031010110002202', 9),
+  ('12031010110002203', 9),
+  ('12031010110002212', 9),
+  ('12031010110002220', 9),
+  ('12031010110002221', 9),
+  ('12031010110002230', 9),
+  ('12031010110002222', 9),
+  ('12031010110002223', 9),
+  ('12031010110002232', 9),
+  ('12213003021320113', 10),
+  ('12213003021321002', 10),
+  ('12213003021321003', 10),
+  ('12213003021320131', 10),
+  ('12213003021321020', 10),
+  ('12213003021321021', 10),
+  ('12213003021320133', 10),
+  ('12213003021321022', 10),
+  ('12213003021321023', 10),
+  ('21003102033210030', 11),
+  ('21003102033210031', 11),
+  ('21003102033210120', 11),
+  ('21003102033210032', 11),
+  ('21003102033210033', 11),
+  ('21003102033210122', 11),
+  ('21003102033210210', 11),
+  ('21003102033210211', 11),
+  ('21003102033210300', 11),
+  ('13221221130332331', 12),
+  ('13221221130333220', 12),
+  ('13221221130333221', 12),
+  ('13221221130332333', 12),
+  ('13221221130333222', 12),
+  ('13221221130333223', 12),
+  ('13221221132110111', 12),
+  ('13221221132111000', 12),
+  ('13221221132111001', 12),
+  ('03201011030112020', 13),
+  ('03201011030112021', 13),
+  ('03201011030112030', 13),
+  ('03201011030112022', 13),
+  ('03201011030112023', 13),
+  ('03201011030112032', 13),
+  ('03201011030112200', 13),
+  ('03201011030112201', 13),
+  ('03201011030112210', 13),
+  ('02301020333021110', 14),
+  ('02301020333021111', 14),
+  ('02301020333030000', 14),
+  ('02301020333021112', 14),
+  ('02301020333021113', 14),
+  ('02301020333030002', 14),
+  ('02301020333021130', 14),
+  ('02301020333021131', 14),
+  ('02301020333030020', 14),
+  ('12302313032231031', 15),
+  ('12302313032231120', 15),
+  ('12302313032231121', 15),
+  ('12302313032231033', 15),
+  ('12302313032231122', 15),
+  ('12302313032231123', 15),
+  ('12302313032231211', 15),
+  ('12302313032231300', 15),
+  ('12302313032231301', 15),
+  ('02132312013213010', 16),
+  ('02132312013213011', 16),
+  ('02132312013213100', 16),
+  ('02132312013213012', 16),
+  ('02132312013213013', 16),
+  ('02132312013213102', 16),
+  ('02132312013213030', 16),
+  ('02132312013213031', 16),
+  ('02132312013213120', 16),
+  ('30023103202301323', 17),
+  ('30023103202301332', 17),
+  ('30023103202301333', 17),
+  ('30023103202303101', 17),
+  ('30023103202303110', 17),
+  ('30023103202303111', 17),
+  ('30023103202303103', 17),
+  ('30023103202303112', 17),
+  ('30023103202303113', 17),
+  ('12210020330113121', 18),
+  ('12210020330113130', 18),
+  ('12210020330113131', 18),
+  ('12210020330113123', 18),
+  ('12210020330113132', 18),
+  ('12210020330113133', 18),
+  ('12210020330113301', 18),
+  ('12210020330113310', 18),
+  ('12210020330113311', 18),
+  ('03131313113010023', 19),
+  ('03131313113010032', 19),
+  ('03131313113010033', 19),
+  ('03131313113010201', 19),
+  ('03131313113010210', 19),
+  ('03131313113010211', 19),
+  ('03131313113010203', 19),
+  ('03131313113010212', 19),
+  ('03131313113010213', 19),
+  ('12312133233113323', 20),
+  ('12312133233113332', 20),
+  ('12312133233113333', 20),
+  ('12312133233131101', 20),
+  ('12312133233131110', 20),
+  ('12312133233131111', 20),
+  ('12312133233131103', 20),
+  ('12312133233131112', 20),
+  ('12312133233131113', 20),
+  ('12212112203000310', 21),
+  ('12212112203000311', 21),
+  ('12212112203001200', 21),
+  ('12212112203000312', 21),
+  ('12212112203000313', 21),
+  ('12212112203001202', 21),
+  ('12212112203000330', 21),
+  ('12212112203000331', 21),
+  ('12212112203001220', 21),
+  ('31123013300223112', 22),
+  ('31123013300223113', 22),
+  ('31123013300232002', 22),
+  ('31123013300223130', 22),
+  ('31123013300223131', 22),
+  ('31123013300232020', 22),
+  ('31123013300223132', 22),
+  ('31123013300223133', 22),
+  ('31123013300232022', 22),
+  ('21120001230003210', 23),
+  ('21120001230003211', 23),
+  ('21120001230003300', 23),
+  ('21120001230003212', 23),
+  ('21120001230003213', 23),
+  ('21120001230003302', 23),
+  ('21120001230003230', 23),
+  ('21120001230003231', 23),
+  ('21120001230003320', 23),
+  ('12022313031221222', 24),
+  ('12022313031221223', 24),
+  ('12022313031221232', 24),
+  ('12022313031223000', 24),
+  ('12022313031223001', 24),
+  ('12022313031223010', 24),
+  ('12022313031223002', 24),
+  ('12022313031223003', 24),
+  ('12022313031223012', 24)
+on conflict (qk) do update set landmark_id = excluded.landmark_id;
 
 -- Force PostgREST to pick up schema changes from this script immediately.
 -- It normally reloads on its own shortly after DDL, but that can lag or
