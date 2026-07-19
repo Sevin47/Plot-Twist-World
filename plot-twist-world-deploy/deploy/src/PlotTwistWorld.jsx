@@ -3077,7 +3077,7 @@ function Game({ G, onExit, startFresh }) {
                     <div className="flex flex-col gap-2">
                       <div className="flex gap-2">
                         <Btn full onClick={() => redevelop(sel)}>Redevelop — +25% rent, keep tile</Btn>
-                        <Btn full onClick={() => flip(sel)}>Flip — cash out ₲{fmt(Math.round((selMine.pd || 0) * 1.5))}</Btn>
+                        <Btn full onClick={() => flip(sel)}>Flip — list ₲{fmt(CLS[selCls].price * 2)}, 28% cut when sold</Btn>
                       </div>
                       <div className="flex gap-2">
                         {selMine.p ? (

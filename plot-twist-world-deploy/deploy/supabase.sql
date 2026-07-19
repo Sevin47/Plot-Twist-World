@@ -984,9 +984,23 @@ grant execute on function redevelop_tile(text) to authenticated;
 
 -- ── flip_tile: cash out a maxed-out (level 4) tile instead of prestiging
 --    it. Tears the building down, wipes rarity/prestige, and releases the
---    tile (owner -> null) at an auto-computed asking price of 1.5x total
---    invested (tiles.paid, which upgrade_tile already accumulates) — see
---    buy_flipped_tile below for the other half of this trade. ──
+--    tile (owner -> null) at an asking price of 2x the district's own base
+--    price (tile_class.price) — see buy_flipped_tile below for the other
+--    half of this trade.
+--
+--    Deliberately priced off the DISTRICT, not tiles.paid (total historical
+--    investment). A buy_flipped_tile purchase resets level/rarity/prestige
+--    to a blank slate — the buyer receives none of the seller's build
+--    history, so pricing off it was economically incoherent (and on a
+--    heavily-redeveloped tile, paid grows unbounded — upgrade_tile's cost
+--    scales with prestige and never resets on redevelop — so a price tied
+--    to it eventually asks buyers to pay millions for a Vacant lot, which
+--    never sells: a permanent soft-lock, not a steep-but-real price). 2x
+--    base price is a flat convenience premium for skipping the energy
+--    gate and region-unlock requirement, same idea in both directions —
+--    always a sane, clearable price regardless of the seller's history.
+--    abandon_tile (50% of paid) remains the right tool for recouping sunk
+--    cost; flip is "release to market at fair value, take a real cut". ──
 create or replace function flip_tile(p_qk text)
 returns tiles
 language plpgsql
@@ -996,6 +1010,7 @@ as $$
 declare
   v_uid uuid := auth.uid();
   v_tile tiles;
+  v_class tile_class;
   v_price bigint;
 begin
   if v_uid is null then raise exception 'not authenticated'; end if;
@@ -1005,7 +1020,8 @@ begin
   if not found then raise exception 'tile not found or not yours'; end if;
   if v_tile.level < 4 then raise exception 'not fully built yet'; end if;
 
-  v_price := round(v_tile.paid * 1.5);
+  select * into v_class from tile_class where cls = v_tile.cls;
+  v_price := round(v_class.price * 2);
 
   update tiles
     set owner = null, level = 0, rarity = 0, prestige = 0, paid = 0,
