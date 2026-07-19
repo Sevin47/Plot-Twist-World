@@ -334,13 +334,20 @@ function hashQk(qk) {
 // Rebuild cost scales with it too (upCost below), or it'd cost the same
 // every cycle and let a wealthy player farm unlimited rent for free.
 const rentOf = (t) => CLS[t.cls].rps * RAR[t.r].m * (1 + t.l) * (1 + 0.25 * (t.pr || 0));
-const upCost = (t) => Math.round(CLS[t.cls].price * 0.8 * Math.pow(t.l + 1, 1.6) * (1 + 0.5 * (t.pr || 0)));
+// Cap on prestige's contribution to upgrade cost/build duration — MUST
+// match least(v_tile.prestige, 10) in upgrade_tile()/rush_build() in
+// supabase.sql exactly. Uncapped, this compounded into unbounded
+// quadratic growth in tiles.paid across redevelop cycles (never resets on
+// redevelop), which leaked into peak_net_worth and abandon_tile's refund.
+// The rent bonus itself (rentOf, redevelop_tile) stays uncapped.
+const PRESTIGE_COST_CAP = 10;
+const upCost = (t) => Math.round(CLS[t.cls].price * 0.8 * Math.pow(t.l + 1, 1.6) * (1 + 0.5 * Math.min(t.pr || 0, PRESTIGE_COST_CAP)));
 
 // Build timers — base seconds per TARGET level, MUST match the CASE in
 // upgrade_tile()/rush_build() in supabase.sql exactly. Display/disabled-
 // state only; the server owns the real countdown and completion.
 const BUILD_SECONDS = { 1: 300, 2: 1800, 3: 7200, 4: 28800 };
-const buildDurationSecs = (targetLevel, prestige) => BUILD_SECONDS[targetLevel] * (1 + 0.25 * (prestige || 0));
+const buildDurationSecs = (targetLevel, prestige) => BUILD_SECONDS[targetLevel] * (1 + 0.25 * Math.min(prestige || 0, PRESTIGE_COST_CAP));
 const buildSecsLeft = (t) => t.bu ? Math.max(0, Math.round((new Date(t.bu).getTime() - Date.now()) / 1000)) : 0;
 const buildProgressPct = (t) => {
   if (!t.bu) return 100;

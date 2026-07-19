@@ -858,8 +858,18 @@ begin
 
   select * into v_class from tile_class where cls = v_tile.cls;
   -- the prestige factor is why this doesn't cost the same every
-  -- redevelopment cycle — see the `prestige` column comment above
-  v_cost := round(v_class.price * 0.8 * power(v_tile.level + 1, 1.6) * (1 + 0.5 * v_tile.prestige));
+  -- redevelopment cycle — see the `prestige` column comment above.
+  -- Capped at 10 (MUST match PRESTIGE_COST_CAP in PlotTwistWorld.jsx and
+  -- the matching cap in rush_build below): uncapped, this multiplier
+  -- compounds across every rebuild cycle into tiles.paid — which never
+  -- resets on redevelop — producing quadratic growth (cycle 50 landed
+  -- paid around ₲13M on a base Downtown tile). That number then leaked
+  -- into peak_net_worth and abandon_tile's refund (both read paid
+  -- directly), not just flip_price (which has since been decoupled from
+  -- paid entirely — see flip's removal). The rent bonus itself (accrue_rent,
+  -- redevelop_tile) stays uncapped — prestige keeps paying off forever,
+  -- it just stops getting more expensive to maintain past cycle 10.
+  v_cost := round(v_class.price * 0.8 * power(v_tile.level + 1, 1.6) * (1 + 0.5 * least(v_tile.prestige, 10)));
 
   if (select balance from profiles where user_id = v_uid) < v_cost then
     raise exception 'insufficient balance';
@@ -873,13 +883,14 @@ begin
     returning * into v_tile;
   else
     -- MUST match BUILD_SECONDS in PlotTwistWorld.jsx exactly (client-side
-    -- display/rush-cost mirror, server here is the sole authority).
+    -- display/rush-cost mirror, server here is the sole authority). Same
+    -- prestige cap as v_cost above, same reasoning.
     v_duration := (case v_tile.level + 1
         when 1 then interval '5 minutes'
         when 2 then interval '30 minutes'
         when 3 then interval '2 hours'
         when 4 then interval '8 hours'
-      end) * (1 + 0.25 * v_tile.prestige);
+      end) * (1 + 0.25 * least(v_tile.prestige, 10));
     update tiles set paid = paid + v_cost, build_until = now() + v_duration, updated_at = now()
     where tiles.qk = p_qk
     returning * into v_tile;
@@ -919,7 +930,8 @@ begin
   if v_tile.build_until is null then raise exception 'nothing is building on this tile'; end if;
 
   select * into v_class from tile_class where cls = v_tile.cls;
-  v_full_cost := round(v_class.price * 0.8 * power(v_tile.level + 1, 1.6) * (1 + 0.5 * v_tile.prestige));
+  -- same prestige cap as upgrade_tile — see that function's comment
+  v_full_cost := round(v_class.price * 0.8 * power(v_tile.level + 1, 1.6) * (1 + 0.5 * least(v_tile.prestige, 10)));
 
   v_total_secs := extract(epoch from (
     (case v_tile.level + 1
@@ -927,7 +939,7 @@ begin
         when 2 then interval '30 minutes'
         when 3 then interval '2 hours'
         when 4 then interval '8 hours'
-      end) * (1 + 0.25 * v_tile.prestige)
+      end) * (1 + 0.25 * least(v_tile.prestige, 10))
   ));
   v_remaining_secs := greatest(0, extract(epoch from (v_tile.build_until - now())));
   v_frac := least(1, v_remaining_secs / greatest(v_total_secs, 1));
