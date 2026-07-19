@@ -141,8 +141,12 @@ const CLS = {
   water:      { name: "Open water", price: 50,  rps: 0.009,  color: "#4A7FA5", sale: false },
   land:       { name: "Inland",     price: 400, rps: 1.6,   color: "#7BA88A" }, // legacy saves only
   pending:    { name: "Surveying…", price: 0,   rps: 0,     color: "#5A6472", sale: false }, // real vector data hasn't loaded for this spot yet
+  // landmark: MUST match the 'landmark' row in tile_class in supabase.sql
+  // exactly. price here is a display-only fallback — the real charge
+  // always comes from the synced landmark's own claimPrice.
+  landmark:   { name: "Landmark",   price: 1000000, rps: 0.0135, color: "#FFD700" },
 };
-const LEGEND = ["downtown", "waterfront", "urban", "coast", "suburbs", "rural"];
+const LEGEND = ["downtown", "waterfront", "urban", "coast", "suburbs", "rural", "landmark"];
 
 const RAR = [
   { name: "Common",    m: 1,   color: "#93A3B8" },
@@ -813,6 +817,12 @@ function Game({ G, onExit, startFresh }) {
   // deduped, for the discovery list.
   const landmarksByQk = useRef(new Map());
   const landmarksList = useRef([]);
+  // same 216 entries as landmarksByQk, keyed by the numeric ty*N+tx scheme
+  // classifyTxy/clsCache already use — lets the classification hot path
+  // (called once per visible cell, up to thousands/frame) check landmark
+  // membership with a plain numeric Map lookup instead of building a qk
+  // string on every call.
+  const landmarksByTxyKey = useRef(new Map());
   const dbgRef = useRef({ fps: 0, avg: 0, max: 0, s: 0, tilePx: 0, cnt: 0, gridOn: false, long: 0, longMax: 0, errs: [], lastEvt: "-" });
   const logEvt = (n) => { dbgRef.current.lastEvt = n; };
 
@@ -1434,6 +1444,28 @@ function Game({ G, onExit, startFresh }) {
   const classifyTxy = useCallback((tx, ty) => {
     const cc = clsCache.current;
     const key = ty * N + tx;
+
+    // landmark tiles are their own land use — checked BEFORE the cache
+    // (not just before the real classifier) so a real-water tile cached
+    // before landmark data finished loading at boot can never stick
+    // around stale. This is exactly what fixed a real tile of the Eiffel
+    // Tower's 3x3 cluster sitting on the Seine and reading as unbuyable
+    // "international waters" — the landmark itself is the land use here,
+    // full stop, regardless of what's really underneath. Plain numeric Map
+    // lookup (same key scheme as the cache below), not a qk string build,
+    // since this runs on every visible cell, every frame.
+    if (landmarksByTxyKey.current.size) {
+      const lm = landmarksByTxyKey.current.get(key);
+      if (lm) {
+        const wx = (tx + 0.5) / N, wy = (ty + 0.5) / N;
+        const lat = wyToLat(wy), lon = wx * 360 - 180;
+        const { n, d } = nearestCity(lat, lon);
+        const v = { c: "landmark", n, d, src: "landmark" };
+        cc.set(key, v);
+        return v;
+      }
+    }
+
     const cached = cc.get(key);
     if (cached) return cached;
 
@@ -1635,6 +1667,7 @@ function Game({ G, onExit, startFresh }) {
     if (error || !data) return;
     const byQk = new Map();
     const byLandmark = new Map();
+    const byTxyKey = new Map();
     for (const row of data) {
       const lm = row.landmarks;
       if (!lm) continue;
@@ -1646,9 +1679,13 @@ function Game({ G, onExit, startFresh }) {
       byQk.set(row.qk, entry);
       if (!byLandmark.has(lm.id)) byLandmark.set(lm.id, { ...entry, qks: [] });
       byLandmark.get(lm.id).qks.push(row.qk);
+      const [tx, ty] = txyOf(row.qk);
+      byTxyKey.set(ty * N + tx, entry);
     }
     landmarksByQk.current = byQk;
     landmarksList.current = [...byLandmark.values()];
+    landmarksByTxyKey.current = byTxyKey;
+    clsCache.current.clear(); // landmark tiles may already be cached with their real (now-overridden) classification
   }, []);
 
   // sum of a player's own landmark tiles' perk contribution for a given
@@ -1686,7 +1723,7 @@ function Game({ G, onExit, startFresh }) {
     if (roll || needName()) return;
     const cls = classify(qk).c;
     if (CLS[cls].sale === false) return;
-    const price = CLS[cls].price;
+    const price = landmarksByQk.current.get(qk)?.claimPrice ?? CLS[cls].price;
     if (g.bal < price) return;
     // claiming NEW unowned land costs energy (see buy_unowned_tile in
     // supabase.sql) — trading/upgrading tiles you already have doesn't.
@@ -2993,8 +3030,17 @@ function Game({ G, onExit, startFresh }) {
               )}
               {roll && roll.qk === sel && roll.phase === "done" && (
                 <div className="pt-anim-popIn py-2 text-center">
-                  <div className="text-2xl font-bold" style={{ ...display, color: RAR[roll.r].color, textShadow: `0 0 22px ${RAR[roll.r].color}88` }}>{RAR[roll.r].name}!</div>
-                  <div className="mt-1 text-xs" style={{ color: C.dim }}>Rent ×{RAR[roll.r].m} on this tile, forever.</div>
+                  {selLandmark ? (
+                    <>
+                      <div className="text-2xl font-bold" style={{ ...display, color: "#FFD700", textShadow: "0 0 22px #FFD70088" }}>{selLandmark.emoji} Claimed!</div>
+                      <div className="mt-1 text-xs" style={{ color: C.dim }}>Piece {myLandmarkPieces(selLandmark.landmarkId)}/9 of {selLandmark.name}. The perk's what matters here, not the rarity.</div>
+                    </>
+                  ) : (
+                    <>
+                      <div className="text-2xl font-bold" style={{ ...display, color: RAR[roll.r].color, textShadow: `0 0 22px ${RAR[roll.r].color}88` }}>{RAR[roll.r].name}!</div>
+                      <div className="mt-1 text-xs" style={{ color: C.dim }}>Rent ×{RAR[roll.r].m} on this tile, forever.</div>
+                    </>
+                  )}
                 </div>
               )}
               {roll && roll.qk === sel && roll.phase === "battle" && (

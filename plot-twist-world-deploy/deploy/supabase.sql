@@ -37,7 +37,17 @@ insert into tile_class (cls, price, rps, sellable) values
   ('coast',      200, 0.0525, true),
   ('suburbs',    150, 0.0375, true),
   ('rural',      50,  0.0135, true),
-  ('water',      50,  0.009,  false)
+  ('water',      50,  0.009,  false),
+  -- landmark: the landmark itself IS the land use — real-world geo/water
+  -- classification underneath a landmark tile is deliberately ignored
+  -- entirely (see buy_unowned_tile's forced-cls override below), which is
+  -- what fixes a real tile of the Eiffel Tower's 3x3 cluster sitting on
+  -- the Seine and reading as unbuyable "international waters". `price`
+  -- here is a display-only fallback — the real charge always comes from
+  -- landmark_tiles.claim_price. rps intentionally matches Rural's (the
+  -- lowest tier) — landmarks are about the perk and the trophy, not rent
+  -- farming, on purpose.
+  ('landmark',   1000000, 0.0135, true)
 on conflict (cls) do update set price = excluded.price, rps = excluded.rps, sellable = excluded.sellable;
 
 -- ── reference data: status ladder (mirrors STATUS_TIERS in
@@ -646,6 +656,8 @@ declare
   v_is_first_tile boolean;
   v_dev_mode boolean;
   v_price bigint;
+  v_cls text;
+  v_is_landmark boolean;
 begin
   if v_uid is null then raise exception 'not authenticated'; end if;
   if not exists (select 1 from profiles where user_id = v_uid) then raise exception 'no profile'; end if;
@@ -653,14 +665,23 @@ begin
 
   select dev_mode into v_dev_mode from profiles where user_id = v_uid;
 
-  select * into v_class from tile_class where cls = p_cls;
+  -- landmark tiles ignore whatever real-world land use/water classification
+  -- the client thinks this qk has and are ALWAYS 'landmark' — the landmark
+  -- itself is the land use, full stop. Never trust p_cls for this; derive
+  -- it server-side from landmark_tiles so a stale/wrong client-reported cls
+  -- (e.g. "water", which is exactly what a real tile of the Eiffel Tower's
+  -- cluster sitting on the Seine was reporting) can never block a claim.
+  select claim_price into v_price from landmark_tiles where qk = p_qk;
+  v_is_landmark := v_price is not null;
+  v_cls := case when v_is_landmark then 'landmark' else p_cls end;
+
+  select * into v_class from tile_class where cls = v_cls;
   if not found or v_class.sellable = false then raise exception 'not purchasable'; end if;
 
   -- landmark tiles claim at their own steep flat price instead of the
-  -- district price — see the "Landmarks" section above. Energy gate,
-  -- region-unlock gate, and rarity roll are all unaffected; this is a
-  -- claim like any other, just far more expensive.
-  select claim_price into v_price from landmark_tiles where qk = p_qk;
+  -- district price — see the "Landmarks" section above. Energy gate and
+  -- region-unlock gate are otherwise unaffected; this is a claim like any
+  -- other, just far more expensive.
   v_price := coalesce(v_price, v_class.price);
 
   if (select balance from profiles where user_id = v_uid) < v_price then
@@ -688,15 +709,23 @@ begin
     raise exception 'region not unlocked — travel here first';
   end if;
 
-  v_roll := random();
-  v_rarity := case when v_roll < 0.02 then 3 when v_roll < 0.10 then 2 when v_roll < 0.30 then 1 else 0 end;
+  -- landmark tiles never roll rarity — always Common (0). The incentive to
+  -- hold a landmark piece is the perk and the trophy, not a lucky rarity
+  -- multiplier that makes one player's identical ₲1,000,000 purchase
+  -- quietly worth more than another's.
+  if v_is_landmark then
+    v_rarity := 0;
+  else
+    v_roll := random();
+    v_rarity := case when v_roll < 0.02 then 3 when v_roll < 0.10 then 2 when v_roll < 0.30 then 1 else 0 end;
+  end if;
 
   update profiles
     set balance = balance - v_price,
         energy = case when v_dev_mode then energy else energy - 1 end
     where user_id = v_uid;
   insert into tiles (qk, owner, cls, level, rarity, paid, owner_since, updated_at)
-  values (p_qk, v_uid, p_cls, 0, v_rarity, v_price, now(), now())
+  values (p_qk, v_uid, v_cls, 0, v_rarity, v_price, now(), now())
   returning * into v_row;
 
   if v_is_first_tile then
@@ -1907,6 +1936,13 @@ insert into landmark_tiles (qk, landmark_id) values
   ('12022313031223003', 24),
   ('12022313031223012', 24)
 on conflict (qk) do update set landmark_id = excluded.landmark_id;
+
+-- one-time normalization: any landmark tile already claimed before this
+-- migration (real geo cls, possibly a rolled rarity) gets fixed up to
+-- match the rules now — 'landmark' cls, rarity reset to Common. Safe to
+-- re-run; a no-op once every landmark tile already matches.
+update tiles set cls = 'landmark', rarity = 0
+where qk in (select qk from landmark_tiles) and (cls <> 'landmark' or rarity <> 0);
 
 -- Force PostgREST to pick up schema changes from this script immediately.
 -- It normally reloads on its own shortly after DDL, but that can lag or
