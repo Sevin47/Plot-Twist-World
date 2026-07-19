@@ -862,6 +862,14 @@ begin
 
   select * into v_tile from tiles where tiles.qk = p_qk and owner = v_uid for update;
   if not found then raise exception 'tile not found or not yours'; end if;
+  -- landmark tiles never develop — thematically the landmark itself IS the
+  -- building (nobody builds an apartment tower on the Eiffel Tower). This
+  -- also means level stays permanently 0 for any landmark tile, so
+  -- redevelop_tile/flip_tile's existing "requires level >= 4" checks
+  -- already block those forever too, with no extra code needed there.
+  if exists (select 1 from landmark_tiles where qk = p_qk) then
+    raise exception 'landmark tiles can''t be developed — the landmark itself is the attraction';
+  end if;
   if v_tile.level >= 4 then raise exception 'already at max level'; end if;
   if v_tile.build_until is not null then raise exception 'already building — wait or rush it'; end if;
 
