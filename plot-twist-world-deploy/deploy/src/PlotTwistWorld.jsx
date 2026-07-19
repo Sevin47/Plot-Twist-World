@@ -777,7 +777,6 @@ function Game({ G, onExit, startFresh }) {
   const [showBasemap, setShowBasemap] = useState(true);
   const [dbg, setDbg] = useState(() => typeof location !== "undefined" && location.hash.includes("debug"));
   const [market, setMarket] = useState({ loading: false, rows: null });
-  const [flips, setFlips] = useState({ loading: false, rows: null });
   const [lb, setLb] = useState({ loading: false, rows: null });
   const [log, setLog] = useState({ loading: false, rows: null });
   const [assetQuery, setAssetQuery] = useState("");
@@ -1471,7 +1470,7 @@ function Game({ G, onExit, startFresh }) {
       // (owner, flip_royalty_to as of the flip feature), so PostgREST can no
       // longer infer which relationship an unqualified `profiles(username)`
       // embed means and rejects the whole query. Must stay qualified.
-      .select("qk,owner,cls,rarity,level,paid,list_price,flip_price,prestige,attacks_received_count,attacks_received_date,build_until,profiles!tiles_owner_fkey(username,peak_net_worth)")
+      .select("qk,owner,cls,rarity,level,paid,list_price,prestige,attacks_received_count,attacks_received_date,build_until,profiles!tiles_owner_fkey(username,peak_net_worth)")
       .like("qk", `${prefix}%`);
     const t = {};
     if (error) {
@@ -1491,7 +1490,6 @@ function Game({ G, onExit, startFresh }) {
         t[row.qk] = {
           o: row.owner, n: row.profiles?.username, pnw: row.profiles?.peak_net_worth || 0, r: row.rarity, l: row.level, pr: row.prestige || 0,
           cls: row.cls, pd: row.paid, ...(row.list_price != null ? { p: row.list_price } : {}),
-          ...(row.flip_price != null ? { fp: row.flip_price } : {}),
           arc: row.attacks_received_date === todayUTC() ? (row.attacks_received_count || 0) : 0,
           ...(row.build_until != null ? { bu: row.build_until } : {}),
         };
@@ -1531,11 +1529,11 @@ function Game({ G, onExit, startFresh }) {
 
   /* ── market: just a live query over tiles.list_price, no separate index ── */
   // Builds a PostgREST `.or()` filter matching any of the player's
-  // currently-unlocked regions — keeps the Market/Flip tabs scoped to
-  // territory actually reachable, the same boundary the map's fog-of-war
-  // and fine-grid prefetch already enforce visually (see the matching
-  // server-side check in buy_listed_tile/buy_flipped_tile — this is a
-  // convenience filter for what gets shown, not the real enforcement).
+  // currently-unlocked regions — keeps the Market tab scoped to territory
+  // actually reachable, the same boundary the map's fog-of-war and
+  // fine-grid prefetch already enforce visually (see the matching
+  // server-side check in buy_listed_tile — this is a convenience filter
+  // for what gets shown, not the real enforcement).
   const regionOrFilter = () => [...unlockedRegions.current].map((r) => `qk.like.${r}%`).join(",");
 
   const refreshMarket = useCallback(async () => {
@@ -1551,26 +1549,7 @@ function Game({ G, onExit, startFresh }) {
     setMarket({ loading: false, rows: (data || []).map((r) => ({ qk: r.qk, cls: r.cls, p: r.list_price, n: r.profiles?.username, pnw: r.profiles?.peak_net_worth || 0 })) });
   }, []);
 
-  // Flipped tiles (owner null, flip_price set — see flip_tile/buy_flipped_tile
-  // in supabase.sql) are otherwise only discoverable by literally panning to
-  // that exact tile on the map, same as raw unclaimed land — which means
-  // most would probably never sell. Surfaced here as their own section so a
-  // flip is actually likely to find a buyer. Deliberately doesn't fetch/show
-  // who flipped it (keeps this query simple — flip_royalty_to is a second FK
-  // into profiles and embedding it would need its own qualified hint, same
-  // issue list_price's owner embed hit above).
-  const refreshFlips = useCallback(async () => {
-    setFlips({ loading: true, rows: null });
-    const filter = regionOrFilter();
-    if (!filter) { setFlips({ loading: false, rows: [] }); return; }
-    const { data, error } = await supabase
-      .from("tiles").select("qk,cls,flip_price")
-      .not("flip_price", "is", null).or(filter).order("updated_at", { ascending: false }).limit(40);
-    if (error) { setFlips({ loading: false, rows: [] }); return; }
-    setFlips({ loading: false, rows: (data || []).map((r) => ({ qk: r.qk, cls: r.cls, p: r.flip_price })) });
-  }, []);
-
-  useEffect(() => { if (tab === "market") { refreshMarket(); refreshFlips(); } }, [tab, refreshMarket, refreshFlips]);
+  useEffect(() => { if (tab === "market") refreshMarket(); }, [tab, refreshMarket]);
 
   /* ── leaderboard: real joined data (see the `leaderboard` view) ── */
   const refreshLB = useCallback(async () => {
@@ -1756,8 +1735,7 @@ function Game({ G, onExit, startFresh }) {
     // only a capture resets the target to Vacant (see attack_tile) — a
     // successful defense leaves it completely untouched, so the defender's
     // build is what actually won the fight. Patch the shared region cache
-    // directly either way, same immediate-local-patch pattern flip() uses
-    // above, instead of waiting for the next region resync.
+    // directly either way, instead of waiting for the next region resync.
     const targetCls = rec.cls;
     const r = regions.current.get(regionOf(qk));
     if (r && r.t[qk]) {
@@ -1907,37 +1885,6 @@ function Game({ G, onExit, startFresh }) {
     if (!g.ach.redevelop1) { g.ach.redevelop1 = 1; toast("Unlocked — Redeveloper"); }
     rebuildOwn(); dirty.current = true; save();
     toast(`Redeveloped — ★${t.pr} · +${t.pr * 25}% rent permanently`);
-  };
-
-  // The alternative to redevelop(): cash out a maxed tile instead of
-  // prestiging it in place. Ownership is relinquished (see flip_tile in
-  // supabase.sql) so the local region cache is patched directly to reflect
-  // that immediately, same as the region-resync path would eventually show.
-  const flip = async (qk) => {
-    const t = ownMap.current.get(qk);
-    if (!t || t.l < MAX_LVL) return;
-    const { data, error } = await supabase.rpc("flip_tile", { p_qk: qk });
-    if (error || !data) { toast(error?.message || "Couldn't flip."); return; }
-    g.own.splice(g.own.findIndex((x) => x.qk === qk), 1);
-    const r = regions.current.get(regionOf(qk));
-    if (r) r.t[qk] = { o: null, r: 0, l: 0, pr: 0, cls: t.cls, pd: 0, fp: data.flip_price };
-    rebuildOwn(); dirty.current = true; save();
-    toast(`Flipped — listed for ₲${fmt(data.flip_price)}, you get a cut when it sells`);
-  };
-
-  const buyFlipped = async (qk) => {
-    if (needName()) return;
-    const rec = recOf(qk);
-    if (!rec) { toast("Tile not synced yet — one moment, then try again."); return; }
-    if (rec.fp == null || rec.o != null) return;
-    const price = rec.fp;
-    if (g.bal < price) return;
-    const { data, error } = await supabase.rpc("buy_flipped_tile", { p_qk: qk, p_expected_price: price });
-    if (error || !data) { toast(error?.message || "Listing changed — trade cancelled."); return; }
-    g.bal -= price;
-    g.own.push({ qk, l: data.level, r: data.rarity, pr: data.prestige || 0, cls: data.cls, pd: data.paid });
-    rebuildOwn(); checkAch(); dirty.current = true; save();
-    toast("Fresh deed acquired — flipped tile");
   };
 
   const abandon = async (qk) => {
@@ -2255,13 +2202,6 @@ function Game({ G, onExit, startFresh }) {
           if (tilePx > 13) drawBuilding(ctx, px, py, tilePx, rec.l || 0, tx * 7 + ty);
           if (rec.p) {
             ctx.fillStyle = C.amber;
-            ctx.beginPath(); ctx.arc(px + tilePx - 4, py + 4, 2.6, 0, 7); ctx.fill();
-          }
-          if (rec.fp) {
-            // flipped tile awaiting a buyer — distinct color from the amber
-            // "listed by a player" dot above so the two are tellable apart
-            // at a glance while panning.
-            ctx.fillStyle = RAR[1].color;
             ctx.beginPath(); ctx.arc(px + tilePx - 4, py + 4, 2.6, 0, 7); ctx.fill();
           }
           // owner name label — only readable at all once tiles are large
@@ -2978,18 +2918,6 @@ function Game({ G, onExit, startFresh }) {
                 </div>
               )}
 
-              {!selLocked && selRec && selRec.o == null && selRec.fp != null && !selMine && !(roll && roll.qk === sel && roll.phase === "spin") && (
-                <div>
-                  <div className="mb-3 flex items-center justify-between text-sm" style={mono}>
-                    <span style={{ color: C.dim }}>Flipped · fresh deed available</span>
-                    <span className="font-bold">₲{fmt(selRec.fp)}</span>
-                  </div>
-                  <Btn full onClick={() => buyFlipped(sel)} disabled={g.bal < selRec.fp}>
-                    {g.bal < selRec.fp ? "Not enough ₲" : `Buy — ₲${fmt(selRec.fp)}`}
-                  </Btn>
-                </div>
-              )}
-
               {!selLocked && selRec && selRec.o != null && !selMine && !(roll && roll.qk === sel && (roll.phase === "spin" || roll.phase === "battle")) && (
                 <div>
                   <div className="mb-2 flex flex-wrap items-center gap-2">
@@ -3075,10 +3003,7 @@ function Game({ G, onExit, startFresh }) {
                     )
                   ) : (
                     <div className="flex flex-col gap-2">
-                      <div className="flex gap-2">
-                        <Btn full onClick={() => redevelop(sel)}>Redevelop — +25% rent, keep tile</Btn>
-                        <Btn full onClick={() => flip(sel)}>Flip — list ₲{fmt(CLS[selCls].price * 2)}, 28% cut when sold</Btn>
-                      </div>
+                      <Btn full onClick={() => redevelop(sel)}>Redevelop — +25% rent, keep tile</Btn>
                       <div className="flex gap-2">
                         {selMine.p ? (
                           <Btn tone="ghost" onClick={() => unlist(sel)}>Unlist</Btn>
@@ -3194,10 +3119,7 @@ function Game({ G, onExit, startFresh }) {
                     ) : t.l < MAX_LVL ? (
                       <Btn small onClick={() => upgrade(t.qk)} disabled={g.bal < upCost(t)}>₲{fmt(upCost(t))}</Btn>
                     ) : (
-                      <>
-                        <Btn small onClick={() => redevelop(t.qk)}>Redevelop</Btn>
-                        <Btn small onClick={() => flip(t.qk)}>Flip</Btn>
-                      </>
+                      <Btn small onClick={() => redevelop(t.qk)}>Redevelop</Btn>
                     )}
                     {!t.bu && (t.p ? (
                       <Btn small tone="ghost" onClick={() => unlist(t.qk)}>Unlist</Btn>
@@ -3217,7 +3139,7 @@ function Game({ G, onExit, startFresh }) {
           <div className="absolute inset-0 overflow-y-auto p-4">
             <div className="mb-3 flex items-center justify-between">
               <Eyebrow>Open market · player listings</Eyebrow>
-              <button onClick={() => { refreshMarket(); refreshFlips(); }} className="pt11 focus-visible:outline focus-visible:outline-2" style={{ ...mono, color: C.amber, outlineColor: C.amber }}>Refresh</button>
+              <button onClick={refreshMarket} className="pt11 focus-visible:outline focus-visible:outline-2" style={{ ...mono, color: C.amber, outlineColor: C.amber }}>Refresh</button>
             </div>
             {market.loading && <div className="pt11 py-2" style={{ ...mono, color: C.dim }}>Checking the register…</div>}
             {market.rows && market.rows.length === 0 && (
@@ -3245,34 +3167,6 @@ function Game({ G, onExit, startFresh }) {
             ))}
             <div className="pt10 mt-2 mb-4 text-center" style={{ ...mono, color: C.dim }}>
               Only shows listings in territory you've unlocked. Sales pay the seller even while they're offline.
-            </div>
-
-            <Eyebrow>Flipped · fresh deeds available</Eyebrow>
-            <div className="mb-3" />
-            {flips.loading && <div className="pt11 py-2" style={{ ...mono, color: C.dim }}>Checking flipped deeds…</div>}
-            {flips.rows && flips.rows.length === 0 && (
-              <div className="rounded-xl p-6 text-center text-sm" style={{ background: C.panel, color: C.dim }}>
-                No flipped tiles available in your unlocked territory right now.
-              </div>
-            )}
-            {flips.rows && flips.rows.map((e) => (
-              <div key={e.qk} className="mb-2 flex items-center justify-between rounded-xl p-3 transition-transform duration-150 hover:-translate-y-0.5" style={cardSty}>
-                <button className="min-w-0 text-left focus-visible:outline focus-visible:outline-2" style={{ outlineColor: C.amber }}
-                  onClick={() => { setTab("map"); setSel(e.qk); const [wx, wy] = centerOfQk(e.qk); const { w, h } = size.current; const s = N * 16; cam.current = { s, x: w / 2 - wx * s, y: h / 2 - wy * s, init: true }; ensureRegion(regionOf(e.qk), true); }}>
-                  <div className="flex items-center gap-2">
-                    <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: (CLS[e.cls] || CLS.land).color, boxShadow: `0 0 6px ${(CLS[e.cls] || CLS.land).color}99` }} />
-                    <span className="truncate text-sm font-bold" style={mono}>{coordLabel(e.qk)}</span>
-                  </div>
-                  <div className="pt11 mt-0.5" style={{ ...mono, color: C.dim }}>fresh deed · rarity rolled on purchase</div>
-                </button>
-                <div className="flex shrink-0 items-center gap-2">
-                  <span className="text-sm font-bold" style={{ ...mono, color: RAR[1].color }}>₲{fmt(e.p)}</span>
-                  <Btn small onClick={async () => { await ensureRegion(regionOf(e.qk), true); buyFlipped(e.qk); }} disabled={g.bal < e.p}>Buy</Btn>
-                </div>
-              </div>
-            ))}
-            <div className="pt10 mt-2 text-center" style={{ ...mono, color: C.dim }}>
-              Only shows flips in territory you've unlocked. They reset to Vacant with a freshly-rolled rarity — the previous owner gets a cut when one sells.
             </div>
           </div>
         )}
