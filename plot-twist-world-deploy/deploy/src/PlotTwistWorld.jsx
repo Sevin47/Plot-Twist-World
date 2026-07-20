@@ -22,9 +22,14 @@ import VectorWorker from "./vectorWorker.js?worker&inline";
 // instead of looking like the bug is still unfixed.
 const BUILD_TAG = "2026-07-09.4-concurrency-and-margin-tuning";
 
-// auto-generated per build (see vite.config.js) — drives the "update
-// available" check and the corner version badge. "dev" outside a Vite build.
-const APP_VERSION = typeof __APP_VERSION__ !== "undefined" ? __APP_VERSION__ : "dev";
+// APP_VERSION: player-facing semver, sourced from package.json (see
+// vite.config.js) — bump package.json's "version" by hand per release.
+// BUILD_ID: a per-deploy git-sha fingerprint, invisible to players, used
+// only to detect a stale bundle even on a release where nobody remembered
+// to bump semver (see the version-check effect below). Both fall back to
+// placeholders outside a real Vite build.
+const APP_VERSION = typeof __APP_VERSION__ !== "undefined" ? __APP_VERSION__ : "0.0.0-dev";
+const BUILD_ID = typeof __BUILD_ID__ !== "undefined" ? __BUILD_ID__ : "dev";
 const VERSION_CHECK_MS = 5 * 60 * 1000;
 
 // player-facing patch notes — newest first, high-level only (no internals).
@@ -32,7 +37,7 @@ const VERSION_CHECK_MS = 5 * 60 * 1000;
 // bump it whenever a new entry is added.
 const CHANGELOG = [
   {
-    id: "2026-07-20",
+    id: "1.1.0",
     date: "Jul 20, 2026",
     notes: [
       "World view now shows your territory in blue and other players' in red, even fully zoomed out.",
@@ -607,6 +612,9 @@ function MenuShell({ children }) {
           filter: `drop-shadow(0 4px 28px ${C.glow})` }}>PLOT TWIST</h1>
         <div className="pt11 trk mb-8 uppercase font-semibold" style={{ ...display, color: C.dim }}>World Deed Edition</div>
         {children}
+      </div>
+      <div className="pt9 absolute bottom-2 left-0 right-0 text-center" style={{ ...mono, color: C.dim, opacity: 0.55 }}>
+        v{APP_VERSION}
       </div>
     </div>
   );
@@ -2557,15 +2565,16 @@ function Game({ G, onExit, startFresh }) {
 
   // "new version live" check — static hosting, no service worker, so this
   // just polls the build-stamped version.json (see vite.config.js) and
-  // compares it to the version baked into this loaded bundle. Skipped in
-  // dev, where the running code is always current by definition.
+  // compares its git-sha `build` fingerprint to this loaded bundle's — NOT
+  // the semver `version` field, which is bumped by hand and won't change on
+  // every deploy. Skipped in dev, where the running code is always current.
   useEffect(() => {
     if (import.meta.env.DEV) return;
     const check = async () => {
       try {
         const res = await fetch(`${import.meta.env.BASE_URL}version.json?t=${Date.now()}`, { cache: "no-store" });
-        const { version } = await res.json();
-        if (version && version !== APP_VERSION) setUpdateAvailable(true);
+        const { build } = await res.json();
+        if (build && build !== BUILD_ID) setUpdateAvailable(true);
       } catch { /* offline or blip — try again next tick */ }
     };
     check();
@@ -2932,6 +2941,13 @@ function Game({ G, onExit, startFresh }) {
           <button onClick={() => { save(); onExit(); }} className="pt9 trk flex items-center gap-1 uppercase font-semibold focus-visible:outline focus-visible:outline-2" style={{ ...display, color: C.dim, outlineColor: C.amber }}>
             ‹ Plot Twist · World Deed
           </button>
+          <div className="pt9 flex items-center gap-1.5" style={{ ...mono, color: C.dim }}>
+            <span>v{APP_VERSION}</span>
+            <button onClick={() => setModal({ kind: "changelog" })}
+              className="underline decoration-dotted underline-offset-2 focus-visible:outline focus-visible:outline-2" style={{ outlineColor: C.amber }}>
+              What's new
+            </button>
+          </div>
           <div className="flex items-baseline gap-2">
             <div className="text-2xl font-bold" style={{ ...mono, color: C.amber, fontVariantNumeric: "tabular-nums", textShadow: `0 0 18px ${C.glow}` }}>₲{fmt(g.bal)}</div>
             <div className="text-xs" style={{ ...mono, color: C.dim }}>+{fmt1(g.rps * (boostOn ? 2 : 1))}/s{boostOn ? " ⚡" : ""}</div>
@@ -3713,13 +3729,6 @@ function Game({ G, onExit, startFresh }) {
             style={{ ...display, background: C.amber, color: C.ink, boxShadow: C.shadowMd }}>{t.text}</div>
         ))}
       </div>
-
-      {/* version badge — corner, tap for patch notes */}
-      <button onClick={() => setModal({ kind: "changelog" })}
-        className="pt9 absolute bottom-1 left-1.5 z-10 font-medium opacity-60 transition-opacity hover:opacity-100 focus-visible:outline focus-visible:outline-2"
-        style={{ ...mono, color: C.dim, outlineColor: C.amber }}>
-        v{APP_VERSION}
-      </button>
 
       {/* update banner */}
       {updateAvailable && (
