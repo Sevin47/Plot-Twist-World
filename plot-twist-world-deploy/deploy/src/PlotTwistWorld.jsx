@@ -41,6 +41,13 @@ const VERSION_CHECK_MS = 5 * 60 * 1000;
 // commit, not after the fact.
 const CHANGELOG = [
   {
+    id: "1.2.1",
+    date: "Jul 20, 2026",
+    notes: [
+      "The world land-claimed total is now based on real coastline data instead of a rough estimate.",
+    ],
+  },
+  {
     id: "1.2.0",
     date: "Jul 20, 2026",
     notes: [
@@ -64,12 +71,25 @@ const N = 1 << Z;             // tiles per axis
 // real planet-wide coastline classification pass (no such data exists
 // anywhere in this project — real land/water is only ever resolved
 // per-viewport, on demand, via Protomaps). Approximated instead as (total
-// grid cells at Z) × (Earth's land fraction, ~29.2%) — grid cells because
-// that's the actual unit of purchase (a polar cell and an equatorial cell
-// are both just "one tile" in game terms, despite covering different real
-// km², since the quadkey grid is equal-angle/Mercator, not equal-area).
-// Good enough for a HUD scarcity indicator, not a scientific figure.
-const WORLD_LAND_TILES_ESTIMATE = Math.round(N * N * 0.292);
+// grid cells at Z) × (land fraction of the game's own reachable tile
+// grid) — grid cells because that's the actual unit of purchase (a polar
+// cell and an equatorial cell are both just "one tile" in game terms,
+// despite covering different real km², since the quadkey grid is
+// equal-angle/Mercator, not equal-area).
+//
+// 0.383537 is NOT Earth's real land-surface fraction (~29.2%) — it's the
+// fraction of THIS grid's own projected space that's land, computed from
+// Natural Earth's 1:50m coastlines reprojected into the same Web Mercator
+// space the game's tiles live in, clipped to the same ±85.05112878°
+// latitude band the grid is limited to (which excludes nearly all of
+// Antarctica — there's no tile coordinate down there). Mercator inflates
+// area at higher latitudes, and most of Earth's land sits in the
+// temperate north, so the true fraction in projected-tile-space is
+// meaningfully higher than the naive real-surface-area number. Two
+// independent methods (exact polygon area vs. a 3000x3000 point-sample
+// raster) agreed to within 0.002 percentage points — see
+// scripts/compute-land-fraction.mjs to reproduce or refresh this.
+const WORLD_LAND_TILES_ESTIMATE = Math.round(N * N * 0.383537);
 
 /* district-preview LOD: continuously choose a coarser quadkey depth so
    color cells stay a sensible on-screen size at any zoom, spanning from
