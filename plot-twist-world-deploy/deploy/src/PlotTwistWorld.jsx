@@ -41,6 +41,13 @@ const VERSION_CHECK_MS = 5 * 60 * 1000;
 // commit, not after the fact.
 const CHANGELOG = [
   {
+    id: "1.2.2",
+    date: "Jul 20, 2026",
+    notes: [
+      "Fixed a bug that could crash the game after several minutes of play in a busy area.",
+    ],
+  },
+  {
     id: "1.2.1",
     date: "Jul 20, 2026",
     notes: [
@@ -880,6 +887,7 @@ function Game({ G, onExit, startFresh }) {
   const pendings = useRef([]);
   const dirty = useRef(false);
   const regions = useRef(new Map()); // prefix -> {t:{qk:rec}, at}
+  const regionOrder = useRef([]);    // insertion order, for the eviction below
   const busyRegions = useRef(new Set());
   // landmarks: small, near-static reference data (24 landmarks, 216 tiles)
   // — fetched once at boot, not per-region like ordinary tile ownership.
@@ -1623,6 +1631,14 @@ function Game({ G, onExit, startFresh }) {
     }
     const obj = { t, at: Date.now() };
     rc.set(prefix, obj);
+    // bounded like every other client-side cache in this file (vtCache,
+    // clsCache, the basemap tileCache) — a long session of heavy panning
+    // across many distinct regions used to accumulate every one of them
+    // here forever, each holding a full region's worth of tile-ownership
+    // data. Evicting the oldest just means a re-fetch next time that
+    // region is actually viewed again, not a correctness issue.
+    regionOrder.current.push(prefix);
+    if (regionOrder.current.length > 50) rc.delete(regionOrder.current.shift());
     // reconcile: recover tiles deeded to me that I lost track of on this
     // device (e.g. just signed in); drop ones I no longer own (sold elsewhere)
     let changed = false;
@@ -2391,11 +2407,19 @@ function Game({ G, onExit, startFresh }) {
         ctx.lineWidth = 1;
       }
 
-      /* owned & listed tiles: iterate sparse region records, not every tile */
+      /* owned & listed tiles: iterate sparse region records, not every tile.
+         for..in, NOT Object.entries — this runs every animation frame, and
+         Object.entries allocates a fresh array every call; for a busy
+         region (thousands of tiles, easily true in a shared multiplayer
+         world) that's a large allocation up to 60x/sec for as long as this
+         area is on screen. Confirmed real: exactly this pattern, in this
+         loop plus the world-view dot loop below, was traced to a live
+         out-of-memory crash after sustained viewing of a dense area. */
       for (const prefix of prefixesFor(cam.current, size.current)) {
         const reg = regions.current.get(prefix);
         if (!reg) continue;
-        for (const [qk, rec] of Object.entries(reg.t)) {
+        for (const qk in reg.t) {
+          const rec = reg.t[qk];
           const [tx, ty] = txyOf(qk);
           if (tx < tx0 || tx > tx1 || ty < ty0 || ty > ty1) continue;
           // same territory gate as the tint loop above — without this, any
@@ -2466,13 +2490,16 @@ function Game({ G, onExit, startFresh }) {
       // matching the fine grid's blue/red border scheme. Region data comes
       // from the same regions.current cache the fine grid uses (hydrated at
       // login by the effect above), not a fresh query per frame.
+      // for..in, NOT Object.entries — see the matching comment on the fine
+      // grid's owned-tile loop above; same per-frame allocation issue.
       ctx.fillStyle = hexA("#F08A8A", 0.85);
       let j = 0;
       for (const region of unlockedRegions.current) {
         if (j > 1500) break;
         const reg = regions.current.get(region);
         if (!reg) continue;
-        for (const [qk, rec] of Object.entries(reg.t)) {
+        for (const qk in reg.t) {
+          const rec = reg.t[qk];
           if (!rec.o || rec.o === g.uid) continue;
           if (j++ > 1500) break;
           const [wx, wy] = centerOfQk(qk);
