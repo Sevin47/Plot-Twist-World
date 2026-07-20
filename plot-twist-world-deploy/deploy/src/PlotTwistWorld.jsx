@@ -49,6 +49,17 @@ const CHANGELOG = [
 const Z = 17;                 // parcel zoom: ~306m tiles at the equator
 const N = 1 << Z;             // tiles per axis
 
+// World "land claimed" stat estimate: an exact denominator would need a
+// real planet-wide coastline classification pass (no such data exists
+// anywhere in this project — real land/water is only ever resolved
+// per-viewport, on demand, via Protomaps). Approximated instead as (total
+// grid cells at Z) × (Earth's land fraction, ~29.2%) — grid cells because
+// that's the actual unit of purchase (a polar cell and an equatorial cell
+// are both just "one tile" in game terms, despite covering different real
+// km², since the quadkey grid is equal-angle/Mercator, not equal-area).
+// Good enough for a HUD scarcity indicator, not a scientific figure.
+const WORLD_LAND_TILES_ESTIMATE = Math.round(N * N * 0.292);
+
 /* district-preview LOD: continuously choose a coarser quadkey depth so
    color cells stay a sensible on-screen size at any zoom, spanning from
    ~20km cells (country/region scale) down to ~600m (just above the real
@@ -817,6 +828,7 @@ function Game({ G, onExit, startFresh }) {
   const [modal, setModal] = useState(null);
   const [toasts, setToasts] = useState([]);
   const [updateAvailable, setUpdateAvailable] = useState(false);
+  const [worldTilesOwned, setWorldTilesOwned] = useState(null);
   const [syncing, setSyncing] = useState(false);
   const [cities, setCities] = useState(false);
   const [citySearch, setCitySearch] = useState("");
@@ -2596,6 +2608,23 @@ function Game({ G, onExit, startFresh }) {
     localStorage.setItem("ptw_seenChangelog", latest);
   }, [ready]);
 
+  // world "land claimed" stat — a single COUNT query against the shared
+  // tiles table (cheap regardless of world population; Postgres counts an
+  // owner-filtered row set, it doesn't scan real geography). Meaningless in
+  // single-player/no-Supabase mode, so skipped entirely there. Refreshed
+  // occasionally, not every tick — this is flavor, not something anyone
+  // needs to the second.
+  useEffect(() => {
+    if (!MULTIPLAYER || !ready) return;
+    const check = async () => {
+      const { count, error } = await supabase.from("tiles").select("*", { count: "exact", head: true }).not("owner", "is", null);
+      if (!error && count != null) setWorldTilesOwned(count);
+    };
+    check();
+    const iv = setInterval(check, VERSION_CHECK_MS);
+    return () => clearInterval(iv);
+  }, [ready]);
+
   /* keep vector tiles ahead of the camera during continuous pan/zoom —
      eager jumps (flyTo, tap-to-zoom, +/-) also call this directly for an
      immediate kick instead of waiting for the next tick */
@@ -3048,6 +3077,12 @@ function Game({ G, onExit, startFresh }) {
                 {CLS[k].name}
               </div>
             ))}
+            {worldTilesOwned != null && (
+              <div className="pt9 mt-1 flex items-center gap-1 pt-1 font-medium" style={{ ...mono, color: C.dim, borderTop: `1px solid ${C.hair}` }}
+                title="Tiles claimed worldwide vs. an estimate of purchasable (non-water) land on the whole grid">
+                🌍 {fmt(worldTilesOwned)} / ~{fmt(WORLD_LAND_TILES_ESTIMATE)} claimed
+              </div>
+            )}
           </div>
 
           {syncing && (
