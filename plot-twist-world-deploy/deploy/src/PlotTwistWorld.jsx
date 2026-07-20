@@ -41,6 +41,14 @@ const VERSION_CHECK_MS = 5 * 60 * 1000;
 // commit, not after the fact.
 const CHANGELOG = [
   {
+    id: "1.3.0",
+    date: "Jul 20, 2026",
+    notes: [
+      "New players now get a short interactive tutorial covering the basics.",
+      "Forgot something? Replay the tutorial anytime from the HQ tab.",
+    ],
+  },
+  {
     id: "1.2.2",
     date: "Jul 20, 2026",
     notes: [
@@ -68,6 +76,36 @@ const CHANGELOG = [
       "World view now shows your territory in blue and other players' in red, even fully zoomed out.",
       "The game now tells you when a new version is live instead of leaving you on stale code.",
     ],
+  },
+];
+
+// Interactive first-run tutorial, shown once to brand-new accounts right
+// after they claim their first tile (and replayable from HQ, or via a
+// #tutorial URL hash — same pattern as #debug). Steps 2 and 3 also
+// auto-advance off the real action they teach (starting a build / zooming
+// to world view); every step is skippable so no game state can ever
+// strand it. Per-account progress lives in localStorage under
+// `ptw_tutorial:<uid>` ("pending" → "done").
+const TUT_STEPS = [
+  {
+    title: "Your first deed",
+    text: "This ~300 m square of real Earth is yours — the sheet below shows its district and rent. It earns ₲ every second, even while you're offline.",
+  },
+  {
+    title: "Build it up",
+    text: "Tap Upgrade on a tile you own to start a build. Buildings take real time to finish, and each level pays noticeably more rent.",
+  },
+  {
+    title: "Zoom way out",
+    text: "Pinch or tap − until you can see the whole world. Your territory glows blue from up there; rival players' tiles show red.",
+  },
+  {
+    title: "Claim energy",
+    text: "The ⚡ counter at the top is today's claim energy — buying any new unowned tile spends one. It refills daily, and your cap grows with status.",
+  },
+  {
+    title: "You're set",
+    text: "That's the loop: claim, build, collect, expand. Trading, attacks and landmarks are out there too — you'll meet them as you go. Good luck, landlord.",
   },
 ];
 
@@ -291,6 +329,7 @@ const ACH = [
   { k: "streak3",name: "Regular",        desc: "3-day visit streak" },
   { k: "redevelop1", name: "Redeveloper", desc: "Tear down and rebuild a maxed-out tile" },
   { k: "conqueror", name: "Conqueror", desc: "Win a PvP attack and capture a tile" },
+  { k: "tutorial", name: "Oriented", desc: "Complete the tutorial" },
 ];
 
 /* ── math: mercator + quadkeys ──────────────────────────────── */
@@ -867,6 +906,8 @@ function Game({ G, onExit, startFresh }) {
   const [toasts, setToasts] = useState([]);
   const [updateAvailable, setUpdateAvailable] = useState(false);
   const [worldTilesOwned, setWorldTilesOwned] = useState(null);
+  const [tut, setTut] = useState(null); // 1-based TUT_STEPS index, or null when not running
+  const tutHashUsed = useRef(false);    // #tutorial hash is a one-shot — without this it would restart the tour forever
   const [syncing, setSyncing] = useState(false);
   const [cities, setCities] = useState(false);
   const [citySearch, setCitySearch] = useState("");
@@ -2683,6 +2724,62 @@ function Game({ G, onExit, startFresh }) {
     return () => clearInterval(iv);
   }, [ready]);
 
+  /* ── first-run tutorial ── */
+  // Mark the tour pending the moment a brand-new account exists, NOT when
+  // it first renders — startFresh is only true on the mount right after
+  // claim_username, so without this flag a refresh at step 2 would lose
+  // the tutorial forever (startFresh false on reload, done flag never
+  // written). Keyed by uid because localStorage is per-device, not
+  // per-account, and two accounts can share one browser.
+  useEffect(() => {
+    if (!startFresh) return;
+    try {
+      if (localStorage.getItem(`ptw_tutorial:${g.uid}`) !== "done") localStorage.setItem(`ptw_tutorial:${g.uid}`, "pending");
+    } catch { /* private mode etc. — tour just won't persist across reloads */ }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Start (or resume) the tour only once the opening moment is actually
+  // quiet: a fresh account's first seconds are contested — fly-to, the
+  // rarity-roll spin, and a daily-stipend modal that queued invisibly
+  // behind the pick-home screen all land at once. Waiting for !modal &&
+  // !roll (deps below re-fire this when they clear) means the tour begins
+  // after that dust settles instead of stacking a bubble on top of it.
+  useEffect(() => {
+    if (!ready || pickingHome || tut != null || modal || roll) return;
+    const viaHash = typeof location !== "undefined" && location.hash.includes("tutorial") && !tutHashUsed.current;
+    let pending = false;
+    try { pending = localStorage.getItem(`ptw_tutorial:${g.uid}`) === "pending"; } catch { /* ignore */ }
+    if (viaHash || pending) { tutHashUsed.current = true; setTut(1); }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ready, pickingHome, modal, roll, tut]);
+
+  // Auto-advance steps that teach a real action, off the action itself.
+  // Deliberately no dep array: game state lives in mutable refs (g.own,
+  // cam.current) that never trigger renders on their own — but the 250ms
+  // economy tick force()es a render anyway, so checking after every
+  // render is both cheap and the only reliable signal. Step 2 compares
+  // against a baseline captured when the step is entered — a veteran
+  // replaying the tour already owns built-up tiles, and an absolute
+  // "any tile has a build/level" check would skip their step 2 instantly.
+  const tutBuiltBase = useRef(null);
+  useEffect(() => {
+    if (tut === 2) {
+      const built = g.own.filter((t) => t.bu || t.l > 0).length;
+      if (tutBuiltBase.current == null) tutBuiltBase.current = built;
+      else if (built > tutBuiltBase.current) setTut(3);
+    } else {
+      tutBuiltBase.current = null;
+      if (tut === 3 && cam.current.s / N < 8) setTut(4);
+    }
+  });
+
+  const endTutorial = (completed) => {
+    try { localStorage.setItem(`ptw_tutorial:${g.uid}`, "done"); } catch { /* ignore */ }
+    setTut(null);
+    if (completed && !g.ach.tutorial) { g.ach.tutorial = 1; toast("Unlocked — Oriented"); dirty.current = true; }
+  };
+
   /* keep vector tiles ahead of the camera during continuous pan/zoom —
      eager jumps (flyTo, tap-to-zoom, +/-) also call this directly for an
      immediate kick instead of waiting for the next tick */
@@ -3799,7 +3896,8 @@ function Game({ G, onExit, startFresh }) {
             </div>
 
             <div className="mb-3 rounded-xl p-3" style={cardSty}>
-              <div className="flex gap-2">
+              <div className="flex flex-wrap gap-2">
+                <Btn small tone="ghost" onClick={() => { setTab("map"); setTut(1); }}>Replay tutorial</Btn>
                 <Btn small tone="ghost" onClick={() => { save(); onExit(); signOut(); }}>Sign out</Btn>
                 <Btn small tone="danger" onClick={() => setConfirmDelete(true)}>Delete account &amp; data</Btn>
               </div>
@@ -3822,6 +3920,31 @@ function Game({ G, onExit, startFresh }) {
             style={{ ...display, background: C.amber, color: C.ink, boxShadow: C.shadowMd }}>{t.text}</div>
         ))}
       </div>
+
+      {/* first-run tutorial bubble — top-center so it never covers the
+          tile sheet (bottom) or the nav; hidden while any modal or the
+          rarity roll is up (the tour yields, it doesn't compete), and on
+          non-map tabs (its steps all reference the map view). */}
+      {tut != null && tab === "map" && !modal && !roll && (
+        <div className="pointer-events-none absolute inset-x-0 top-24 z-30 flex justify-center px-4">
+          <div className="pointer-events-auto pt-anim-popIn w-full max-w-xs rounded-2xl p-3.5"
+            style={{ background: `${C.panel}f5`, border: `1px solid ${C.amber}55`, boxShadow: C.shadowLg, ...blur(14) }}>
+            <div className="pt9 trk uppercase font-semibold" style={{ ...display, color: C.amber }}>Tutorial · {tut}/{TUT_STEPS.length}</div>
+            <div className="mt-1 text-sm font-bold" style={{ ...display, color: C.text }}>{TUT_STEPS[tut - 1].title}</div>
+            <div className="pt11 mt-1 leading-relaxed" style={{ color: C.dim }}>{TUT_STEPS[tut - 1].text}</div>
+            <div className="mt-3 flex items-center justify-between">
+              <button onClick={() => endTutorial(false)}
+                className="pt10 underline decoration-dotted underline-offset-2 focus-visible:outline focus-visible:outline-2"
+                style={{ ...mono, color: C.dim, outlineColor: C.amber }}>
+                Skip tour
+              </button>
+              <Btn small onClick={() => (tut < TUT_STEPS.length ? setTut(tut + 1) : endTutorial(true))}>
+                {tut < TUT_STEPS.length ? "Next" : "Finish"}
+              </Btn>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* update banner */}
       {updateAvailable && (
