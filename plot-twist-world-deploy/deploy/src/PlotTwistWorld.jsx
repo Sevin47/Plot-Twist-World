@@ -22,6 +22,25 @@ import VectorWorker from "./vectorWorker.js?worker&inline";
 // instead of looking like the bug is still unfixed.
 const BUILD_TAG = "2026-07-09.4-concurrency-and-margin-tuning";
 
+// auto-generated per build (see vite.config.js) — drives the "update
+// available" check and the corner version badge. "dev" outside a Vite build.
+const APP_VERSION = typeof __APP_VERSION__ !== "undefined" ? __APP_VERSION__ : "dev";
+const VERSION_CHECK_MS = 5 * 60 * 1000;
+
+// player-facing patch notes — newest first, high-level only (no internals).
+// `id` gates the one-time auto-popup (see the changelog effect below);
+// bump it whenever a new entry is added.
+const CHANGELOG = [
+  {
+    id: "2026-07-20",
+    date: "Jul 20, 2026",
+    notes: [
+      "World view now shows your territory in blue and other players' in red, even fully zoomed out.",
+      "The game now tells you when a new version is live instead of leaving you on stale code.",
+    ],
+  },
+];
+
 const Z = 17;                 // parcel zoom: ~306m tiles at the equator
 const N = 1 << Z;             // tiles per axis
 
@@ -789,6 +808,7 @@ function Game({ G, onExit, startFresh }) {
   const [roll, setRoll] = useState(null);        // {qk, phase, r}
   const [modal, setModal] = useState(null);
   const [toasts, setToasts] = useState([]);
+  const [updateAvailable, setUpdateAvailable] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [cities, setCities] = useState(false);
   const [citySearch, setCitySearch] = useState("");
@@ -2390,8 +2410,29 @@ function Game({ G, onExit, startFresh }) {
     } else {
       D.pz = previewLevelFor(s); D.pcnt = 0; D.ptile = 0;
 
-      // your deeds as glowing dots, layered on top regardless of preview state
-      ctx.fillStyle = C.amber;
+      // opponent-owned deeds inside your unlocked territory — small red
+      // dots so world view reads as "who controls what" at a glance,
+      // matching the fine grid's blue/red border scheme. Region data comes
+      // from the same regions.current cache the fine grid uses (hydrated at
+      // login by the effect above), not a fresh query per frame.
+      ctx.fillStyle = hexA("#F08A8A", 0.85);
+      let j = 0;
+      for (const region of unlockedRegions.current) {
+        if (j > 1500) break;
+        const reg = regions.current.get(region);
+        if (!reg) continue;
+        for (const [qk, rec] of Object.entries(reg.t)) {
+          if (!rec.o || rec.o === g.uid) continue;
+          if (j++ > 1500) break;
+          const [wx, wy] = centerOfQk(qk);
+          const px = ox + wx * s, py = oy + wy * s;
+          if (px < -4 || py < -4 || px > w + 4 || py > h + 4) continue;
+          ctx.beginPath(); ctx.arc(px, py, Math.max(1.4, tilePx * 1.6), 0, 7); ctx.fill();
+        }
+      }
+
+      // your own deeds — bold blue to match the fine grid's "mine" border
+      ctx.fillStyle = C.mine;
       let i = 0;
       for (const t of g.own) {
         if (i++ > 800) break;
@@ -2504,6 +2545,47 @@ function Game({ G, onExit, startFresh }) {
     }, 1200);
     return () => clearInterval(iv);
   }, [ready, tab, ensureRegion]);
+
+  // hydrate ownership data for every unlocked region right at login —
+  // otherwise the world-view territory dots (draw()'s preview branch below)
+  // would sit empty until the player zoomed into the fine grid or the tab
+  // regained focus, since the interval above skips syncing while zoomed out.
+  useEffect(() => {
+    if (!ready) return;
+    for (const region of unlockedRegions.current) ensureRegion(region, false);
+  }, [ready, ensureRegion]);
+
+  // "new version live" check — static hosting, no service worker, so this
+  // just polls the build-stamped version.json (see vite.config.js) and
+  // compares it to the version baked into this loaded bundle. Skipped in
+  // dev, where the running code is always current by definition.
+  useEffect(() => {
+    if (import.meta.env.DEV) return;
+    const check = async () => {
+      try {
+        const res = await fetch(`${import.meta.env.BASE_URL}version.json?t=${Date.now()}`, { cache: "no-store" });
+        const { version } = await res.json();
+        if (version && version !== APP_VERSION) setUpdateAvailable(true);
+      } catch { /* offline or blip — try again next tick */ }
+    };
+    check();
+    const iv = setInterval(check, VERSION_CHECK_MS);
+    const onVis = () => { if (!document.hidden) check(); };
+    document.addEventListener("visibilitychange", onVis);
+    return () => { clearInterval(iv); document.removeEventListener("visibilitychange", onVis); };
+  }, []);
+
+  // one-time "what's new" popup when the changelog has moved on since this
+  // device last saw it. First-ever visit just silently marks current as
+  // seen — nothing to announce to a brand-new player.
+  useEffect(() => {
+    if (!ready) return;
+    const seen = localStorage.getItem("ptw_seenChangelog");
+    const latest = CHANGELOG[0]?.id;
+    if (!latest) return;
+    if (seen && seen !== latest) setModal((m) => m || { kind: "changelog" });
+    localStorage.setItem("ptw_seenChangelog", latest);
+  }, [ready]);
 
   /* keep vector tiles ahead of the camera during continuous pan/zoom —
      eager jumps (flyTo, tap-to-zoom, +/-) also call this directly for an
@@ -3632,6 +3714,24 @@ function Game({ G, onExit, startFresh }) {
         ))}
       </div>
 
+      {/* version badge — corner, tap for patch notes */}
+      <button onClick={() => setModal({ kind: "changelog" })}
+        className="pt9 absolute bottom-1 left-1.5 z-10 font-medium opacity-60 transition-opacity hover:opacity-100 focus-visible:outline focus-visible:outline-2"
+        style={{ ...mono, color: C.dim, outlineColor: C.amber }}>
+        v{APP_VERSION}
+      </button>
+
+      {/* update banner */}
+      {updateAvailable && (
+        <div className="pt-anim-fadeIn absolute inset-x-0 top-0 z-30 flex items-center justify-center gap-3 px-4 py-2"
+          style={{ background: C.amber, color: C.ink }}>
+          <span className="pt11 font-bold">A new version is live</span>
+          <button onClick={() => location.reload()} className="pt11 rounded-full px-3 py-1 font-bold" style={{ background: C.ink, color: C.amber }}>
+            Refresh
+          </button>
+        </div>
+      )}
+
       {/* nav */}
       <div className="flex gap-1 p-1.5" style={{ background: C.panel, borderTop: `1px solid ${C.hair}` }}>
         {[["map", "Map"], ["assets", "Assets"], ["market", "Market"], ["hq", "HQ"]].map(([k, label]) => (
@@ -3699,6 +3799,22 @@ function Game({ G, onExit, startFresh }) {
             </>
           )}
           {modal.kind === "ad" && <AdModal ad={modal.ad} reduced={reduced} onClaim={claimBoost} onClose={closeModal} />}
+          {modal.kind === "changelog" && (
+            <>
+              <Eyebrow>What's new</Eyebrow>
+              <div className="mt-2 max-h-80 overflow-y-auto">
+                {CHANGELOG.map((entry) => (
+                  <div key={entry.id} className="mb-3">
+                    <div className="pt10 mb-1 font-bold" style={{ ...mono, color: C.amber }}>{entry.date}</div>
+                    <ul className="pt11 list-disc pl-4 leading-relaxed" style={{ color: C.text }}>
+                      {entry.notes.map((n, idx) => <li key={idx}>{n}</li>)}
+                    </ul>
+                  </div>
+                ))}
+              </div>
+              <Btn full onClick={closeModal}>Close</Btn>
+            </>
+          )}
         </Modal>
       )}
 
