@@ -41,6 +41,13 @@ const VERSION_CHECK_MS = 5 * 60 * 1000;
 // commit, not after the fact.
 const CHANGELOG = [
   {
+    id: "1.3.1",
+    date: "Jul 20, 2026",
+    notes: [
+      "Land types are now called \"property classifications\" everywhere, instead of the confusing \"district\".",
+    ],
+  },
+  {
     id: "1.3.0",
     date: "Jul 20, 2026",
     notes: [
@@ -89,7 +96,7 @@ const CHANGELOG = [
 const TUT_STEPS = [
   {
     title: "Your first deed",
-    text: "This ~300 m square of real Earth is yours — the sheet below shows its district and rent. It earns ₲ every second, even while you're offline.",
+    text: "This ~300 m square of real Earth is yours — the sheet below shows its property classification (the kind of land it sits on) and rent. It earns ₲ every second, even while you're offline.",
   },
   {
     title: "Build it up",
@@ -716,7 +723,7 @@ function HowToModal({ onClose }) {
         <div>Zoom into anywhere on Earth until the deed grid appears, then tap a ~300 m tile and buy it. Everyone plays on the same planet — one tile, one owner.</div>
         <div>Tiles pay rent per second. Rarity is rolled when you buy (up to 8×). Build them up from cottage to tower for more rent.</div>
         <div>Trade with real players: list your tiles at any price on the open market, or buy theirs. Sales pay you even while you're offline.</div>
-        <div>Districts come from real OpenStreetMap data — actual water, land-use and building footprints, not a guess. A freshly-revealed tile briefly shows as "Surveying…" (not yet purchasable) until its real data finishes loading, which is usually well under a second.</div>
+        <div>Every tile has a property classification — the kind of land it sits on (Downtown, Rural, and so on) — that sets its price and rent. Classifications come from real OpenStreetMap data: actual water, land-use and building footprints, not a guess. A freshly-revealed tile briefly shows as "Surveying…" (not yet purchasable) until its real data finishes loading, which is usually well under a second.</div>
       </div>
       <div className="mt-4"><Btn full onClick={onClose}>Got it</Btn></div>
     </Modal>
@@ -3253,7 +3260,7 @@ function Game({ G, onExit, startFresh }) {
                 const pz = previewLevelFor(cs);
                 const ptile = cs / (1 << pz);
                 const cnt = (vw / ptile) * (vh / ptile);
-                return cnt <= 8000 ? "tap a district to zoom in · deed grid appears up close" : "zoom in to see districts · tap to zoom";
+                return cnt <= 8000 ? "tap an area to zoom in · deed grid appears up close" : "zoom in to see the land · tap to zoom";
               })()}
             </div>
           )}
@@ -3532,7 +3539,7 @@ function Game({ G, onExit, startFresh }) {
               <div className="mb-3"><Eyebrow>Your holdings · {g.own.length} tile{g.own.length === 1 ? "" : "s"} · net worth ₲{fmt(netWorth())}</Eyebrow></div>
               {g.own.length > 0 && (
                 <div className="mb-1">
-                  <input value={assetQuery} onChange={(e) => setAssetQuery(e.target.value)} placeholder="Search by district or nearby city…"
+                  <input value={assetQuery} onChange={(e) => setAssetQuery(e.target.value)} placeholder="Search by classification or nearby city…"
                     className="mb-2 w-full rounded-xl px-3 py-2 text-sm focus-visible:outline focus-visible:outline-2"
                     style={{ ...display, ...inputSty }} />
                   <div className="mb-2 flex gap-1.5 overflow-x-auto pb-1">
@@ -3571,7 +3578,7 @@ function Game({ G, onExit, startFresh }) {
                       <option value="rent-asc">Rent ↑</option>
                       <option value="level">Level</option>
                       <option value="rarity">Rarity</option>
-                      <option value="district">District</option>
+                      <option value="district">Classification</option>
                     </select>
                   </div>
                   {assetsUpgradable.length > 0 && (
