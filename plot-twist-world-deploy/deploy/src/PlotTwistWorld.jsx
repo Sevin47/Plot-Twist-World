@@ -33,9 +33,20 @@ const BUILD_ID = typeof __BUILD_ID__ !== "undefined" ? __BUILD_ID__ : "dev";
 const VERSION_CHECK_MS = 5 * 60 * 1000;
 
 // player-facing patch notes — newest first, high-level only (no internals).
-// `id` gates the one-time auto-popup (see the changelog effect below);
-// bump it whenever a new entry is added.
+// `id` must match package.json's "version" for that release (it's what
+// gates the one-time auto-popup — see the changelog effect below) and
+// drives the auto-popup on that pairing, not just on adding an entry.
+// See "Versioning & changelog" in HANDOFF.md for the full process — every
+// player-visible change ships with a version bump + entry in the same
+// commit, not after the fact.
 const CHANGELOG = [
+  {
+    id: "1.2.0",
+    date: "Jul 20, 2026",
+    notes: [
+      "The map now shows a live count of how much of the world's land has been claimed.",
+    ],
+  },
   {
     id: "1.1.0",
     date: "Jul 20, 2026",
