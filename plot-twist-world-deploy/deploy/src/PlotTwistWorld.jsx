@@ -41,6 +41,14 @@ const VERSION_CHECK_MS = 5 * 60 * 1000;
 // commit, not after the fact.
 const CHANGELOG = [
   {
+    id: "1.6.1",
+    date: "Jul 21, 2026",
+    notes: [
+      "Doubled daily attacks (3 → 6) so a locked-down target doesn't burn your whole day — try elsewhere instead.",
+      "Assets tab now shows a dedicated \"Building\" section up top, so Upgrade All results are easy to spot.",
+    ],
+  },
+  {
     id: "1.6.0",
     date: "Jul 20, 2026",
     notes: [
@@ -334,7 +342,7 @@ const statusFor = (netWorth) => {
 
 // PvP: mirrors attack_tile()'s hardcoded caps in supabase.sql — flat for
 // every player regardless of status tier, unlike energy's cap.
-const ATTACK_DAILY_CAP = 3;    // attacks a player may LAUNCH per UTC day
+const ATTACK_DAILY_CAP = 6;    // attacks a player may LAUNCH per UTC day
 const ATTACK_RECEIVED_CAP = 2; // attacks a single TILE may absorb per UTC day
 
 const ADS = [
@@ -3255,9 +3263,14 @@ function Game({ G, onExit, startFresh }) {
   // Only actually filters/sorts when the Assets tab is showing — skipped
   // otherwise so a 50+ tile portfolio doesn't pay this cost 4x/sec on the
   // 250ms economy tick while the player is looking at the map instead.
+  // Currently-building tiles get their own section (below) so "Upgrade
+  // all" results are visible at a glance instead of buried in a sorted
+  // list — always the full unfiltered set (build state isn't one of the
+  // filter dimensions), soonest-to-finish first.
+  const assetsBuilding = tab !== "assets" ? [] : g.own.filter((t) => t.bu).sort((a, b) => buildSecsLeft(a) - buildSecsLeft(b));
   const assetsFiltered = tab !== "assets" ? g.own : (() => {
     const q = assetQuery.trim().toLowerCase();
-    let list = g.own;
+    let list = g.own.filter((t) => !t.bu);
     if (assetClsFilter !== "all") list = list.filter((t) => t.cls === assetClsFilter);
     if (assetRarityFilter !== -1) list = list.filter((t) => t.r === assetRarityFilter);
     if (q) {
@@ -3277,6 +3290,50 @@ function Game({ G, onExit, startFresh }) {
     return sorted;
   })();
   const assetsUpgradable = tab !== "assets" ? [] : assetsFiltered.filter((t) => t.l < MAX_LVL);
+  const assetsFilterActive = assetClsFilter !== "all" || assetRarityFilter !== -1 || !!assetQuery.trim();
+
+  // shared row markup — used for both the Building section and the main
+  // list below, so a tile looks identical whichever one it's in
+  const renderAssetRow = (t) => (
+    <div key={t.qk} className="mb-2 rounded-xl p-3 transition-transform duration-150 hover:-translate-y-0.5" style={cardSty}>
+      <button className="flex w-full items-center justify-between text-left focus-visible:outline focus-visible:outline-2" style={{ outlineColor: C.amber }}
+        onClick={() => { setTab("map"); setSel(t.qk); const [wx, wy] = centerOfQk(t.qk); const { w, h } = size.current; const s = N * 16; cam.current = { s, x: w / 2 - wx * s, y: h / 2 - wy * s, init: true }; ensureRegion(regionOf(t.qk), true); }}>
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: CLS[t.cls].color, boxShadow: `0 0 6px ${CLS[t.cls].color}99` }} />
+          <span className="truncate text-sm font-bold" style={mono}>{coordLabel(t.qk)}</span>
+          <Chip color={RAR[t.r].color}>{RAR[t.r].name}</Chip>
+          {t.pr > 0 && <Chip color={C.amber}>★{t.pr}</Chip>}
+        </div>
+        <span className="text-xs" style={{ ...mono, color: C.amber }}>₲{fmt1(rentOf(t))}/s</span>
+      </button>
+      {t.bu && (
+        <div className="mt-2 h-1 w-full overflow-hidden rounded-full" style={{ background: C.hair }}>
+          <div className="h-full rounded-full" style={{ width: `${buildProgressPct(t)}%`, background: C.amber, transition: "width 1s linear" }} />
+        </div>
+      )}
+      <div className="mt-2 flex items-center justify-between">
+        <span className="pt11" style={{ ...mono, color: t.bu ? C.amber : C.dim }}>
+          {t.bu ? `Building ${LVL[t.l + 1]}… ${buildProgressPct(t)}% · ${hm(buildSecsLeft(t))} left` : `${LVL[t.l]} · Lv ${t.l}/${MAX_LVL}${t.p ? ` · listed ₲${fmt(t.p)}` : ""}`}
+        </span>
+        <div className="flex gap-1.5">
+          {t.bu ? (
+            <Btn small onClick={() => rushBuild(t.qk)} disabled={g.bal < rushCostFor(t)}>Rush ₲{fmt(rushCostFor(t))}</Btn>
+          ) : landmarksByQk.current.has(t.qk) ? (
+            <span className="pt10 px-1" style={{ ...mono, color: C.dim }}>🏛️ landmark</span>
+          ) : t.l < MAX_LVL ? (
+            <Btn small onClick={() => upgrade(t.qk)} disabled={g.bal < upCost(t)}>₲{fmt(upCost(t))}</Btn>
+          ) : (
+            <Btn small onClick={() => redevelop(t.qk)}>Redevelop</Btn>
+          )}
+          {!t.bu && (t.p ? (
+            <Btn small tone="ghost" onClick={() => unlist(t.qk)}>Unlist</Btn>
+          ) : (
+            <Btn small tone="ghost" onClick={() => { setPriceDraft(String(Math.round((t.pd || CLS[t.cls].price) * 1.5))); setModal({ kind: "list", qk: t.qk }); }}>List</Btn>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
 
   // Reads whatever world coordinate is currently centered under the fixed
   // pin (the map pans underneath it, not the other way around — same
@@ -3893,7 +3950,7 @@ function Game({ G, onExit, startFresh }) {
                   </div>
                   {assetsUpgradable.length > 0 && (
                     <Btn small tone="ghost" full onClick={() => upgradeAll(assetsFiltered)} disabled={!!batchBusy}>
-                      {batchBusy ? `Upgrading… ${batchBusy.done}/${batchBusy.total}` : `Upgrade all — ${assetsUpgradable.length} eligible${assetClsFilter !== "all" || assetRarityFilter !== -1 || assetQuery.trim() ? " (filtered)" : ""}`}
+                      {batchBusy ? `Upgrading… ${batchBusy.done}/${batchBusy.total}` : `Upgrade all — ${assetsUpgradable.length} eligible${assetsFilterActive ? " (filtered)" : ""}`}
                     </Btn>
                   )}
                 </div>
@@ -3905,55 +3962,35 @@ function Game({ G, onExit, startFresh }) {
                   You own nothing. The planet awaits — zoom in anywhere and claim your first ~300 m of it.
                 </div>
               )}
-              {g.own.length > 0 && assetsFiltered.length === 0 && (
+              {g.own.length > 0 && assetsFiltered.length === 0 && (assetsFilterActive || assetsBuilding.length === 0) && (
                 <div className="rounded-xl p-6 text-center text-sm" style={{ background: C.panel, color: C.dim }}>
                   No tiles match those filters. <button className="font-bold underline" style={{ color: C.amber }}
                     onClick={() => { setAssetQuery(""); setAssetClsFilter("all"); setAssetRarityFilter(-1); }}>Clear filters</button>
                 </div>
               )}
-              {g.own.length > 0 && assetsFiltered.length > 0 && assetsFiltered.length !== g.own.length && (
-                <div className="pt10 mb-2" style={{ ...mono, color: C.dim }}>Showing {assetsFiltered.length} of {g.own.length}</div>
+              {g.own.length > 0 && assetsFilterActive && assetsFiltered.length > 0 && (
+                <div className="pt10 mb-2" style={{ ...mono, color: C.dim }}>Showing {assetsFiltered.length} of {g.own.length - assetsBuilding.length}</div>
               )}
-              {assetsFiltered.map((t) => (
-              <div key={t.qk} className="mb-2 rounded-xl p-3 transition-transform duration-150 hover:-translate-y-0.5" style={cardSty}>
-                <button className="flex w-full items-center justify-between text-left focus-visible:outline focus-visible:outline-2" style={{ outlineColor: C.amber }}
-                  onClick={() => { setTab("map"); setSel(t.qk); const [wx, wy] = centerOfQk(t.qk); const { w, h } = size.current; const s = N * 16; cam.current = { s, x: w / 2 - wx * s, y: h / 2 - wy * s, init: true }; ensureRegion(regionOf(t.qk), true); }}>
-                  <div className="flex min-w-0 items-center gap-2">
-                    <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: CLS[t.cls].color, boxShadow: `0 0 6px ${CLS[t.cls].color}99` }} />
-                    <span className="truncate text-sm font-bold" style={mono}>{coordLabel(t.qk)}</span>
-                    <Chip color={RAR[t.r].color}>{RAR[t.r].name}</Chip>
-                    {t.pr > 0 && <Chip color={C.amber}>★{t.pr}</Chip>}
+
+              {assetsBuilding.length > 0 && (
+                <>
+                  <div className="mb-2 flex items-center gap-2">
+                    <span className="pt10 trk font-bold uppercase" style={{ ...display, color: C.amber }}>🔨 Building · {assetsBuilding.length}</span>
+                    <div className="h-px flex-1" style={{ background: C.hair }} />
                   </div>
-                  <span className="text-xs" style={{ ...mono, color: C.amber }}>₲{fmt1(rentOf(t))}/s</span>
-                </button>
-                {t.bu && (
-                  <div className="mt-2 h-1 w-full overflow-hidden rounded-full" style={{ background: C.hair }}>
-                    <div className="h-full rounded-full" style={{ width: `${buildProgressPct(t)}%`, background: C.amber, transition: "width 1s linear" }} />
-                  </div>
-                )}
-                <div className="mt-2 flex items-center justify-between">
-                  <span className="pt11" style={{ ...mono, color: t.bu ? C.amber : C.dim }}>
-                    {t.bu ? `Building ${LVL[t.l + 1]}… ${buildProgressPct(t)}% · ${hm(buildSecsLeft(t))} left` : `${LVL[t.l]} · Lv ${t.l}/${MAX_LVL}${t.p ? ` · listed ₲${fmt(t.p)}` : ""}`}
-                  </span>
-                  <div className="flex gap-1.5">
-                    {t.bu ? (
-                      <Btn small onClick={() => rushBuild(t.qk)} disabled={g.bal < rushCostFor(t)}>Rush ₲{fmt(rushCostFor(t))}</Btn>
-                    ) : landmarksByQk.current.has(t.qk) ? (
-                      <span className="pt10 px-1" style={{ ...mono, color: C.dim }}>🏛️ landmark</span>
-                    ) : t.l < MAX_LVL ? (
-                      <Btn small onClick={() => upgrade(t.qk)} disabled={g.bal < upCost(t)}>₲{fmt(upCost(t))}</Btn>
-                    ) : (
-                      <Btn small onClick={() => redevelop(t.qk)}>Redevelop</Btn>
-                    )}
-                    {!t.bu && (t.p ? (
-                      <Btn small tone="ghost" onClick={() => unlist(t.qk)}>Unlist</Btn>
-                    ) : (
-                      <Btn small tone="ghost" onClick={() => { setPriceDraft(String(Math.round((t.pd || CLS[t.cls].price) * 1.5))); setModal({ kind: "list", qk: t.qk }); }}>List</Btn>
-                    ))}
-                  </div>
-                </div>
-              </div>
-              ))}
+                  {assetsBuilding.map(renderAssetRow)}
+                  {assetsFiltered.length > 0 && (
+                    <div className="mb-2 mt-1 flex items-center gap-2">
+                      <span className="pt10 trk font-bold uppercase" style={{ ...display, color: C.dim }}>Everything else</span>
+                      <div className="h-px flex-1" style={{ background: C.hair }} />
+                    </div>
+                  )}
+                </>
+              )}
+              {assetsFiltered.length === 0 && assetsBuilding.length > 0 && !assetsFilterActive && (
+                <div className="pt11 py-2 text-center" style={{ ...mono, color: C.dim }}>Everything you own is under construction — see above.</div>
+              )}
+              {assetsFiltered.map(renderAssetRow)}
             </div>
           </div>
         )}

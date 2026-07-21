@@ -396,7 +396,7 @@ end;
 $$;
 revoke all on function reset_daily_energy(uuid) from public;
 
--- ── reset_daily_attacks_sent: hard daily cap (3/day, flat, not tier-scaled)
+-- ── reset_daily_attacks_sent: hard daily cap (6/day, flat, not tier-scaled)
 --    on attack_tile's "attacks launched" gate. Same compute-on-read,
 --    hard-expire-not-banked pattern as reset_daily_energy above, called
 --    from accrue_rent the same way so the counter stays fresh on every
@@ -1425,7 +1425,8 @@ begin
     raise exception 'this tile has already been attacked twice today — try again tomorrow';
   end if;
 
-  if not v_dev_mode and (select attacks_sent_count from profiles where user_id = v_uid) >= 3 then
+  -- mirrors ATTACK_DAILY_CAP in PlotTwistWorld.jsx — keep both in sync
+  if not v_dev_mode and (select attacks_sent_count from profiles where user_id = v_uid) >= 6 then
     raise exception 'no attacks left today — resets tomorrow';
   end if;
 
