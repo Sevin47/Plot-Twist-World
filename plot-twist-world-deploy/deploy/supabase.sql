@@ -1944,6 +1944,222 @@ on conflict (qk) do update set landmark_id = excluded.landmark_id;
 update tiles set cls = 'landmark', rarity = 0
 where qk in (select qk from landmark_tiles) and (cls <> 'landmark' or rarity <> 0);
 
+-- ══════════════════════════════════════════════════════════════════
+-- Friends (social phase 1 — see phases 2/3 notes at the bottom)
+-- ══════════════════════════════════════════════════════════════════
+-- One row per player pair, canonical ordering (user_a < user_b as uuid)
+-- so "are we friends" is a single primary-key lookup with no OR. Unlike
+-- the public-read game tables above, this is PRIVATE user data: RLS
+-- restricts reads to the two people in the row, and a blocked row is
+-- invisible to the blocked party (never confirm a block to its target).
+-- All writes go through the RPCs below — no direct table writes at all.
+create table if not exists friendships (
+  user_a uuid not null references profiles(user_id) on delete cascade,
+  user_b uuid not null references profiles(user_id) on delete cascade,
+  requested_by uuid not null,
+  status text not null check (status in ('pending','accepted','blocked')),
+  blocked_by uuid,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  primary key (user_a, user_b),
+  check (user_a < user_b)
+);
+create index if not exists idx_friendships_b on friendships(user_b);
+
+alter table friendships enable row level security;
+drop policy if exists "read own friendships" on friendships;
+create policy "read own friendships" on friendships for select using (
+  auth.uid() in (user_a, user_b) and (status <> 'blocked' or blocked_by = auth.uid())
+);
+grant select on friendships to authenticated;
+
+-- ── send_friend_request: by username (the only public identity surface).
+--    Rate-limited server-side. If the target has blocked the sender, this
+--    silently reports success WITHOUT creating anything — erroring here
+--    would let anyone probe who has blocked them. ──
+create or replace function send_friend_request(p_username text)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_uid uuid := auth.uid();
+  v_target uuid;
+  v_a uuid; v_b uuid;
+  v_row friendships;
+begin
+  if v_uid is null then raise exception 'not authenticated'; end if;
+
+  select user_id into v_target from profiles where lower(username) = lower(trim(p_username));
+  if v_target is null then raise exception 'no player by that name'; end if;
+  if v_target = v_uid then raise exception 'that is you'; end if;
+
+  if (select count(*) from friendships
+      where requested_by = v_uid and status = 'pending'
+        and created_at > now() - interval '1 day') >= 20 then
+    raise exception 'too many pending requests today — try again tomorrow';
+  end if;
+
+  v_a := least(v_uid, v_target); v_b := greatest(v_uid, v_target);
+  select * into v_row from friendships where user_a = v_a and user_b = v_b;
+  if found then
+    if v_row.status = 'blocked' then return; end if; -- silent: never reveal a block
+    if v_row.status = 'accepted' then raise exception 'already friends'; end if;
+    -- pending: if THEY asked first, sending "a request back" just accepts
+    if v_row.requested_by <> v_uid then
+      update friendships set status = 'accepted', updated_at = now()
+        where user_a = v_a and user_b = v_b;
+      return;
+    end if;
+    raise exception 'request already sent';
+  end if;
+
+  insert into friendships (user_a, user_b, requested_by, status)
+  values (v_a, v_b, v_uid, 'pending');
+end;
+$$;
+revoke all on function send_friend_request(text) from public;
+grant execute on function send_friend_request(text) to authenticated;
+
+-- ── accept_friend_request: only the addressee (not the requester) ──
+create or replace function accept_friend_request(p_user uuid)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_uid uuid := auth.uid();
+  v_a uuid; v_b uuid;
+begin
+  if v_uid is null then raise exception 'not authenticated'; end if;
+  v_a := least(v_uid, p_user); v_b := greatest(v_uid, p_user);
+  update friendships set status = 'accepted', updated_at = now()
+    where user_a = v_a and user_b = v_b and status = 'pending' and requested_by <> v_uid;
+  if not found then raise exception 'no pending request from that player'; end if;
+end;
+$$;
+revoke all on function accept_friend_request(uuid) from public;
+grant execute on function accept_friend_request(uuid) to authenticated;
+
+-- ── remove_friend: one verb for decline (addressee), cancel (requester),
+--    and unfriend (either side of an accepted pair). Never touches a
+--    blocked row — that's unblock_player's job, and only for the blocker. ──
+create or replace function remove_friend(p_user uuid)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_uid uuid := auth.uid();
+  v_a uuid; v_b uuid;
+begin
+  if v_uid is null then raise exception 'not authenticated'; end if;
+  v_a := least(v_uid, p_user); v_b := greatest(v_uid, p_user);
+  delete from friendships
+    where user_a = v_a and user_b = v_b and status in ('pending','accepted');
+end;
+$$;
+revoke all on function remove_friend(uuid) from public;
+grant execute on function remove_friend(uuid) to authenticated;
+
+-- ── block_player: upserts the pair row to blocked, from any prior state
+--    (stranger, pending either direction, or accepted). Enforced server-
+--    side: send_friend_request checks it (silently), and phases 2/3
+--    (DMs/chat) must check it too. ──
+create or replace function block_player(p_user uuid)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_uid uuid := auth.uid();
+  v_a uuid; v_b uuid;
+begin
+  if v_uid is null then raise exception 'not authenticated'; end if;
+  if p_user = v_uid then raise exception 'that is you'; end if;
+  if not exists (select 1 from profiles where user_id = p_user) then
+    raise exception 'no such player';
+  end if;
+  v_a := least(v_uid, p_user); v_b := greatest(v_uid, p_user);
+  insert into friendships (user_a, user_b, requested_by, status, blocked_by)
+  values (v_a, v_b, v_uid, 'blocked', v_uid)
+  on conflict (user_a, user_b)
+  do update set status = 'blocked', blocked_by = excluded.blocked_by, updated_at = now();
+end;
+$$;
+revoke all on function block_player(uuid) from public;
+grant execute on function block_player(uuid) to authenticated;
+
+-- ── unblock_player: only the blocker can lift a block; the row is simply
+--    removed (relationship resets to strangers, not to friends) ──
+create or replace function unblock_player(p_user uuid)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_uid uuid := auth.uid();
+  v_a uuid; v_b uuid;
+begin
+  if v_uid is null then raise exception 'not authenticated'; end if;
+  v_a := least(v_uid, p_user); v_b := greatest(v_uid, p_user);
+  delete from friendships
+    where user_a = v_a and user_b = v_b and status = 'blocked' and blocked_by = v_uid;
+end;
+$$;
+revoke all on function unblock_player(uuid) from public;
+grant execute on function unblock_player(uuid) to authenticated;
+
+-- ── list_friendships: everything the client's social UI needs in one
+--    call — avoids PostgREST FK-qualification pain (friendships has TWO
+--    FKs into profiles, the same trap tiles fell into with flip_royalty_to,
+--    see that comment above). direction is only meaningful for pending
+--    rows; home_region powers "visit their turf". Blocked rows only ever
+--    surface to the blocker (matching the RLS policy). Every column
+--    reference is table-qualified — plpgsql resolves bare names against
+--    the RETURNS TABLE output columns first, the same "ambiguous qk"
+--    gotcha attack_tile hit. ──
+create or replace function list_friendships()
+returns table(other_user uuid, username text, status text, direction text, home_region text)
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_uid uuid := auth.uid();
+begin
+  if v_uid is null then raise exception 'not authenticated'; end if;
+  return query
+  select
+    (case when f.user_a = v_uid then f.user_b else f.user_a end),
+    p.username,
+    f.status,
+    (case when f.status <> 'pending' then null
+          when f.requested_by = v_uid then 'outgoing'
+          else 'incoming' end),
+    (select ur.region from unlocked_regions ur
+      where ur.owner = (case when f.user_a = v_uid then f.user_b else f.user_a end)
+        and ur.is_home
+      limit 1)
+  from friendships f
+  join profiles p on p.user_id = (case when f.user_a = v_uid then f.user_b else f.user_a end)
+  where (f.user_a = v_uid or f.user_b = v_uid)
+    and (f.status <> 'blocked' or f.blocked_by = v_uid);
+end;
+$$;
+revoke all on function list_friendships() from public;
+grant execute on function list_friendships() to authenticated;
+
+-- Social phases 2/3 (not yet built): DMs will be a `messages` table with
+-- sender/recipient RLS and a friendship+block check in its send RPC;
+-- region chat a `region_messages` table with lazy retention sweep. Both
+-- MUST consult friendships.status='blocked' before delivering anything.
+
 -- Force PostgREST to pick up schema changes from this script immediately.
 -- It normally reloads on its own shortly after DDL, but that can lag or
 -- occasionally not fire when running raw SQL through the dashboard editor

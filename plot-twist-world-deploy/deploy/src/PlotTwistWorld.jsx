@@ -41,6 +41,14 @@ const VERSION_CHECK_MS = 5 * 60 * 1000;
 // commit, not after the fact.
 const CHANGELOG = [
   {
+    id: "1.4.0",
+    date: "Jul 20, 2026",
+    notes: [
+      "Friends! Add other players by name from HQ — their territory shows teal on the map.",
+      "Visit a friend's home turf with one tap, and block anyone you'd rather not hear from.",
+    ],
+  },
+  {
     id: "1.3.1",
     date: "Jul 20, 2026",
     notes: [
@@ -220,6 +228,7 @@ const C = {
   ocean: "#0A2233", oceanDeep: "#081B2A", landFill: "#22384A",
   amber: "#FFC24B", text: "#E8EDF5", dim: "#8DA0B8",
   mine: "#4DA6FF", // border accent for your own tiles on the map — deliberately not reused anywhere else as a semantic color, so "blue border" only ever means "yours"
+  friend: "#45D6B2", // friends' territory — teal, deliberately distinct from both mine-blue and rival-red at a glance
 
   // ── premium-pass additions (purely additive — nothing above this line
   // changed, so every existing usage keeps rendering exactly as before) ──
@@ -337,6 +346,7 @@ const ACH = [
   { k: "redevelop1", name: "Redeveloper", desc: "Tear down and rebuild a maxed-out tile" },
   { k: "conqueror", name: "Conqueror", desc: "Win a PvP attack and capture a tile" },
   { k: "tutorial", name: "Oriented", desc: "Complete the tutorial" },
+  { k: "friend1", name: "Sociable", desc: "Make a friend" },
 ];
 
 /* ── math: mercator + quadkeys ──────────────────────────────── */
@@ -923,6 +933,13 @@ function Game({ G, onExit, startFresh }) {
   const [market, setMarket] = useState({ loading: false, rows: null });
   const [lb, setLb] = useState({ loading: false, rows: null });
   const [log, setLog] = useState({ loading: false, rows: null });
+  const [social, setSocial] = useState({ loading: false, rows: null, err: false });
+  const [friendDraft, setFriendDraft] = useState("");
+  // accepted-friend uids as a ref, not state — read inside the canvas draw
+  // loop every frame (friend-teal territory), same pattern as regions/
+  // unlockedRegions: renders don't depend on it, the draw loop just reads
+  // whatever's current.
+  const friendIds = useRef(new Set());
   const [assetQuery, setAssetQuery] = useState("");
   const [assetClsFilter, setAssetClsFilter] = useState("all");
   const [assetRarityFilter, setAssetRarityFilter] = useState(-1);
@@ -1791,6 +1808,71 @@ function Game({ G, onExit, startFresh }) {
   }, [g]);
   useEffect(() => { if (tab === "hq") { refreshLog(); g.hasUnseenLoss = false; } }, [tab, refreshLog, g]);
 
+  /* ── friends (social phase 1) — one RPC returns the whole graph slice:
+     accepted friends, pending requests both directions, and players
+     you've blocked. friendIds (accepted only) feeds the map's teal
+     territory tint; the rows feed HQ's Friends section. err flags the
+     "RPC missing" case so a client deployed ahead of the SQL migration
+     degrades to a visible hint instead of a silently-empty list. ── */
+  const refreshSocial = useCallback(async () => {
+    setSocial((s) => ({ ...s, loading: true }));
+    const { data, error } = await supabase.rpc("list_friendships");
+    if (error) { setSocial({ loading: false, rows: null, err: true }); return; }
+    const rows = data || [];
+    friendIds.current = new Set(rows.filter((r) => r.status === "accepted").map((r) => r.other_user));
+    if (friendIds.current.size > 0 && !g.ach.friend1) { g.ach.friend1 = 1; toast("Unlocked — Sociable"); dirty.current = true; }
+    setSocial({ loading: false, rows, err: false });
+  }, [g, toast]);
+  useEffect(() => { if (ready) refreshSocial(); }, [ready, refreshSocial]);
+  useEffect(() => { if (tab === "hq") refreshSocial(); }, [tab, refreshSocial]);
+
+  const sendFriendRequest = async () => {
+    const name = friendDraft.trim();
+    if (!name) return;
+    const { error } = await supabase.rpc("send_friend_request", { p_username: name });
+    if (error) { toast(error.message || "Couldn't send that request."); return; }
+    setFriendDraft("");
+    toast("Friend request sent");
+    refreshSocial();
+  };
+  const acceptFriend = async (uid) => {
+    const { error } = await supabase.rpc("accept_friend_request", { p_user: uid });
+    if (error) { toast(error.message || "Couldn't accept — try again."); return; }
+    toast("Friend added");
+    refreshSocial();
+  };
+  // decline (incoming), cancel (outgoing), and unfriend are all the same
+  // server verb — see remove_friend in supabase.sql
+  const removeFriend = async (uid) => {
+    const { error } = await supabase.rpc("remove_friend", { p_user: uid });
+    if (error) { toast(error.message || "Couldn't remove — try again."); return; }
+    refreshSocial();
+  };
+  const blockPlayer = async (uid) => {
+    const { error } = await supabase.rpc("block_player", { p_user: uid });
+    if (error) { toast(error.message || "Couldn't block — try again."); return; }
+    toast("Blocked — they can't send you requests anymore");
+    refreshSocial();
+  };
+  const unblockPlayer = async (uid) => {
+    const { error } = await supabase.rpc("unblock_player", { p_user: uid });
+    if (error) { toast(error.message || "Couldn't unblock — try again."); return; }
+    refreshSocial();
+  };
+  // center of a friend's REGION_LEN-char home-region quadkey → fly there.
+  // flyTo's third arg is TILE PIXEL SIZE, not a zoom level — 0.8px/tile
+  // puts a whole ~150km region on screen (512 tiles ≈ 410px wide), the
+  // right altitude to see their territory dots rather than one street.
+  const visitRegion = (regionQk) => {
+    if (!regionQk) return;
+    let tx = 0, ty = 0;
+    for (const ch of regionQk) { const d = +ch; tx = tx * 2 + (d & 1); ty = ty * 2 + (d >> 1); }
+    const rn = 1 << regionQk.length;
+    const wx = (tx + 0.5) / rn, wy = (ty + 0.5) / rn;
+    setTab("map");
+    flyTo(wyToLat(wy), wx * 360 - 180, 0.8);
+  };
+
   // ── landmarks: small, near-static reference data — fetched once at
   //    boot (see the boot effect below), not per-region. Populates both
   //    landmarksByQk (render-time O(1) lookup) and landmarksList (the
@@ -2493,9 +2575,11 @@ function Game({ G, onExit, startFresh }) {
           } else {
             // owned-by-someone-else marker — otherwise an enemy tile is
             // pixel-identical to unowned land of the same district until
-            // you click it. Reuses the existing danger red so "bordered in
-            // red" reads as "someone else's, contestable" at a glance.
-            ctx.strokeStyle = hexA("#F08A8A", 0.55);
+            // you click it. Danger red reads as "someone else's,
+            // contestable" at a glance; an accepted friend's territory
+            // gets teal instead (C.friend) so allies and rivals are
+            // distinguishable without clicking.
+            ctx.strokeStyle = friendIds.current.has(rec.o) ? hexA(C.friend, 0.7) : hexA("#F08A8A", 0.55);
             ctx.lineWidth = 1.5;
             ctx.strokeRect(px + 1.5, py + 1.5, tilePx - 3, tilePx - 3);
             ctx.lineWidth = 1;
@@ -2540,7 +2624,9 @@ function Game({ G, onExit, startFresh }) {
       // login by the effect above), not a fresh query per frame.
       // for..in, NOT Object.entries — see the matching comment on the fine
       // grid's owned-tile loop above; same per-frame allocation issue.
-      ctx.fillStyle = hexA("#F08A8A", 0.85);
+      // Friends' dots render teal (C.friend) instead of rival red, matching
+      // the fine grid's border scheme.
+      const rivalDot = hexA("#F08A8A", 0.85), friendDot = hexA(C.friend, 0.9);
       let j = 0;
       for (const region of unlockedRegions.current) {
         if (j > 1500) break;
@@ -2553,6 +2639,7 @@ function Game({ G, onExit, startFresh }) {
           const [wx, wy] = centerOfQk(qk);
           const px = ox + wx * s, py = oy + wy * s;
           if (px < -4 || py < -4 || px > w + 4 || py > h + 4) continue;
+          ctx.fillStyle = friendIds.current.has(rec.o) ? friendDot : rivalDot;
           ctx.beginPath(); ctx.arc(px, py, Math.max(1.4, tilePx * 1.6), 0, 7); ctx.fill();
         }
       }
@@ -3817,6 +3904,84 @@ function Game({ G, onExit, startFresh }) {
               ) : (
                 <div className="pt11 py-2" style={{ ...mono, color: C.dim }}>{g.name ? "No landlords on record yet." : "Set a name to appear here."}</div>
               )}
+            </div>
+
+            {/* friends — social phase 1. Teal dot ties list entries to the
+                same C.friend color their territory renders in on the map. */}
+            <div className="mb-3 rounded-xl p-3" style={cardSty}>
+              <div className="mb-2 flex items-center justify-between">
+                <Eyebrow>Friends{social.rows ? ` · ${social.rows.filter((r) => r.status === "accepted").length}` : ""}</Eyebrow>
+                <button onClick={refreshSocial} className="pt11 focus-visible:outline focus-visible:outline-2" style={{ ...mono, color: C.amber, outlineColor: C.amber }}>Refresh</button>
+              </div>
+              <div className="mb-1 flex gap-2">
+                <input value={friendDraft} onChange={(e) => setFriendDraft(e.target.value)} maxLength={16} placeholder="Add by landlord name…"
+                  onKeyDown={(e) => { if (e.key === "Enter") sendFriendRequest(); }}
+                  className="min-w-0 flex-1 rounded-xl px-3 py-2 text-sm focus-visible:outline focus-visible:outline-2"
+                  style={{ ...display, ...inputSty }} />
+                <Btn small onClick={sendFriendRequest} disabled={!friendDraft.trim()}>Add</Btn>
+              </div>
+              {social.err ? (
+                <div className="pt11 py-2" style={{ ...mono, color: "#F0784E" }}>Friends aren't available yet — the database is missing the latest supabase.sql migration.</div>
+              ) : !social.rows && social.loading ? (
+                <div className="pt11 py-2" style={{ ...mono, color: C.dim }}>Loading…</div>
+              ) : (() => {
+                const rows = social.rows || [];
+                const incoming = rows.filter((r) => r.status === "pending" && r.direction === "incoming");
+                const outgoing = rows.filter((r) => r.status === "pending" && r.direction === "outgoing");
+                const friends = rows.filter((r) => r.status === "accepted");
+                const blocked = rows.filter((r) => r.status === "blocked");
+                const rowSty = { borderTop: `1px solid ${C.hair}` };
+                const act = { ...mono, color: C.amber, outlineColor: C.amber };
+                const actDim = { ...mono, color: C.dim, outlineColor: C.amber };
+                return (
+                  <>
+                    {incoming.map((r) => (
+                      <div key={r.other_user} className="flex items-center justify-between gap-2 py-1.5" style={rowSty}>
+                        <span className="min-w-0 truncate text-sm" style={mono}>{r.username} <span className="pt10" style={{ color: C.dim }}>wants to connect</span></span>
+                        <span className="flex shrink-0 gap-2.5">
+                          <button className="pt11 font-bold focus-visible:outline focus-visible:outline-2" style={act} onClick={() => acceptFriend(r.other_user)}>Accept</button>
+                          <button className="pt11 focus-visible:outline focus-visible:outline-2" style={actDim} onClick={() => removeFriend(r.other_user)}>Decline</button>
+                          <button className="pt11 focus-visible:outline focus-visible:outline-2" style={actDim} onClick={() => blockPlayer(r.other_user)}>Block</button>
+                        </span>
+                      </div>
+                    ))}
+                    {friends.length === 0 && incoming.length === 0 ? (
+                      <div className="pt11 py-2" style={{ ...mono, color: C.dim }}>No friends yet — add someone by their landlord name, exactly as it appears on their deeds.</div>
+                    ) : friends.map((r) => (
+                      <div key={r.other_user} className="flex items-center justify-between gap-2 py-1.5" style={rowSty}>
+                        <span className="flex min-w-0 items-center gap-1.5 text-sm" style={mono}>
+                          <span className="h-2 w-2 shrink-0 rounded-full" style={{ background: C.friend, boxShadow: `0 0 6px ${C.friend}99` }} />
+                          <span className="truncate">{r.username}</span>
+                        </span>
+                        <span className="flex shrink-0 gap-2.5">
+                          {r.home_region && <button className="pt11 font-bold focus-visible:outline focus-visible:outline-2" style={act} onClick={() => visitRegion(r.home_region)}>Visit</button>}
+                          <button className="pt11 focus-visible:outline focus-visible:outline-2" style={actDim} onClick={() => removeFriend(r.other_user)}>Remove</button>
+                        </span>
+                      </div>
+                    ))}
+                    {outgoing.map((r) => (
+                      <div key={r.other_user} className="flex items-center justify-between gap-2 py-1.5" style={rowSty}>
+                        <span className="min-w-0 truncate text-sm" style={{ ...mono, color: C.dim }}>{r.username} <span className="pt10">· request pending</span></span>
+                        <button className="pt11 shrink-0 focus-visible:outline focus-visible:outline-2" style={actDim} onClick={() => removeFriend(r.other_user)}>Cancel</button>
+                      </div>
+                    ))}
+                    {blocked.length > 0 && (
+                      <>
+                        <div className="pt9 trk mt-2 uppercase font-semibold" style={{ ...display, color: C.dim }}>Blocked</div>
+                        {blocked.map((r) => (
+                          <div key={r.other_user} className="flex items-center justify-between gap-2 py-1.5" style={rowSty}>
+                            <span className="min-w-0 truncate text-sm" style={{ ...mono, color: C.dim }}>{r.username}</span>
+                            <button className="pt11 shrink-0 focus-visible:outline focus-visible:outline-2" style={actDim} onClick={() => unblockPlayer(r.other_user)}>Unblock</button>
+                          </div>
+                        ))}
+                      </>
+                    )}
+                    <div className="pt10 mt-2" style={{ ...display, color: C.dim }}>
+                      Friends' territory shows teal on the map. Blocking someone stops their requests for good.
+                    </div>
+                  </>
+                );
+              })()}
             </div>
 
             {/* zone: landmarks — only shows landmarks you actually own at
