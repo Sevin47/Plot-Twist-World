@@ -41,6 +41,14 @@ const VERSION_CHECK_MS = 5 * 60 * 1000;
 // commit, not after the fact.
 const CHANGELOG = [
   {
+    id: "1.6.0",
+    date: "Jul 20, 2026",
+    notes: [
+      "Local chat! Tap the speech bubble on the map to talk with everyone who shares the region you're looking at.",
+      "See something out of line? Tap any message to report or block its sender.",
+    ],
+  },
+  {
     id: "1.5.0",
     date: "Jul 20, 2026",
     notes: [
@@ -638,6 +646,12 @@ const IconLayers = (p) => (
     <path d="m3 12.5 9 4.5 9-4.5M3 16.5l9 4.5 9-4.5" />
   </Icon>
 );
+const IconChat = (p) => (
+  <Icon {...p}>
+    <path d="M4 5.5h16v10.5H9.5L5.5 20v-4H4Z" />
+    <path d="M8 9.5h8M8 12.5h5" />
+  </Icon>
+);
 
 function Btn({ children, onClick, disabled, tone = "amber", full, small }) {
   const tones = {
@@ -955,6 +969,13 @@ function Game({ G, onExit, startFresh }) {
   const [unread, setUnread] = useState({}); // sender uuid -> unread count
   const unreadPrevTotal = useRef(0);
   const chatListRef = useRef(null);
+  // region chat (social phase 3) — a drawer over the map, scoped to
+  // whichever unlocked region the camera is currently centered on
+  const [rchatOpen, setRchatOpen] = useState(false);
+  const [rchat, setRchat] = useState({ loading: false, rows: null, region: null, locked: false });
+  const [rchatDraft, setRchatDraft] = useState("");
+  const [rchatSel, setRchatSel] = useState(null); // message id with its Report/Block row expanded
+  const rchatListRef = useRef(null);
   const [assetQuery, setAssetQuery] = useState("");
   const [assetClsFilter, setAssetClsFilter] = useState("all");
   const [assetRarityFilter, setAssetRarityFilter] = useState(-1);
@@ -1950,6 +1971,66 @@ function Game({ G, onExit, startFresh }) {
     setChatDraft("");
     if (data) setChatMsgs((m) => ({ ...m, rows: [...(m.rows || []), data] }));
     if (!g.ach.dm1) { g.ach.dm1 = 1; toast("Unlocked — Pen pal"); dirty.current = true; }
+  };
+
+  /* ── region chat (social phase 3) — the drawer tracks whichever region
+     the camera is centered on, so panning across a boundary switches
+     rooms on the next poll. Reads/writes both go through RPCs that
+     enforce the territory gate and block filtering server-side; the
+     client just mirrors the gate for a friendlier locked-region hint. ── */
+  const centerRegionQk = () => {
+    const { s, x, y } = cam.current;
+    const { w, h } = size.current;
+    const wx = Math.min(1 - 1e-9, Math.max(0, (w / 2 - x) / s));
+    const wy = Math.min(1 - 1e-9, Math.max(0, (h / 2 - y) / s));
+    const rn = 1 << REGION_LEN;
+    const rx = Math.floor(wx * rn), ry = Math.floor(wy * rn);
+    let q = "";
+    for (let i = REGION_LEN; i > 0; i--) {
+      const m = 1 << (i - 1);
+      q += (rx & m ? 1 : 0) + (ry & m ? 2 : 0);
+    }
+    return q;
+  };
+
+  const refreshRegionChat = useCallback(async () => {
+    const region = centerRegionQk();
+    if (!unlockedRegions.current.has(region)) {
+      setRchat({ loading: false, rows: null, region, locked: true });
+      return;
+    }
+    const { data, error } = await supabase.rpc("list_region_messages", { p_region: region });
+    if (error) { setRchat({ loading: false, rows: [], region, locked: false }); return; }
+    // RPC returns newest-first; the drawer renders oldest-at-top
+    setRchat({ loading: false, rows: (data || []).reverse(), region, locked: false });
+  }, []);
+
+  useEffect(() => {
+    if (!ready || !rchatOpen || tab !== "map") return;
+    refreshRegionChat();
+    const iv = setInterval(refreshRegionChat, 5000);
+    return () => clearInterval(iv);
+  }, [ready, rchatOpen, tab, refreshRegionChat]);
+
+  useEffect(() => {
+    const el = rchatListRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [rchat]);
+
+  const sendRegionChat = async () => {
+    const body = rchatDraft.trim();
+    if (!body || !rchat.region) return;
+    const { data, error } = await supabase.rpc("send_region_message", { p_region: rchat.region, p_body: body });
+    if (error) { toast(error.message || "Couldn't send that."); return; }
+    setRchatDraft("");
+    if (data) setRchat((s) => ({ ...s, rows: [...(s.rows || []), { ...data, username: g.name }] }));
+  };
+
+  const reportPlayer = async (uid, context, body) => {
+    const { error } = await supabase.rpc("report_player", { p_user: uid, p_context: context, p_body: body });
+    if (error) { toast(error.message || "Couldn't report — try again."); return; }
+    toast("Reported — thanks for flagging it");
+    setRchatSel(null);
   };
 
   // ── landmarks: small, near-static reference data — fetched once at
@@ -3358,6 +3439,7 @@ function Game({ G, onExit, startFresh }) {
               [IconMinus, () => { zoomAt(size.current.w / 2, size.current.h / 2, cam.current.s * 0.62); prefetchVectorTiles(); }, "Zoom out"],
               [IconGlobe, fitWorld, "Fit whole world"],
               [IconPlane, () => setCities((c) => !c), "Search cities"],
+              [IconChat, () => setRchatOpen((v) => !v), "Local chat"],
               [IconBug, () => setDbg((v) => !v), "Debug overlay"],
             ].map(([IconC, fn, label], i) => (
               <button key={label} onClick={fn} title={label} aria-label={label}
@@ -3471,6 +3553,65 @@ function Game({ G, onExit, startFresh }) {
               </button>
             </div>
           ); })()}
+
+          {/* region chat drawer — yields to the tile sheet (both live at
+              the bottom edge); rchatOpen persists so closing the sheet
+              brings the chat back. Room = whatever unlocked region the
+              camera is centered on; panning across a boundary switches
+              rooms on the next poll. */}
+          {rchatOpen && !sel && (
+            <div className="absolute inset-x-0 bottom-0 z-10 flex flex-col rounded-t-2xl p-3"
+              style={{ background: `${C.panel}f5`, borderTop: `1px solid ${C.hairLit}`, boxShadow: C.shadowLg, maxHeight: "42%", ...blur(16) }}>
+              <div className="mb-1 flex items-center justify-between">
+                <Eyebrow>
+                  Local chat{rchat.region ? (() => {
+                    const [wx, wy] = centerOfQk(rchat.region);
+                    const { n } = nearestCity(wyToLat(wy), wx * 360 - 180);
+                    return ` · ${n || "unnamed territory"}`;
+                  })() : ""}
+                </Eyebrow>
+                <button onClick={() => setRchatOpen(false)} aria-label="Close chat"
+                  className="pt11 px-1 focus-visible:outline focus-visible:outline-2" style={{ ...mono, color: C.dim, outlineColor: C.amber }}>✕</button>
+              </div>
+              {rchat.locked ? (
+                <div className="pt11 py-2" style={{ ...mono, color: C.dim }}>This region isn't yours yet — unlock it to join its local chat.</div>
+              ) : (
+                <>
+                  <div ref={rchatListRef} className="flex min-h-16 flex-col gap-1 overflow-y-auto py-1">
+                    {rchat.rows === null ? (
+                      <div className="pt11 py-1" style={{ ...mono, color: C.dim }}>Loading…</div>
+                    ) : rchat.rows.length === 0 ? (
+                      <div className="pt11 py-1" style={{ ...mono, color: C.dim }}>Quiet out here — say something. Everyone who's unlocked this region can read it.</div>
+                    ) : rchat.rows.map((m) => (
+                      <div key={m.id}>
+                        <button onClick={() => { if (m.sender !== g.uid) setRchatSel(rchatSel === m.id ? null : m.id); }}
+                          className="w-full text-left text-sm leading-snug focus-visible:outline focus-visible:outline-2"
+                          style={{ overflowWrap: "anywhere", outlineColor: C.amber }}>
+                          <span className="font-bold" style={{ ...mono, color: m.sender === g.uid ? C.amber : friendIds.current.has(m.sender) ? C.friend : C.dim }}>{m.username}</span>
+                          <span style={{ color: C.text }}> {m.body}</span>
+                        </button>
+                        {rchatSel === m.id && (
+                          <div className="flex gap-3 pb-0.5 pl-2 pt-0.5">
+                            <button className="pt10 focus-visible:outline focus-visible:outline-2" style={{ ...mono, color: "#F08A8A", outlineColor: C.amber }}
+                              onClick={() => reportPlayer(m.sender, "region_chat", `${m.username}: ${m.body}`)}>Report</button>
+                            <button className="pt10 focus-visible:outline focus-visible:outline-2" style={{ ...mono, color: C.dim, outlineColor: C.amber }}
+                              onClick={() => { blockPlayer(m.sender); setRchatSel(null); }}>Block</button>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                  <div className="mt-1.5 flex gap-2">
+                    <input value={rchatDraft} onChange={(e) => setRchatDraft(e.target.value)} maxLength={300} placeholder="Say something to the neighbors…"
+                      onKeyDown={(e) => { if (e.key === "Enter") sendRegionChat(); }}
+                      className="min-w-0 flex-1 rounded-xl px-3 py-2 text-sm focus-visible:outline focus-visible:outline-2"
+                      style={{ ...display, ...inputSty }} />
+                    <Btn small onClick={sendRegionChat} disabled={!rchatDraft.trim()}>Send</Btn>
+                  </div>
+                </>
+              )}
+            </div>
+          )}
 
           {/* tile sheet */}
           {sel && (
