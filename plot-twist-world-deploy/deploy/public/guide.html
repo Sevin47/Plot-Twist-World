@@ -1,0 +1,903 @@
+<title>Plot Twist Wiki — the Player's Guide</title>
+<style>
+  :root {
+    --ink: #EEF1F6; --panel: #FFFFFF; --panel-hi: #F8FAFC; --hair: #D8DFE9; --hair-lit: #C4CEDC;
+    --text: #17233A; --dim: #5B6B85; --amber: #B4720E; --amber-deep: #8F5A0A;
+    --amber-glow: rgba(180,114,14,0.14); --amber-soft: #F3E2C4;
+    --shadow: 0 1px 2px rgba(23,35,58,0.06), 0 8px 24px rgba(23,35,58,0.05);
+    --infobox-head: #2B3A55; --wikitable-head: #E7ECF3;
+    --font-display: "Space Grotesk", "Avenir Next", "Century Gothic", ui-sans-serif, system-ui, sans-serif;
+    --font-body: "Space Grotesk", "Avenir Next", ui-sans-serif, system-ui, -apple-system, sans-serif;
+    --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --ink: #0A1622; --panel: #111C2B; --panel-hi: #16233A; --hair: #243146; --hair-lit: #33445E;
+      --text: #E8EDF5; --dim: #8DA0B8; --amber: #FFC24B; --amber-deep: #E29A2E;
+      --amber-glow: rgba(255,194,75,0.16); --amber-soft: #3A2E14;
+      --shadow: 0 1px 2px rgba(0,0,0,0.3), 0 8px 28px rgba(0,0,0,0.35);
+      --infobox-head: #1B2840; --wikitable-head: #182636;
+    }
+  }
+  :root[data-theme="dark"] {
+    --ink: #0A1622; --panel: #111C2B; --panel-hi: #16233A; --hair: #243146; --hair-lit: #33445E;
+    --text: #E8EDF5; --dim: #8DA0B8; --amber: #FFC24B; --amber-deep: #E29A2E;
+    --amber-glow: rgba(255,194,75,0.16); --amber-soft: #3A2E14;
+    --shadow: 0 1px 2px rgba(0,0,0,0.3), 0 8px 28px rgba(0,0,0,0.35);
+    --infobox-head: #1B2840; --wikitable-head: #182636;
+  }
+  :root[data-theme="light"] {
+    --ink: #EEF1F6; --panel: #FFFFFF; --panel-hi: #F8FAFC; --hair: #D8DFE9; --hair-lit: #C4CEDC;
+    --text: #17233A; --dim: #5B6B85; --amber: #B4720E; --amber-deep: #8F5A0A;
+    --amber-glow: rgba(180,114,14,0.14); --amber-soft: #F3E2C4;
+    --shadow: 0 1px 2px rgba(23,35,58,0.06), 0 8px 24px rgba(23,35,58,0.05);
+    --infobox-head: #2B3A55; --wikitable-head: #E7ECF3;
+  }
+
+  * { box-sizing: border-box; }
+  .ptw-wiki {
+    background: var(--ink); color: var(--text); font-family: var(--font-body);
+    line-height: 1.6; min-height: 100vh; -webkit-font-smoothing: antialiased;
+  }
+  .ptw-wiki a { color: var(--amber); text-decoration: none; }
+  .ptw-wiki a:hover { text-decoration: underline; }
+  .ptw-wiki *:focus-visible { outline: 2px solid var(--amber); outline-offset: 2px; }
+  .ptw-wiki h1, .ptw-wiki h2, .ptw-wiki h3, .ptw-wiki h4 { font-family: var(--font-display); text-wrap: balance; }
+  .ptw-wiki code, .ptw-wiki .num { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+
+  /* ── top bar (wiki wordmark + filter box) ── */
+  .topbar {
+    display: flex; align-items: center; gap: 14px; padding: 10px 20px;
+    background: var(--infobox-head); color: #fff; position: sticky; top: 0; z-index: 30;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.25);
+  }
+  .topbar .wordmark { font-family: var(--font-display); font-weight: 800; font-size: 15px; letter-spacing: -0.01em; white-space: nowrap; }
+  .topbar .wordmark span { color: var(--amber); }
+  .topbar .navfilter {
+    flex: 1; max-width: 320px; margin-left: auto; position: relative;
+  }
+  .topbar .navfilter input {
+    width: 100%; padding: 6px 12px 6px 30px; border-radius: 999px; border: 1px solid rgba(255,255,255,0.2);
+    background: rgba(255,255,255,0.1); color: #fff; font-size: 12.5px; font-family: var(--font-body);
+  }
+  .topbar .navfilter input::placeholder { color: rgba(255,255,255,0.55); }
+  .topbar .navfilter svg { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); opacity: 0.6; }
+  .topbar .verchip {
+    font-family: var(--font-mono); font-size: 10.5px; padding: 3px 9px; border-radius: 999px;
+    background: rgba(255,255,255,0.12); white-space: nowrap;
+  }
+
+  .eyebrow { font-size: 11px; text-transform: uppercase; letter-spacing: 0.16em; font-weight: 700; color: var(--amber); font-family: var(--font-mono); }
+
+  .shell { display: flex; max-width: 1280px; margin: 0 auto; }
+
+  /* ── sidebar ── */
+  .sidebar {
+    width: 240px; flex-shrink: 0; position: sticky; top: 46px; align-self: flex-start;
+    height: calc(100vh - 46px); overflow-y: auto; padding: 22px 16px 40px 22px; border-right: 1px solid var(--hair);
+  }
+  .navgroup { margin-bottom: 16px; }
+  .navgroup-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.14em; color: var(--dim); font-weight: 700; margin-bottom: 5px; padding-left: 10px; }
+  .navlink {
+    display: block; font-size: 12.8px; padding: 4px 10px; border-radius: 7px; color: var(--text);
+    border-left: 2px solid transparent; transition: background 0.12s, border-color 0.12s;
+  }
+  .navlink:hover { background: var(--panel-hi); text-decoration: none; border-left-color: var(--amber); }
+  .navlink.hidden { display: none; }
+
+  /* ── main content ── */
+  .content { flex: 1; min-width: 0; padding: 34px 40px 100px; max-width: 900px; }
+  .masthead { margin-bottom: 8px; }
+  .masthead h1 { font-size: 32px; font-weight: 800; margin: 4px 0 8px; letter-spacing: -0.015em; color: var(--text); }
+  .masthead .tagline { font-family: var(--font-mono); font-size: 11.5px; color: var(--amber); letter-spacing: 0.08em; text-transform: uppercase; margin-bottom: 8px; }
+  .masthead p { color: var(--dim); font-size: 14.5px; max-width: 62ch; }
+
+  /* ── infobox (top-right quick-facts box, OSRS-style) ── */
+  .infobox {
+    float: right; width: 250px; margin: 0 0 16px 20px; border: 1px solid var(--hair-lit); border-radius: 10px;
+    overflow: hidden; box-shadow: var(--shadow); background: var(--panel);
+  }
+  .infobox .infobox-head {
+    background: var(--infobox-head); color: #fff; padding: 10px 14px; font-family: var(--font-display);
+    font-weight: 800; font-size: 14px; text-align: center;
+  }
+  .infobox .infobox-sub { text-align: center; font-family: var(--font-mono); font-size: 10px; color: var(--dim); padding: 8px 10px 0; }
+  .infobox .infobox-icon { font-size: 40px; text-align: center; padding: 10px 0 4px; }
+  .infobox table { margin: 0; font-size: 12px; }
+  .infobox th, .infobox td { padding: 6px 12px; border-bottom: 1px solid var(--hair); white-space: normal; }
+  .infobox th { background: none; text-align: left; font-family: var(--font-body); font-weight: 700; color: var(--text); text-transform: none; letter-spacing: 0; width: 44%; }
+  .infobox td { text-align: right; color: var(--dim); font-family: var(--font-mono); }
+
+  /* ── TOC box ── */
+  .toc {
+    background: var(--panel); border: 1px solid var(--hair); border-radius: 10px; padding: 14px 18px;
+    margin: 18px 0 30px; box-shadow: var(--shadow); display: inline-block; max-width: 100%;
+  }
+  .toc .toc-title { font-weight: 800; font-size: 13.5px; margin-bottom: 8px; font-family: var(--font-display); }
+  .toc ol { counter-reset: toc; list-style: none; margin: 0; padding: 0; column-width: 220px; column-gap: 28px; }
+  .toc ol > li { counter-increment: toc; font-size: 12.5px; margin-bottom: 3px; break-inside: avoid; }
+  .toc ol > li::before { content: counter(toc) ". "; color: var(--dim); font-family: var(--font-mono); font-size: 11px; }
+  .toc ol ol { margin: 2px 0 4px 18px; column-width: auto; }
+  .toc ol ol > li::before { content: none; }
+  .toc ol ol > li { font-size: 12px; color: var(--dim); }
+  .toc ol ol > li::marker { content: "– "; }
+
+  section { margin-bottom: 46px; scroll-margin-top: 56px; clear: both; }
+  section > h2 { font-size: 20px; font-weight: 800; margin: 0 0 4px; padding-top: 14px; border-top: 1px solid var(--hair); }
+  section > .section-desc { color: var(--dim); font-size: 13.5px; margin-bottom: 16px; max-width: 64ch; }
+  h3 { font-size: 15px; font-weight: 800; margin: 22px 0 8px; }
+  h4 { font-size: 13px; font-weight: 800; margin: 16px 0 6px; color: var(--amber); text-transform: uppercase; letter-spacing: 0.04em; font-family: var(--font-mono); }
+  p { margin: 0 0 12px; font-size: 14px; max-width: 68ch; }
+  ul, ol { margin: 0 0 14px; padding-left: 20px; font-size: 14px; }
+  li { margin-bottom: 5px; }
+  strong { color: var(--text); font-weight: 700; }
+
+  .callout {
+    background: var(--panel); border: 1px solid var(--hair); border-left: 3px solid var(--amber);
+    border-radius: 10px; padding: 12px 16px; margin: 14px 0; font-size: 13px; box-shadow: var(--shadow);
+  }
+  .callout .callout-label { font-family: var(--font-mono); font-size: 10px; text-transform: uppercase; letter-spacing: 0.1em; color: var(--amber); font-weight: 700; display: block; margin-bottom: 4px; }
+
+  .trivia {
+    background: var(--amber-glow); border: 1px dashed var(--amber-deep); border-radius: 10px;
+    padding: 11px 15px; margin: 14px 0; font-size: 12.5px;
+  }
+  .trivia .trivia-label { font-family: var(--font-mono); font-size: 10px; text-transform: uppercase; letter-spacing: 0.1em; color: var(--amber-deep); font-weight: 700; display: block; margin-bottom: 4px; }
+
+  .removed {
+    background: var(--panel-hi); border: 1px dashed var(--dim); border-radius: 10px;
+    padding: 11px 15px; margin: 14px 0; font-size: 13px; color: var(--dim);
+  }
+  .removed .removed-label { font-family: var(--font-mono); font-size: 10px; text-transform: uppercase; letter-spacing: 0.1em; color: var(--dim); font-weight: 700; display: block; margin-bottom: 4px; }
+
+  table.wikitable { border-collapse: collapse; width: 100%; margin: 12px 0 18px; font-size: 13px; }
+  .table-wrap { overflow-x: auto; border-radius: 10px; border: 1px solid var(--hair); }
+  .wikitable th, .wikitable td { text-align: left; padding: 8px 13px; border-bottom: 1px solid var(--hair); white-space: nowrap; }
+  .wikitable th { font-family: var(--font-mono); font-size: 10px; text-transform: uppercase; letter-spacing: 0.07em; color: var(--dim); background: var(--wikitable-head); font-weight: 700; }
+  .wikitable tr:last-child td { border-bottom: none; }
+  .wikitable td.num, .wikitable th.num { font-family: var(--font-mono); font-variant-numeric: tabular-nums; text-align: right; }
+  .wikitable tbody tr:hover { background: var(--panel-hi); }
+  .wikitable tbody tr:nth-child(even) { background: color-mix(in srgb, var(--panel-hi) 45%, transparent); }
+
+  .swatch { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 7px; vertical-align: middle; box-shadow: 0 0 6px currentColor; }
+  .chip { display: inline-flex; align-items: center; font-family: var(--font-mono); font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; padding: 2px 8px; border-radius: 99px; }
+
+  .stepgrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px,1fr)); gap: 10px; margin: 16px 0; }
+  .step { background: var(--panel); border: 1px solid var(--hair); border-radius: 10px; padding: 12px 14px; box-shadow: var(--shadow); }
+  .step .step-n { font-family: var(--font-mono); color: var(--amber); font-size: 11px; font-weight: 700; }
+  .step .step-t { font-weight: 700; font-size: 13px; margin: 3px 0 4px; }
+  .step .step-d { font-size: 12px; color: var(--dim); }
+
+  .cardgrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px,1fr)); gap: 10px; margin: 14px 0; }
+  .card { background: var(--panel); border: 1px solid var(--hair); border-radius: 10px; padding: 13px 15px; box-shadow: var(--shadow); }
+  .card .card-t { font-weight: 700; font-size: 13px; margin-bottom: 3px; }
+  .card .card-d { font-size: 12px; color: var(--dim); }
+
+  .stratlist { display: flex; flex-direction: column; gap: 10px; margin: 16px 0; }
+  .strat { background: var(--panel); border: 1px solid var(--hair); border-left: 3px solid var(--amber); border-radius: 10px; padding: 13px 16px; box-shadow: var(--shadow); }
+  .strat .strat-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 4px; }
+  .strat .strat-t { font-weight: 800; font-size: 14px; }
+  .strat .strat-tag { font-family: var(--font-mono); font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.06em; padding: 2px 8px; border-radius: 999px; background: var(--amber-glow); color: var(--amber-deep); font-weight: 700; }
+  .strat .strat-d { font-size: 13px; color: var(--dim); }
+
+  .formula {
+    background: var(--panel-hi); border: 1px solid var(--hair); border-radius: 8px; padding: 11px 15px;
+    font-family: var(--font-mono); font-size: 12.5px; overflow-x: auto; margin: 10px 0; line-height: 1.7;
+  }
+  .formula .fname { display: block; color: var(--amber); font-weight: 700; margin-bottom: 3px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; }
+
+  .achlist { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px,1fr)); gap: 8px; margin: 14px 0; }
+  .ach { display: flex; gap: 10px; align-items: flex-start; background: var(--panel); border: 1px solid var(--hair); border-radius: 10px; padding: 10px 12px; }
+  .ach .ach-icon { width: 26px; height: 26px; border-radius: 7px; background: var(--amber-glow); color: var(--amber); display: flex; align-items: center; justify-content: center; font-size: 12px; flex-shrink: 0; font-weight: 700; font-family: var(--font-mono); }
+  .ach .ach-t { font-weight: 700; font-size: 13px; }
+  .ach .ach-d { font-size: 11.5px; color: var(--dim); }
+
+  .backtotop { font-family: var(--font-mono); font-size: 11px; color: var(--dim); }
+
+  .catfooter {
+    margin-top: 60px; padding-top: 14px; border-top: 1px solid var(--hair); font-size: 11.5px; color: var(--dim);
+  }
+  .catfooter b { color: var(--text); font-family: var(--font-mono); text-transform: uppercase; font-size: 10px; letter-spacing: 0.08em; }
+  .catfooter .cattag { display: inline-block; background: var(--panel-hi); border: 1px solid var(--hair); border-radius: 5px; padding: 2px 9px; margin: 3px 4px 0 0; }
+
+  .verhist { border-left: 2px solid var(--hair); margin-left: 4px; padding-left: 16px; }
+  .verhist .verentry { position: relative; margin-bottom: 14px; }
+  .verhist .verentry::before { content: ""; position: absolute; left: -20px; top: 5px; width: 8px; height: 8px; border-radius: 50%; background: var(--amber); }
+  .verhist .vertag { font-family: var(--font-mono); font-weight: 700; color: var(--amber); font-size: 12.5px; }
+  .verhist .verdate { font-family: var(--font-mono); color: var(--dim); font-size: 11px; margin-left: 8px; }
+  .verhist ul { margin: 4px 0 0; }
+  .verhist li { font-size: 12.5px; }
+
+  @media (max-width: 880px) {
+    .shell { flex-direction: column; }
+    .sidebar { position: static; height: auto; width: auto; border-right: none; border-bottom: 1px solid var(--hair); padding: 18px 22px; }
+    .content { padding: 28px 20px 80px; }
+    .infobox { float: none; width: 100%; margin: 0 0 20px; }
+    .topbar .navfilter { max-width: 160px; }
+  }
+</style>
+
+<div class="ptw-wiki">
+  <div class="topbar">
+    <div class="wordmark">Plot Twist <span>Wiki</span></div>
+    <div class="navfilter">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.4"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+      <input id="navFilter" type="text" placeholder="Filter pages…" oninput="ptwFilterNav(this.value)" />
+    </div>
+    <div class="verchip">v1.7.0</div>
+  </div>
+
+  <div class="shell">
+    <nav class="sidebar" id="ptwSidebar">
+      <div class="navgroup">
+        <div class="navgroup-label">General</div>
+        <a class="navlink" href="#overview">Overview</a>
+        <a class="navlink" href="#getting-started">Getting started</a>
+        <a class="navlink" href="#interface">The interface</a>
+        <a class="navlink" href="#reading-the-map">Reading the map</a>
+      </div>
+      <div class="navgroup">
+        <div class="navgroup-label">Property</div>
+        <a class="navlink" href="#classification">Property classification</a>
+        <a class="navlink" href="#rarity">Rarity</a>
+        <a class="navlink" href="#buying-land">Buying land &amp; energy</a>
+        <a class="navlink" href="#buildings">Buildings &amp; construction</a>
+        <a class="navlink" href="#redevelop">Redeveloping (prestige)</a>
+        <a class="navlink" href="#letting-go">Abandoning a tile</a>
+      </div>
+      <div class="navgroup">
+        <div class="navgroup-label">Territory</div>
+        <a class="navlink" href="#regions">Regions &amp; unlocking</a>
+        <a class="navlink" href="#landmarks">Landmarks</a>
+      </div>
+      <div class="navgroup">
+        <div class="navgroup-label">Combat</div>
+        <a class="navlink" href="#pvp">PvP &amp; attacks</a>
+      </div>
+      <div class="navgroup">
+        <div class="navgroup-label">Economy &amp; People</div>
+        <a class="navlink" href="#market">The open market</a>
+        <a class="navlink" href="#status">Status ranks</a>
+        <a class="navlink" href="#leaderboard">Leaderboard</a>
+        <a class="navlink" href="#world-claimed">World land claimed</a>
+      </div>
+      <div class="navgroup">
+        <div class="navgroup-label">Social</div>
+        <a class="navlink" href="#friends">Friends</a>
+        <a class="navlink" href="#dms">Direct messages</a>
+        <a class="navlink" href="#region-chat">Region chat</a>
+        <a class="navlink" href="#safety">Reporting &amp; blocking</a>
+      </div>
+      <div class="navgroup">
+        <div class="navgroup-label">Playing Over Time</div>
+        <a class="navlink" href="#tutorial">Tutorial</a>
+        <a class="navlink" href="#streak">Daily streak</a>
+        <a class="navlink" href="#offline">Offline earnings</a>
+        <a class="navlink" href="#boosts">Boosts</a>
+        <a class="navlink" href="#achievements">Achievements</a>
+        <a class="navlink" href="#inactivity">Inactivity &amp; repossession</a>
+      </div>
+      <div class="navgroup">
+        <div class="navgroup-label">Strategy</div>
+        <a class="navlink" href="#strategies">Starter strategies</a>
+      </div>
+      <div class="navgroup">
+        <div class="navgroup-label">Reference</div>
+        <a class="navlink" href="#formulas">Formula reference</a>
+        <a class="navlink" href="#cheatsheet">Cheat sheet</a>
+        <a class="navlink" href="#version-history">Version history</a>
+      </div>
+    </nav>
+
+    <main class="content">
+      <header class="masthead">
+        <div class="tagline">One shared Earth · real deeds · zero real money</div>
+        <h1>The Plot Twist Wiki</h1>
+      </header>
+
+      <section id="overview">
+        <div class="infobox">
+          <div class="infobox-head">Plot Twist: World Deed</div>
+          <div class="infobox-icon">🌍</div>
+          <div class="infobox-sub">QUICK FACTS</div>
+          <table>
+            <tr><th>Genre</th><td>Idle · land ownership</td></tr>
+            <tr><th>Platform</th><td>Web browser</td></tr>
+            <tr><th>Currency</th><td>₲ Geobux (fictional)</td></tr>
+            <tr><th>Real money</th><td>None, ever</td></tr>
+            <tr><th>Tile size</th><td>~306 m</td></tr>
+            <tr><th>Classifications</th><td>6 + Landmark</td></tr>
+            <tr><th>Rarity tiers</th><td>4</td></tr>
+            <tr><th>Max building level</th><td>4 (Tower)</td></tr>
+            <tr><th>Landmarks</th><td>24 (216 tiles)</td></tr>
+            <tr><th>Achievements</th><td>13</td></tr>
+            <tr><th>Current version</th><td>1.7.0</td></tr>
+          </table>
+        </div>
+        <h2>What is this?</h2>
+        <p>Think Monopoly played on the actual Earth, with the rules of an idle game. You buy real-world parcels, they earn rent every second whether you're online or not, you build them up from an empty lot to a tower, and you trade — or fight — with real other players in one persistent, shared world. There's no fictional continent here: if you zoom in on your own street, it's really there, classified by whatever it actually is — downtown, waterfront, suburb, open water.</p>
+        <div class="callout">
+          <span class="callout-label">No real money, ever</span>
+          This was a design rule from day one. ₲ can't be bought, sold, or cashed out. The "boost ads" you watch in-game are parody brands with joke names — nothing behind them is a real advertiser or a real transaction.
+        </div>
+        <div class="trivia">
+          <span class="trivia-label">Did you know</span>
+          The map isn't a stylized approximation — every tile's classification is derived live from real OpenStreetMap water, land-use, and building-footprint data for that exact spot on Earth. Nobody hand-placed a single one; the game just reads what's really there.
+        </div>
+      </section>
+
+      <div class="toc">
+        <div class="toc-title">Contents</div>
+        <ol>
+          <li><a href="#getting-started">Getting started</a></li>
+          <li><a href="#interface">The interface</a></li>
+          <li><a href="#reading-the-map">Reading the map</a></li>
+          <li><a href="#classification">Property classification</a></li>
+          <li><a href="#rarity">Rarity</a></li>
+          <li><a href="#buying-land">Buying land &amp; energy</a></li>
+          <li><a href="#buildings">Buildings &amp; construction</a></li>
+          <li><a href="#redevelop">Redeveloping (prestige)</a></li>
+          <li><a href="#letting-go">Abandoning a tile</a></li>
+          <li><a href="#regions">Regions &amp; unlocking</a></li>
+          <li><a href="#landmarks">Landmarks</a></li>
+          <li><a href="#pvp">PvP &amp; attacks</a></li>
+          <li><a href="#market">The open market</a></li>
+          <li><a href="#status">Status ranks</a></li>
+          <li><a href="#leaderboard">Leaderboard</a></li>
+          <li><a href="#world-claimed">World land claimed</a></li>
+          <li><a href="#friends">Friends</a></li>
+          <li><a href="#dms">Direct messages</a></li>
+          <li><a href="#region-chat">Region chat</a></li>
+          <li><a href="#safety">Reporting &amp; blocking</a></li>
+          <li><a href="#tutorial">Tutorial</a></li>
+          <li><a href="#streak">Daily streak</a></li>
+          <li><a href="#offline">Offline earnings</a></li>
+          <li><a href="#boosts">Boosts</a></li>
+          <li><a href="#achievements">Achievements</a></li>
+          <li><a href="#inactivity">Inactivity &amp; repossession</a></li>
+          <li><a href="#strategies">Starter strategies</a></li>
+          <li><a href="#formulas">Formula reference</a></li>
+          <li><a href="#cheatsheet">Cheat sheet</a></li>
+          <li><a href="#version-history">Version history</a></li>
+        </ol>
+      </div>
+
+      <section id="getting-started">
+        <h2>Getting started</h2>
+        <p class="section-desc">From opening the app for the first time to owning your first tile.</p>
+        <div class="stepgrid">
+          <div class="step"><div class="step-n">01</div><div class="step-t">Sign in with Google</div><div class="step-d">One account per player, tied to your Google sign-in. There's no separate "new game" — this is it, permanently.</div></div>
+          <div class="step"><div class="step-n">02</div><div class="step-t">Pick a username</div><div class="step-d">2–16 letters, numbers, or underscores. Permanent for the account, and what other players see on your deeds, listings, chat, and the leaderboard.</div></div>
+          <div class="step"><div class="step-n">03</div><div class="step-t">Choose your starting area</div><div class="step-d">A basemap-only screen — pan and zoom the real map to find your home turf, then drop the pin.</div></div>
+          <div class="step"><div class="step-n">04</div><div class="step-t">Claim it &amp; learn the ropes</div><div class="step-d">Confirming rolls your first tile's rarity, claims it free, and sets that region as your permanent home. A short interactive tutorial follows, covering the basics live on your own deed.</div></div>
+        </div>
+        <p>From there you're in the full game: the map, the four tabs (Map / Assets / Market / HQ), and the whole economy described below.</p>
+      </section>
+
+      <section id="interface">
+        <h2>The interface</h2>
+        <p class="section-desc">Four tabs along the bottom, plus a persistent header.</p>
+        <div class="cardgrid">
+          <div class="card"><div class="card-t">Map</div><div class="card-d">The world itself — pan, zoom, buy, build, attack, and chat with whoever shares your region.</div></div>
+          <div class="card"><div class="card-t">Assets</div><div class="card-d">Every tile you own, filterable and sortable. Tiles under construction get their own dedicated section up top, sorted soonest-to-finish, separate from the rest of your portfolio.</div></div>
+          <div class="card"><div class="card-t">Market</div><div class="card-d">Player listings inside territory you've unlocked. See <a href="#market">The open market</a>.</div></div>
+          <div class="card"><div class="card-t">HQ</div><div class="card-d">Your account: territory, the world register (leaderboard), Friends, activity log, and account settings.</div></div>
+        </div>
+        <p>The header shows your balance, income rate, status rank, energy remaining, attacks remaining, and how many tiles are currently under construction — the whole account state at a glance, on every tab.</p>
+      </section>
+
+      <section id="reading-the-map">
+        <h2>Reading the map</h2>
+        <p class="section-desc">The map shows different levels of detail depending on zoom — and how much of the world you've actually unlocked.</p>
+        <div class="cardgrid">
+          <div class="card"><div class="card-t">Wide zoom — basemap</div><div class="card-d">Real map imagery with place labels. Free to explore anywhere on Earth, no restrictions.</div></div>
+          <div class="card"><div class="card-t">Mid zoom — classification preview</div><div class="card-d">A coarse color wash shows classification tiers across whatever region you're looking at. Still just browsing.</div></div>
+          <div class="card"><div class="card-t">Deep zoom — the grid</div><div class="card-d">Individual ~306 m tiles become visible and tappable. This is where you buy, build, attack, and trade.</div></div>
+        </div>
+        <h3>Territory colors</h3>
+        <p>Both at deep zoom and zoomed all the way out to world view, ownership is color-coded consistently:</p>
+        <div class="table-wrap">
+          <table class="wikitable">
+            <thead><tr><th>Color</th><th>Meaning</th></tr></thead>
+            <tbody>
+              <tr><td><span class="swatch" style="background:#4DA6FF;color:#4DA6FF"></span>Blue</td><td>Tiles you own</td></tr>
+              <tr><td><span class="swatch" style="background:#45D6B2;color:#45D6B2"></span>Teal</td><td>Tiles owned by a friend</td></tr>
+              <tr><td><span class="swatch" style="background:#F08A8A;color:#F08A8A"></span>Red</td><td>Tiles owned by anyone else</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <h3>Territory and fog</h3>
+        <p>Once you own at least one tile, the interactive grid only lights up inside <strong>regions you've unlocked</strong> (roughly 150 km chunks of the world). Everywhere else appears fogged on the grid — you can still browse it at wide zoom, but you can't buy, attack, chat, or trade there until you unlock that region. Your home region is always free. See <a href="#regions">Regions &amp; unlocking</a> for cost.</p>
+      </section>
+
+      <section id="classification">
+        <h2>Property classification</h2>
+        <p class="section-desc">Every tile's classification — the kind of land it sits on — is derived from real map data. Nobody chose it; it's just what's really there.</p>
+        <div class="table-wrap">
+          <table class="wikitable">
+            <thead><tr><th>Classification</th><th class="num">Price</th><th class="num">Base rent (rps)</th><th class="num">Rent per ₲1,000</th></tr></thead>
+            <tbody>
+              <tr><td><span class="swatch" style="background:#F0784E;color:#F0784E"></span>Downtown</td><td class="num">₲800</td><td class="num">0.225</td><td class="num">0.2813</td></tr>
+              <tr><td><span class="swatch" style="background:#3FB8AF;color:#3FB8AF"></span>Waterfront</td><td class="num">₲500</td><td class="num">0.135</td><td class="num">0.2700</td></tr>
+              <tr><td><span class="swatch" style="background:#9B7BF5;color:#9B7BF5"></span>Urban</td><td class="num">₲400</td><td class="num">0.105</td><td class="num">0.2625</td></tr>
+              <tr><td><span class="swatch" style="background:#4FA3C7;color:#4FA3C7"></span>Coast</td><td class="num">₲200</td><td class="num">0.0525</td><td class="num">0.2625</td></tr>
+              <tr><td><span class="swatch" style="background:#6E8F7C;color:#6E8F7C"></span>Suburbs</td><td class="num">₲150</td><td class="num">0.0375</td><td class="num">0.2500</td></tr>
+              <tr><td><span class="swatch" style="background:#B08D57;color:#B08D57"></span>Rural</td><td class="num">₲50</td><td class="num">0.0135</td><td class="num">0.2700</td></tr>
+              <tr><td><span class="swatch" style="background:#4A7FA5;color:#4A7FA5"></span>Open water</td><td class="num">—</td><td class="num">—</td><td class="num">not purchasable</td></tr>
+              <tr><td><span class="swatch" style="background:#5A6472;color:#5A6472"></span>Surveying…</td><td class="num">—</td><td class="num">—</td><td class="num">not purchasable (yet)</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p>Prices and rent are all quoted at Vacant, Common rarity. See <a href="#formulas">Formula reference</a> for how level, rarity, and prestige stack on top.</p>
+        <h3>How a spot gets classified</h3>
+        <ul>
+          <li>If it's within roughly 150 m of open water, it becomes <strong>Waterfront</strong> (dense) or <strong>Coast</strong> (sparse).</li>
+          <li>Otherwise, real building-footprint density decides the tier: <strong>Downtown</strong> at ≥62% built-up coverage, <strong>Urban</strong> at ≥40%, <strong>Suburbs</strong> at ≥18%, <strong>Rural</strong> below that.</li>
+          <li>Explicit OpenStreetMap land-use tags (commercial, residential, industrial, park, farmland, etc.) override the density guess where they exist.</li>
+        </ul>
+        <div class="callout">
+          <span class="callout-label">Surveying…</span>
+          If a spot hasn't finished loading real map data yet, it shows as "Surveying…" — not purchasable. This is honest uncertainty, not a guess. Give it a moment and it resolves to a real classification.
+        </div>
+        <div class="trivia">
+          <span class="trivia-label">Did you know</span>
+          Price and rent scale together so tightly that classification barely affects your rent-per-₲-invested — Downtown edges out the rest at 0.281 rps per ₲1,000, Suburbs trails at 0.25. The real choice is how much capital you want tied up in one tile, not which classification is "best." See <a href="#strategies">Starter strategies</a>.
+        </div>
+      </section>
+
+      <section id="rarity">
+        <h2>Rarity</h2>
+        <p class="section-desc">Every tile is rolled a rarity the moment you buy it — pure luck, not something you can choose or influence.</p>
+        <div class="table-wrap">
+          <table class="wikitable">
+            <thead><tr><th>Rarity</th><th class="num">Odds</th><th class="num">Rent multiplier</th></tr></thead>
+            <tbody>
+              <tr><td><span class="swatch" style="background:#93A3B8;color:#93A3B8"></span>Common</td><td class="num">70%</td><td class="num">×1</td></tr>
+              <tr><td><span class="swatch" style="background:#5FD68B;color:#5FD68B"></span>Uncommon</td><td class="num">20%</td><td class="num">×1.5</td></tr>
+              <tr><td><span class="swatch" style="background:#5FA8F5;color:#5FA8F5"></span>Rare</td><td class="num">8%</td><td class="num">×3</td></tr>
+              <tr><td><span class="swatch" style="background:#FFC24B;color:#FFC24B"></span>Legendary</td><td class="num">2%</td><td class="num">×8</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p>Rarity applies for as long as you own that specific tile and multiplies its rent directly. Selling a tile or losing it in combat loses the rarity roll with it — whoever ends up owning it next (via purchase, listing, or capture) keeps whatever rarity is already on the tile; only a brand-new claim on previously-unowned land rolls fresh. Landmark tiles never roll rarity — they're always Common, on purpose, so the incentive to hold one is the perk and the trophy, not a lucky multiplier.</p>
+      </section>
+
+      <section id="buying-land">
+        <h2>Buying land &amp; energy</h2>
+        <p class="section-desc">Claiming a brand-new, never-owned tile is gated by <strong>energy</strong> — a daily allowance, not a wallet check.</p>
+        <p>Energy is the real limiter on how fast the map gets claimed — not how much ₲ you have. Every claim of a new, unowned tile costs 1 energy. Trading with other players and upgrading tiles you already own never cost energy.</p>
+        <div class="callout">
+          <span class="callout-label">Hard daily cap — no banking</span>
+          Energy resets once per day at midnight UTC, to whatever your current <a href="#status">status rank</a> grants. Unused energy does <strong>not</strong> carry over — a day you don't spend it is a day it's gone, not saved up.
+        </div>
+        <p>Claiming your very first tile ever (via the starting-area picker) is always free and unrestricted — no region-unlock needed, no energy spent. Every claim after that follows the normal rules.</p>
+      </section>
+
+      <section id="buildings">
+        <h2>Buildings &amp; construction</h2>
+        <p class="section-desc">A tile starts as a vacant lot and can be built up through four levels — and building takes real, elapsed time.</p>
+        <div class="stepgrid">
+          <div class="step"><div class="step-n">LV 0</div><div class="step-t">Vacant tile</div><div class="step-d">Base rent, no building.</div></div>
+          <div class="step"><div class="step-n">LV 1</div><div class="step-t">Cottage</div><div class="step-d">5 minutes to build.</div></div>
+          <div class="step"><div class="step-n">LV 2</div><div class="step-t">Duplex</div><div class="step-d">30 minutes to build.</div></div>
+          <div class="step"><div class="step-n">LV 3</div><div class="step-t">Apartments</div><div class="step-d">2 hours to build.</div></div>
+          <div class="step"><div class="step-n">LV 4</div><div class="step-t">Tower</div><div class="step-d">8 hours to build. Maxed — the only level that can be redeveloped.</div></div>
+        </div>
+        <p>Rent scales directly with level: a Tower earns 5× the tile's base rent (level counts as <code>1 + level</code>). Starting an upgrade begins a real countdown — the tile keeps earning its current rent while it builds, then jumps to the new rent the moment it finishes.</p>
+        <h3>Builder slots</h3>
+        <p>How many tiles can be under construction <em>at once</em> is capped by your <a href="#status">status rank</a> — 2 slots at Squatter, rising to 4 at Baron and Magnate. Starting an upgrade on a 5th tile while all your slots are full simply isn't possible until one finishes.</p>
+        <h3>Rushing a build</h3>
+        <p>Impatient? Rushing pays the <strong>remaining fraction</strong> of the full upgrade cost to finish instantly — rush a build that's 90% done and you're only paying for the last 10%, not the whole thing again. See <a href="#formulas">Formula reference</a> for the exact math.</p>
+        <h3>Upgrade All</h3>
+        <p>From the Assets tab, Upgrade All starts a build on every eligible, affordable tile (cheapest first) until your builder slots or balance run out. Anything it starts appears in the dedicated Building section at the top of Assets, so you can see exactly what it did.</p>
+      </section>
+
+      <section id="redevelop">
+        <h2>Redeveloping (prestige)</h2>
+        <p class="section-desc">Once a tile is maxed out at Tower, tear it down for a permanent bonus instead of just sitting on it.</p>
+        <p><strong>Redevelop</strong> resets a Tower back to a Vacant lot — instantly, for free — and grants a permanent <strong>+25% rent bonus</strong> on that tile, stacking with every previous cycle. There's no hard limit on how many times you can redevelop the same tile.</p>
+        <div class="callout">
+          <span class="callout-label">Redevelop is free — rebuilding isn't</span>
+          The reset itself costs nothing. What gets more expensive is climbing back to Tower afterward: each redevelop cycle raises both the ₲ cost and the time to rebuild through all four levels again. That penalty caps out after 10 cycles — the rent bonus keeps growing forever, but cost and build time stop climbing.
+        </div>
+        <p>Redevelop keeps the tile — you still own it, you're just resetting the building to earn a permanent multiplier. There is no way to cash a tile out for a lump sum in the current version; see the note in <a href="#market">The open market</a>.</p>
+      </section>
+
+      <section id="letting-go">
+        <h2>Abandoning a tile</h2>
+        <p class="section-desc">Give up any tile you own instantly for a partial refund.</p>
+        <p>Abandoning refunds <strong>50% of everything you've paid</strong> into that tile — purchase price plus every upgrade — and releases it back to the world, unowned. Quick, simple, always available. Useful for cutting losses on a tile that isn't earning its keep, or one that's become a PvP liability.</p>
+      </section>
+
+      <section id="regions">
+        <h2>Regions &amp; unlocking</h2>
+        <p class="section-desc">A "region" is a roughly 150 km chunk of the world — the unit territory is unlocked in.</p>
+        <div class="table-wrap">
+          <table class="wikitable">
+            <thead><tr><th>Unlock order</th><th class="num">Cost</th></tr></thead>
+            <tbody>
+              <tr><td>Home region</td><td class="num">Free</td></tr>
+              <tr><td>1st paid region</td><td class="num">₲1,000</td></tr>
+              <tr><td>2nd</td><td class="num">₲2,000</td></tr>
+              <tr><td>3rd</td><td class="num">₲4,000</td></tr>
+              <tr><td>4th</td><td class="num">₲8,000</td></tr>
+              <tr><td>each after</td><td class="num">doubles again</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p>This is the real strategic choice in the early game: spend on unlocking a second city, or spend on building up what you already have. An unlocked region governs where you can <em>buy</em> — reach a tile before unlocking and you'll be prompted to unlock the whole region to claim it.</p>
+      </section>
+
+      <section id="landmarks">
+        <h2>Landmarks</h2>
+        <p class="section-desc">24 real-world landmarks, 9 tiles each (216 total worldwide) — expensive, rarity-free, and the source of the game's only non-income perks.</p>
+        <div class="table-wrap">
+          <table class="wikitable">
+            <thead><tr><th>Landmarks</th><th>Perk</th><th class="num">Value per tile</th><th class="num">Cap</th></tr></thead>
+            <tbody>
+              <tr><td>Eiffel Tower, Sagrada Família, Neuschwanstein, Tokyo Tower, CN Tower, Space Needle</td><td>Build speed</td><td class="num">−2% build time</td><td class="num">30%</td></tr>
+              <tr><td>Great Wall, Colosseum, Kremlin, Petra, Machu Picchu, Angkor Wat</td><td>Siege discount</td><td class="num">−2% attack cost</td><td class="num">30%</td></tr>
+              <tr><td>Statue of Liberty, Golden Gate Bridge, Burj Khalifa, Mount Rushmore, Table Mountain, Acropolis</td><td>Energy boost</td><td class="num">+2 energy/day</td><td class="num">none</td></tr>
+              <tr><td>Big Ben, Taj Mahal, Great Pyramid, Sydney Opera House, Christ the Redeemer, Leaning Tower of Pisa</td><td>Rush discount</td><td class="num">−2% rush cost</td><td class="num">30%</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <ul>
+          <li><strong>Claim price:</strong> a flat ₲1,000,000 per tile, regardless of which landmark or real-world classification it would otherwise have.</li>
+          <li><strong>No rarity roll</strong> — always Common. The reward is the perk and the trophy, not a lucky multiplier.</li>
+          <li><strong>Defense multiplier:</strong> ×1.5 defense power against attacks — landmark tiles are meaningfully harder to take than an ordinary tile of the same level.</li>
+          <li><strong>48-hour grace period:</strong> a landmark tile can't be attacked for 48 hours after it changes owner (by any means), so a fresh claim isn't immediately sieged back.</li>
+          <li><strong>Perks are region-scoped</strong> (build speed, siege discount, rush discount only count landmark tiles you own in the <em>same region</em> as the tile being upgraded/attacked/rushed) — except energy boost, which is account-wide, since energy itself isn't tied to any one region.</li>
+        </ul>
+        <p>Perk value stacks per tile owned — own all 9 tiles of one landmark and a percentage-based perk reaches 18% (under its 30% cap); an energy-boost landmark's full set adds a flat +18 energy/day.</p>
+      </section>
+
+      <section id="pvp">
+        <h2>PvP &amp; attacks</h2>
+        <p class="section-desc">Take a tile from another player by force — but only from your own border.</p>
+        <h3>Adjacency</h3>
+        <p>You can only attack a tile if you already own at least one tile <strong>orthogonally adjacent</strong> to it (north, south, east, or west — not diagonal). This keeps PvP a contiguous frontier, not a random snipe from across the planet.</p>
+        <h3>Daily limits</h3>
+        <div class="table-wrap">
+          <table class="wikitable">
+            <thead><tr><th>Limit</th><th class="num">Cap</th></tr></thead>
+            <tbody>
+              <tr><td>Attacks you may <strong>launch</strong> per day</td><td class="num">6</td></tr>
+              <tr><td>Attacks a single <strong>tile</strong> may absorb per day</td><td class="num">2</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p>The two caps are independent — a well-defended tile can only be hit twice a day regardless, but your 6 daily attacks let you try elsewhere the moment one target is tapped out, rather than losing the rest of your day.</p>
+        <h3>Cost &amp; odds</h3>
+        <p>Attack cost is the <strong>greater of</strong> a base formula (half the target's price, scaling with its level) or 0.2% of your own peak net worth — whichever is higher. See <a href="#formulas">Formula reference</a> for the exact numbers. Win probability is your attack power (how many owned tiles border the target) versus the defender's power (their level, rarity, prestige, and any landmark defense bonus), clamped between 5% and 90% either way — no attack is ever a sure thing, and no defense is ever unbeatable.</p>
+        <div class="callout">
+          <span class="callout-label">Losing costs nothing extra</span>
+          A failed attack still costs the attack fee — that's the whole risk. A successful attack transfers the tile outright, resetting any build in progress; a successful <em>defense</em> costs the defender nothing and keeps any build running.
+        </div>
+        <div class="trivia">
+          <span class="trivia-label">Did you know</span>
+          The wealth floor (0.2% of peak net worth) means a brand-new account's attacks are priced almost entirely by the base formula — the floor only starts to bite once your peak net worth climbs into real money. Punching up is always cheap; punching down gets expensive as you get rich.
+        </div>
+        <p>Winning a raid and capturing a tile unlocks the <strong>Conqueror</strong> achievement. New players and accounts less than 72 hours old can't be attacked at all.</p>
+      </section>
+
+      <section id="market">
+        <h2>The open market</h2>
+        <p class="section-desc">A live, player-driven trading post.</p>
+        <p>Any tile you own can be listed at any price you choose. Sales pay you instantly, even while you're offline — the buyer gets exactly what you listed: your level, rarity, and prestige, unchanged.</p>
+        <div class="callout">
+          <span class="callout-label">Only your unlocked territory</span>
+          The Market only shows — and only lets you buy — tiles inside regions you've already unlocked, the same boundary the map's fog draws for browsing. Unlock a new region to trade there too.
+        </div>
+        <div class="removed">
+          <span class="removed-label">Removed feature</span>
+          An earlier version of the game let players "flip" a maxed-out tile for an instant, formula-priced payout instead of listing it. It was cut — <a href="#letting-go">Abandoning</a> already covers "I want out now," and listing already covers "I want to sell on my own terms," so flip didn't carry its own weight as a third option. If you're reading an older guide or screenshot that mentions flipping, it no longer exists.
+        </div>
+      </section>
+
+      <section id="status">
+        <h2>Status ranks</h2>
+        <p class="section-desc">A permanent rank ladder based on your all-time-highest net worth — the highest you've ever reached, not your current balance.</p>
+        <div class="table-wrap">
+          <table class="wikitable">
+            <thead><tr><th>Rank</th><th class="num">Net worth to reach it</th><th class="num">Daily energy</th><th class="num">Builder slots</th></tr></thead>
+            <tbody>
+              <tr><td>Squatter</td><td class="num">₲0</td><td class="num">10 / day</td><td class="num">2</td></tr>
+              <tr><td>Homesteader</td><td class="num">₲5,000</td><td class="num">12 / day</td><td class="num">2</td></tr>
+              <tr><td>Landholder</td><td class="num">₲25,000</td><td class="num">14 / day</td><td class="num">3</td></tr>
+              <tr><td>Developer</td><td class="num">₲100,000</td><td class="num">16 / day</td><td class="num">3</td></tr>
+              <tr><td>Baron</td><td class="num">₲500,000</td><td class="num">18 / day</td><td class="num">4</td></tr>
+              <tr><td>Magnate</td><td class="num">₲2,000,000</td><td class="num">20 / day</td><td class="num">4</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="callout">
+          <span class="callout-label">Sticky — it never drops</span>
+          Status is based on the highest net worth your account has ever reached, not your current one. Spending big, a bad trade, or losing a tile in combat will never demote you. Once earned, a rank is yours forever.
+        </div>
+        <p>Net worth here means your balance plus everything you've invested across every tile you own — the same number the <a href="#leaderboard">leaderboard</a> ranks by, and the same number the PvP wealth floor is based on.</p>
+      </section>
+
+      <section id="leaderboard">
+        <h2>Leaderboard</h2>
+        <p class="section-desc">The top 10 players by current net worth (balance + total invested across all owned tiles), visible to everyone from HQ.</p>
+        <p>Unlike status rank, the leaderboard reflects your <strong>current</strong> standing, not your peak — it moves up or down as players buy, sell, and build. Your status rank badge shows next to your name here too.</p>
+      </section>
+
+      <section id="world-claimed">
+        <h2>World land claimed</h2>
+        <p class="section-desc">A live counter on the map showing how much of the world's purchasable land has been claimed, worldwide, by everyone.</p>
+        <p>The denominator isn't a guess — it's computed from real coastline data (Natural Earth's 1:50m land polygons), reprojected into the exact same map projection the game's tile grid uses and clipped to the same reachable latitude band, so it accounts for how that projection distorts area at different latitudes. The result: <strong>about 38.35%</strong> of the reachable grid is land, versus the ~29.2% you'd get from Earth's real spherical surface area — projected map space and real surface area aren't the same thing, and using the wrong one would have undercounted by nearly a third.</p>
+        <div class="trivia">
+          <span class="trivia-label">Did you know</span>
+          Almost all of Antarctica sits outside the game's coordinate system entirely — the map projection is clipped at about ±85.05° latitude (the same limit real-world slippy maps use), so there's no tile coordinate for most of the deep south. It isn't excluded on purpose; there's simply nowhere to put it.
+        </div>
+      </section>
+
+      <section id="friends">
+        <h2>Friends</h2>
+        <p class="section-desc">Add other players by username from HQ. Costs nothing, and their territory lights up teal on the map.</p>
+        <p>Send a request by exact landlord name; they can accept, decline, or block. Sending each other a request at the same time auto-accepts instead of creating two pending requests. From your friends list you can jump straight to a friend's home region with one tap. Making your first friend unlocks the <strong>Sociable</strong> achievement.</p>
+        <div class="callout">
+          <span class="callout-label">Rate limit</span>
+          Up to 20 pending friend requests may be sent per day.
+        </div>
+      </section>
+
+      <section id="dms">
+        <h2>Direct messages</h2>
+        <p class="section-desc">Private, friends-only chat — you can't be messaged by anyone you haven't accepted.</p>
+        <p>Open a conversation from any friend's row in HQ. Unread counts show per-friend and as a dot on the HQ tab. Sending a first message unlocks the <strong>Pen pal</strong> achievement.</p>
+        <div class="callout">
+          <span class="callout-label">Limits</span>
+          Up to 20 messages per minute, per account. Each conversation keeps its most recent 200 messages.
+        </div>
+      </section>
+
+      <section id="region-chat">
+        <h2>Region chat</h2>
+        <p class="section-desc">Local chat scoped to whichever region you're currently looking at — you talk to the people whose territory you actually share.</p>
+        <p>Open it from the speech-bubble button on the map. The room follows your camera: pan into a different unlocked region and the chat switches with it. Locked regions show a hint to unlock first rather than an empty room.</p>
+        <div class="callout">
+          <span class="callout-label">Limits</span>
+          Up to 10 messages per minute, per account. Each region keeps its most recent 100 messages.
+        </div>
+      </section>
+
+      <section id="safety">
+        <h2>Reporting &amp; blocking</h2>
+        <p class="section-desc">Every message, anywhere, can be reported or its sender blocked.</p>
+        <p>Tap a message in region chat to reveal Report and Block. Blocking is mutual and immediate — a blocked player can no longer message you, send you friend requests, or appear in your region chat, and you disappear from theirs the same way. Blocks can be lifted any time from the Blocked list in HQ's Friends card.</p>
+        <p>Reports are private — only visible to the game's operator, never to other players, including the person you reported. Up to 10 reports may be filed per day.</p>
+      </section>
+
+      <section id="tutorial">
+        <h2>Tutorial</h2>
+        <p class="section-desc">A short, five-step interactive walkthrough for brand-new accounts.</p>
+        <p>It starts automatically right after your first claim, once the welcome animations settle, and covers the core loop live on your own tile: what you just claimed, starting a build, zooming out to see your territory, and what energy is for. Two of the five steps advance automatically once you actually do the thing they're teaching, not just by clicking Next. It can be skipped at any point, and replayed any time from HQ's account section if you want a refresher.</p>
+      </section>
+
+      <section id="streak">
+        <h2>Daily streak</h2>
+        <p class="section-desc">Log in once per day (UTC) to claim a stipend that grows with consecutive days.</p>
+        <div class="formula"><span class="fname">Daily reward</span>₲150 × min(current streak, 7)</div>
+        <p>The reward climbs each day through day 7 (₲1,050), then holds flat at ₲1,050/day for every day after — a day-100 streak pays the same as a day-7 streak. <strong>Missing a single day resets your streak back to 1.</strong> A 3-day streak unlocks the <strong>Regular</strong> achievement.</p>
+      </section>
+
+      <section id="offline">
+        <h2>Offline earnings</h2>
+        <p class="section-desc">Rent keeps accruing while you're away, at two different rates depending on exactly how long it's been.</p>
+        <div class="cardgrid">
+          <div class="card"><div class="card-t">Actively synced (≤2 min)</div><div class="card-d">Full rent rate. A boost's 2× multiplier only applies inside this window.</div></div>
+          <div class="card"><div class="card-t">Away (&gt;2 min)</div><div class="card-d">Half rate, capped at 8 hours worth — a week-long trip earns the same as an 8-hour gap, not 20× more.</div></div>
+        </div>
+        <div class="trivia">
+          <span class="trivia-label">Did you know</span>
+          Boosts don't apply retroactively to offline time — the 2× multiplier only counts while you were actively syncing (within 2 minutes of your last check-in). Popping a boost right before closing the tab doesn't boost the hours you're away.
+        </div>
+      </section>
+
+      <section id="boosts">
+        <h2>Boosts</h2>
+        <p class="section-desc">A free, parody "watch an ad" mechanic for a temporary rent multiplier.</p>
+        <p>Tapping the boost button (fake ad, joke brand, no real ad network involved) grants <strong>2× rent for 5 minutes</strong>, only while actively playing (see <a href="#offline">Offline earnings</a>). It's on a <strong>30-minute cooldown</strong> between uses — long enough to be something to catch, not a timer to babysit.</p>
+      </section>
+
+      <section id="achievements">
+        <h2>Achievements</h2>
+        <p class="section-desc">13 one-time milestones, tracked from HQ.</p>
+        <div class="achlist">
+          <div class="ach"><div class="ach-icon">★</div><div><div class="ach-t">First deed</div><div class="ach-d">Claim your first tile</div></div></div>
+          <div class="ach"><div class="ach-icon">10</div><div><div class="ach-t">Landlord</div><div class="ach-d">Own 10 tiles</div></div></div>
+          <div class="ach"><div class="ach-icon">3+</div><div><div class="ach-t">Globetrotter</div><div class="ach-d">Own tiles in 3+ regions</div></div></div>
+          <div class="ach"><div class="ach-icon">8×</div><div><div class="ach-t">Legendary find</div><div class="ach-d">Roll a Legendary deed</div></div></div>
+          <div class="ach"><div class="ach-icon">▲</div><div><div class="ach-t">Skyline</div><div class="ach-d">Build a Tower (Lv 4)</div></div></div>
+          <div class="ach"><div class="ach-icon">$</div><div><div class="ach-t">Trader</div><div class="ach-d">Sell a tile to another player</div></div></div>
+          <div class="ach"><div class="ach-icon">50k</div><div><div class="ach-t">Deep pockets</div><div class="ach-d">Hold ₲50,000 at once</div></div></div>
+          <div class="ach"><div class="ach-icon">3d</div><div><div class="ach-t">Regular</div><div class="ach-d">3-day visit streak</div></div></div>
+          <div class="ach"><div class="ach-icon">↺</div><div><div class="ach-t">Redeveloper</div><div class="ach-d">Tear down and rebuild a maxed-out tile</div></div></div>
+          <div class="ach"><div class="ach-icon">⚔</div><div><div class="ach-t">Conqueror</div><div class="ach-d">Win a PvP attack and capture a tile</div></div></div>
+          <div class="ach"><div class="ach-icon">✓</div><div><div class="ach-t">Oriented</div><div class="ach-d">Complete the tutorial</div></div></div>
+          <div class="ach"><div class="ach-icon">♥</div><div><div class="ach-t">Sociable</div><div class="ach-d">Make a friend</div></div></div>
+          <div class="ach"><div class="ach-icon">✉</div><div><div class="ach-t">Pen pal</div><div class="ach-d">Send a friend a message</div></div></div>
+        </div>
+      </section>
+
+      <section id="inactivity">
+        <h2>Inactivity &amp; repossession</h2>
+        <p>If an account goes untouched for <strong>60+ days</strong>, its tiles are gradually returned to the world a few at a time, with a <strong>30% refund</strong> credited to that account and a notification waiting on next login. This keeps abandoned land from sitting locked forever in a world where every tile is one-of-one — it's not a punishment, just how a shared, finite world stays healthy. Repossessed tiles go back to genuinely unclaimed status — anyone can buy them fresh, no adjacency or region-unlock shortcuts.</p>
+      </section>
+
+      <section id="strategies">
+        <h2>Starter strategies</h2>
+        <p class="section-desc">A few different viable approaches to the early game, grounded in the actual formulas above rather than folk wisdom. None of these are mandatory or mutually exclusive.</p>
+        <div class="stratlist">
+          <div class="strat">
+            <div class="strat-head"><span class="strat-t">The Daily Grind</span><span class="strat-tag">Best for: everyone</span></div>
+            <div class="strat-d">Energy doesn't bank and a missed day resets your streak all the way to 1. The single highest-value habit in the game is logging in once every day, spending your energy the same day, and collecting the stipend before it caps at day 7. This alone outperforms most "clever" plays over a long enough timeline.</div>
+          </div>
+          <div class="strat">
+            <div class="strat-head"><span class="strat-t">Rural Spam</span><span class="strat-tag">Best for: brand-new accounts</span></div>
+            <div class="strat-d">At ₲50 a tile, a Squatter's 10 daily energy can claim 10 Rural tiles for ₲500 total — comfortably inside most starting balances. Spreading your first day's energy across many cheap footholds compounds rent immediately, instead of saving toward one Downtown tile and leaving most of that day's energy unspent.</div>
+          </div>
+          <div class="strat">
+            <div class="strat-head"><span class="strat-t">Classification Doesn't Matter (Yet)</span><span class="strat-tag">Best for: capital allocation</span></div>
+            <div class="strat-d">Rent-per-₲-invested is nearly flat across classifications (0.25–0.28 per ₲1,000 — see <a href="#classification">Property classification</a>), and upgrade cost scales off the same base price, so the real decision isn't "which classification" but "how much capital do I want locked in one tile." Many cheap tiles spread your exposure to a bad PvP day across more surface area; one expensive tile concentrates it.</div>
+          </div>
+          <div class="strat">
+            <div class="strat-head"><span class="strat-t">Punch Up While You're Small</span><span class="strat-tag">Best for: early-to-mid PvP</span></div>
+            <div class="strat-d">Attack cost is whichever is <em>higher</em>: the base formula, or 0.2% of your peak net worth. A new account's peak net worth is near zero, so that floor barely applies yet — your attacks are about as cheap as they'll ever be. As your net worth grows, so does the floor, and PvP gets structurally more expensive. If raiding appeals to you at all, it's cheapest before you're established, not after.</div>
+          </div>
+          <div class="strat">
+            <div class="strat-head"><span class="strat-t">Treat Landmarks as a Late-Game Project</span><span class="strat-tag">Best for: established accounts</span></div>
+            <div class="strat-d">A flat ₲1,000,000 per tile with no rarity roll and a 48-hour attack grace period is not a starter buy. Landmark perks are account-shaping utility (build speed, cheaper sieges, cheaper rushes, more energy), not raw income, and they only get meaningful once you own several tiles of the same landmark. Save them for once your economy can absorb a seven-figure purchase without blinking.</div>
+          </div>
+          <div class="strat">
+            <div class="strat-head"><span class="strat-t">Make Friends on Day One</span><span class="strat-tag">Best for: everyone, costs nothing</span></div>
+            <div class="strat-d">Friends cost nothing to add, light up teal on the map so you can see their footprint from orbit, and unlock DMs. Region chat puts you in the same room as whoever else has unlocked your territory. There's no direct mechanical bonus, but a persistent shared world is a lot stickier with people you actually know in it — and it's the cheapest strategy on this list.</div>
+          </div>
+        </div>
+      </section>
+
+      <section id="formulas">
+        <h2>Formula reference</h2>
+        <p class="section-desc">Every formula that drives the economy, exactly as the game computes it. <code>l</code> = building level (0–4), <code>r</code> = rarity multiplier, <code>pr</code> = prestige cycles, <code>price</code> = the tile's base classification price.</p>
+
+        <h4>Rent per second</h4>
+        <div class="formula">rent = base_rps × rarity_mult × (1 + level) × (1 + 0.25 × prestige)</div>
+
+        <h4>Upgrade cost</h4>
+        <div class="formula">cost = round( price × 0.8 × (level + 1)<sup>1.6</sup> × (1 + 0.5 × min(prestige, 10)) )</div>
+
+        <h4>Build duration</h4>
+        <div class="formula">seconds = base_seconds[target level] × (1 + 0.25 × min(prestige, 10)) × (1 − landmark_build_speed% / 100)
+
+base_seconds: Lv1 = 300 (5 min) · Lv2 = 1,800 (30 min) · Lv3 = 7,200 (2 h) · Lv4 = 28,800 (8 h)</div>
+
+        <h4>Rush cost</h4>
+        <div class="formula">cost = ceil( upgrade_cost × (seconds_remaining / total_seconds) × (1 − landmark_rush_discount% / 100) )</div>
+
+        <h4>Redevelop</h4>
+        <div class="formula">level → 0, prestige → prestige + 1   (no direct ₲ cost)</div>
+
+        <h4>Region unlock cost</h4>
+        <div class="formula">cost = 1,000 × 2 ^ (paid regions already unlocked)</div>
+
+        <h4>Attack cost</h4>
+        <div class="formula">cost = max(
+  round( target_price × 0.5 × (1 + 0.5 × target_level) × (1 − landmark_siege_discount% / 100) ),
+  round( attacker_peak_net_worth × 0.002 )
+)</div>
+
+        <h4>Defense power</h4>
+        <div class="formula">power = (1 + level) × rarity_mult × (1 + 0.25 × prestige) × landmark_defense_mult (×1.5 if applicable)</div>
+
+        <h4>Attack power &amp; win chance</h4>
+        <div class="formula">attack_power = number of tiles you own orthogonally adjacent to the target
+
+win_chance = clamp( attack_power / (attack_power + defense_power), 5%, 90% )</div>
+
+        <h4>Refunds</h4>
+        <div class="formula">abandon refund   = 50% of everything paid into the tile
+repossession refund = 30% of everything paid, after 60+ days inactive</div>
+
+        <h4>Daily streak</h4>
+        <div class="formula">reward = ₲150 × min(current streak, 7)</div>
+
+        <h4>Offline earnings</h4>
+        <div class="formula">if time since last sync ≤ 2 minutes: rent × (2 if boosted else 1) × elapsed seconds
+else:                                   rent × 0.5 × min(elapsed seconds, 8 hours)</div>
+
+        <h4>Landmark perks</h4>
+        <div class="formula">build_speed / siege_discount / rush_discount: −2% per tile owned, capped at 30% (region-scoped)
+energy_boost:                                    +2 energy/day per tile owned (account-wide, uncapped)</div>
+      </section>
+
+      <section id="cheatsheet">
+        <h2>Cheat sheet</h2>
+        <p class="section-desc">The numbers that matter most, all in one place.</p>
+        <div class="table-wrap">
+          <table class="wikitable">
+            <tbody>
+              <tr><td>Classifications, cheapest to priciest</td><td>Rural → Suburbs → Coast → Urban → Waterfront → Downtown</td></tr>
+              <tr><td>Rarity odds</td><td>Common 70% · Uncommon 20% · Rare 8% · Legendary 2%</td></tr>
+              <tr><td>Building levels</td><td>Vacant → Cottage (5m) → Duplex (30m) → Apartments (2h) → Tower (8h)</td></tr>
+              <tr><td>Redevelop bonus</td><td>+25% rent per cycle, free, permanent, uncapped; cost/time penalty caps at 10 cycles</td></tr>
+              <tr><td>Region unlock cost</td><td>₲1,000 → ₲2,000 → ₲4,000 → doubling each time</td></tr>
+              <tr><td>Daily energy</td><td>10–20/day by status rank, hard reset at UTC midnight</td></tr>
+              <tr><td>Builder slots</td><td>2–4 by status rank</td></tr>
+              <tr><td>Daily attacks / per-tile defense</td><td>6 launched/day · 2 absorbed/day per tile</td></tr>
+              <tr><td>Attack cost floor</td><td>0.2% of attacker's peak net worth</td></tr>
+              <tr><td>Win chance range</td><td>5%–90%, never certain either way</td></tr>
+              <tr><td>Landmarks</td><td>24 worldwide, 9 tiles each, ₲1,000,000/tile, 48h attack grace, ×1.5 defense</td></tr>
+              <tr><td>Daily streak cap</td><td>₲1,050/day at 7+ consecutive days</td></tr>
+              <tr><td>Offline earnings</td><td>Half rate after 2 min away, capped at 8 hours</td></tr>
+              <tr><td>Boost</td><td>2× rent, 5 min, 30-min cooldown, active-play only</td></tr>
+              <tr><td>Abandon refund</td><td>50% of invested</td></tr>
+              <tr><td>Inactivity threshold</td><td>60 days → 30% refund, tile returns to the world</td></tr>
+              <tr><td>Friend requests / DMs / region chat limits</td><td>20/day · 20/min (200 kept per chat) · 10/min (100 kept per region)</td></tr>
+              <tr><td>Reports</td><td>10/day, private to the game's operator</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="backtotop"><a href="#overview">↑ Back to top</a></p>
+      </section>
+
+      <section id="version-history">
+        <h2>Version history</h2>
+        <p class="section-desc">The game auto-detects new deploys and prompts a refresh; a "What's new" popup and version badge live in the header. This wiki reflects <strong>v1.7.0</strong>. Recent highlights:</p>
+        <div class="verhist">
+          <div class="verentry"><span class="vertag">v1.7.0</span><span class="verdate">Jul 21, 2026</span>
+            <ul><li>This wiki is now deployed alongside the game itself, linked from the sign-in screen and HQ.</li></ul>
+          </div>
+          <div class="verentry"><span class="vertag">v1.6.2</span><span class="verdate">Jul 21, 2026</span>
+            <ul><li>Fixed the Assets Building section reordering/flickering during Upgrade All.</li></ul>
+          </div>
+          <div class="verentry"><span class="vertag">v1.6.1</span><span class="verdate">Jul 21, 2026</span>
+            <ul><li>Daily attack cap doubled, 3 → 6.</li><li>Assets tab: dedicated Building section.</li></ul>
+          </div>
+          <div class="verentry"><span class="vertag">v1.6.0</span><span class="verdate">Jul 20, 2026</span>
+            <ul><li>Region chat, plus report and block.</li></ul>
+          </div>
+          <div class="verentry"><span class="vertag">v1.5.0</span><span class="verdate">Jul 20, 2026</span>
+            <ul><li>Friend direct messages.</li></ul>
+          </div>
+          <div class="verentry"><span class="vertag">v1.4.0</span><span class="verdate">Jul 20, 2026</span>
+            <ul><li>Friends: requests, blocking, teal territory on the map.</li></ul>
+          </div>
+          <div class="verentry"><span class="vertag">v1.3.0 – v1.3.1</span><span class="verdate">Jul 20, 2026</span>
+            <ul><li>Interactive first-run tutorial, replayable from HQ.</li><li>"District" renamed to "property classification" throughout.</li></ul>
+          </div>
+          <div class="verentry"><span class="vertag">v1.2.0 – v1.2.2</span><span class="verdate">Jul 20, 2026</span>
+            <ul><li>World land-claimed indicator, later corrected to a real coastline-based estimate.</li><li>Fixed a memory-leak crash after sustained play in dense areas.</li></ul>
+          </div>
+          <div class="verentry"><span class="vertag">v1.1.0</span><span class="verdate">Jul 20, 2026</span>
+            <ul><li>World view shows your territory in blue, rivals in red.</li><li>Update-available banner and changelog system.</li></ul>
+          </div>
+        </div>
+      </section>
+
+      <div class="catfooter">
+        <b>Categories:</b>
+        <span class="cattag">Game mechanics</span><span class="cattag">Economy</span><span class="cattag">PvP</span>
+        <span class="cattag">Social</span><span class="cattag">Strategy</span><span class="cattag">Reference</span>
+      </div>
+    </main>
+  </div>
+</div>
+
+<script>
+  function ptwFilterNav(q) {
+    q = q.trim().toLowerCase();
+    var links = document.querySelectorAll('#ptwSidebar .navlink');
+    var groups = document.querySelectorAll('#ptwSidebar .navgroup');
+    links.forEach(function (a) {
+      var match = !q || a.textContent.toLowerCase().indexOf(q) !== -1;
+      a.classList.toggle('hidden', !match);
+    });
+    groups.forEach(function (g) {
+      var anyVisible = g.querySelectorAll('.navlink:not(.hidden)').length > 0;
+      g.style.display = anyVisible ? '' : 'none';
+    });
+  }
+</script>

@@ -41,6 +41,13 @@ const VERSION_CHECK_MS = 5 * 60 * 1000;
 // commit, not after the fact.
 const CHANGELOG = [
   {
+    id: "1.7.0",
+    date: "Jul 21, 2026",
+    notes: [
+      "Added a full wiki — every formula, mechanic, and starter strategy — linked from the sign-in screen and HQ.",
+    ],
+  },
+  {
     id: "1.6.2",
     date: "Jul 21, 2026",
     notes: [
@@ -774,6 +781,11 @@ function HowToModal({ onClose }) {
         <div>Every tile has a property classification — the kind of land it sits on (Downtown, Rural, and so on) — that sets its price and rent. Classifications come from real OpenStreetMap data: actual water, land-use and building footprints, not a guess. A freshly-revealed tile briefly shows as "Surveying…" (not yet purchasable) until its real data finishes loading, which is usually well under a second.</div>
       </div>
       <div className="mt-4"><Btn full onClick={onClose}>Got it</Btn></div>
+      <a href={`${import.meta.env.BASE_URL}guide.html`} target="_blank" rel="noopener noreferrer"
+        className="pt10 mt-3 block text-center underline decoration-dotted underline-offset-2 focus-visible:outline focus-visible:outline-2"
+        style={{ ...mono, color: C.dim, outlineColor: C.amber }}>
+        Full wiki — formulas, strategies &amp; every mechanic ↗
+      </a>
     </Modal>
   );
 }
@@ -4352,6 +4364,7 @@ function Game({ G, onExit, startFresh }) {
 
             <div className="mb-3 rounded-xl p-3" style={cardSty}>
               <div className="flex flex-wrap gap-2">
+                <Btn small tone="ghost" onClick={() => window.open(`${import.meta.env.BASE_URL}guide.html`, "_blank", "noopener,noreferrer")}>Wiki</Btn>
                 <Btn small tone="ghost" onClick={() => { setTab("map"); setTut(1); }}>Replay tutorial</Btn>
                 <Btn small tone="ghost" onClick={() => { save(); onExit(); signOut(); }}>Sign out</Btn>
                 <Btn small tone="danger" onClick={() => setConfirmDelete(true)}>Delete account &amp; data</Btn>
