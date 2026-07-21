@@ -224,7 +224,7 @@
       <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.4"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
       <input id="navFilter" type="text" placeholder="Filter pages…" oninput="ptwFilterNav(this.value)" />
     </div>
-    <div class="verchip">v1.7.0</div>
+    <div class="verchip">v1.8.0</div>
   </div>
 
   <div class="shell">
@@ -311,7 +311,7 @@
             <tr><th>Max building level</th><td>4 (Tower)</td></tr>
             <tr><th>Landmarks</th><td>24 (216 tiles)</td></tr>
             <tr><th>Achievements</th><td>13</td></tr>
-            <tr><th>Current version</th><td>1.7.0</td></tr>
+            <tr><th>Current version</th><td>1.8.0</td></tr>
           </table>
         </div>
         <h2>What is this?</h2>
@@ -485,7 +485,7 @@
         </div>
         <p>Rent scales directly with level: a Tower earns 5× the tile's base rent (level counts as <code>1 + level</code>). Starting an upgrade begins a real countdown — the tile keeps earning its current rent while it builds, then jumps to the new rent the moment it finishes.</p>
         <h3>Builder slots</h3>
-        <p>How many tiles can be under construction <em>at once</em> is capped by your <a href="#status">status rank</a> — 2 slots at Squatter, rising to 4 at Baron and Magnate. Starting an upgrade on a 5th tile while all your slots are full simply isn't possible until one finishes.</p>
+        <p>How many tiles can be under construction <em>at once</em> is capped by your <a href="#status">status rank</a> — 2 slots at Squatter, rising to 6 at Mogul. Starting an upgrade on a tile beyond your slot count while all your slots are full simply isn't possible until one finishes.</p>
         <h3>Rushing a build</h3>
         <p>Impatient? Rushing pays the <strong>remaining fraction</strong> of the full upgrade cost to finish instantly — rush a build that's 90% done and you're only paying for the last 10%, not the whole thing again. See <a href="#formulas">Formula reference</a> for the exact math.</p>
         <h3>Upgrade All</h3>
@@ -558,16 +558,8 @@
         <h3>Adjacency</h3>
         <p>You can only attack a tile if you already own at least one tile <strong>orthogonally adjacent</strong> to it (north, south, east, or west — not diagonal). This keeps PvP a contiguous frontier, not a random snipe from across the planet.</p>
         <h3>Daily limits</h3>
-        <div class="table-wrap">
-          <table class="wikitable">
-            <thead><tr><th>Limit</th><th class="num">Cap</th></tr></thead>
-            <tbody>
-              <tr><td>Attacks you may <strong>launch</strong> per day</td><td class="num">6</td></tr>
-              <tr><td>Attacks a single <strong>tile</strong> may absorb per day</td><td class="num">2</td></tr>
-            </tbody>
-          </table>
-        </div>
-        <p>The two caps are independent — a well-defended tile can only be hit twice a day regardless, but your 6 daily attacks let you try elsewhere the moment one target is tapped out, rather than losing the rest of your day.</p>
+        <p>Attacks you may <strong>launch</strong> per day scale with your <a href="#status">status rank</a> — 6/day at Squatter, up to 20/day at Mogul (see the status table for every rank in between). Attacks a single <strong>tile</strong> may absorb per day is flat for everyone: 2, regardless of either side's rank.</p>
+        <p>The two caps are independent — a well-defended tile can only be hit twice a day regardless of who's attacking it, but your daily attack allowance lets you try elsewhere the moment one target is tapped out, rather than losing the rest of your day.</p>
         <h3>Cost &amp; odds</h3>
         <p>Attack cost is the <strong>greater of</strong> a base formula (half the target's price, scaling with its level) or 0.2% of your own peak net worth — whichever is higher. See <a href="#formulas">Formula reference</a> for the exact numbers. Win probability is your attack power (how many owned tiles border the target) versus the defender's power (their level, rarity, prestige, and any landmark defense bonus), clamped between 5% and 90% either way — no attack is ever a sure thing, and no defense is ever unbeatable.</p>
         <div class="callout">
@@ -600,14 +592,16 @@
         <p class="section-desc">A permanent rank ladder based on your all-time-highest net worth — the highest you've ever reached, not your current balance.</p>
         <div class="table-wrap">
           <table class="wikitable">
-            <thead><tr><th>Rank</th><th class="num">Net worth to reach it</th><th class="num">Daily energy</th><th class="num">Builder slots</th></tr></thead>
+            <thead><tr><th>Rank</th><th class="num">Net worth to reach it</th><th class="num">Daily energy</th><th class="num">Builder slots</th><th class="num">Daily attacks</th></tr></thead>
             <tbody>
-              <tr><td>Squatter</td><td class="num">₲0</td><td class="num">10 / day</td><td class="num">2</td></tr>
-              <tr><td>Homesteader</td><td class="num">₲5,000</td><td class="num">12 / day</td><td class="num">2</td></tr>
-              <tr><td>Landholder</td><td class="num">₲25,000</td><td class="num">14 / day</td><td class="num">3</td></tr>
-              <tr><td>Developer</td><td class="num">₲100,000</td><td class="num">16 / day</td><td class="num">3</td></tr>
-              <tr><td>Baron</td><td class="num">₲500,000</td><td class="num">18 / day</td><td class="num">4</td></tr>
-              <tr><td>Magnate</td><td class="num">₲2,000,000</td><td class="num">20 / day</td><td class="num">4</td></tr>
+              <tr><td>Squatter</td><td class="num">₲0</td><td class="num">10 / day</td><td class="num">2</td><td class="num">6</td></tr>
+              <tr><td>Homesteader</td><td class="num">₲5,000</td><td class="num">12 / day</td><td class="num">2</td><td class="num">8</td></tr>
+              <tr><td>Landholder</td><td class="num">₲25,000</td><td class="num">14 / day</td><td class="num">3</td><td class="num">10</td></tr>
+              <tr><td>Developer</td><td class="num">₲100,000</td><td class="num">16 / day</td><td class="num">3</td><td class="num">12</td></tr>
+              <tr><td>Baron</td><td class="num">₲500,000</td><td class="num">18 / day</td><td class="num">4</td><td class="num">14</td></tr>
+              <tr><td>Magnate</td><td class="num">₲10,000,000</td><td class="num">20 / day</td><td class="num">4</td><td class="num">16</td></tr>
+              <tr><td>Tycoon</td><td class="num">₲50,000,000</td><td class="num">22 / day</td><td class="num">5</td><td class="num">18</td></tr>
+              <tr><td>Mogul</td><td class="num">₲250,000,000</td><td class="num">24 / day</td><td class="num">6</td><td class="num">20</td></tr>
             </tbody>
           </table>
         </div>
@@ -616,6 +610,10 @@
           Status is based on the highest net worth your account has ever reached, not your current one. Spending big, a bad trade, or losing a tile in combat will never demote you. Once earned, a rank is yours forever.
         </div>
         <p>Net worth here means your balance plus everything you've invested across every tile you own — the same number the <a href="#leaderboard">leaderboard</a> ranks by, and the same number the PvP wealth floor is based on.</p>
+        <div class="trivia">
+          <span class="trivia-label">Did you know</span>
+          Daily attacks scale with status now, not just energy — a Squatter and a Mogul used to get the exact same 6 attacks a day despite everything else about their accounts being wildly different. Mogul's 250,000,000 threshold is set well past what even a serious landmark collector needs (216 tiles world-wide at ₲1,000,000 each) — the ladder is meant to keep giving you somewhere to climb.
+        </div>
       </section>
 
       <section id="leaderboard">
@@ -657,7 +655,7 @@
       <section id="region-chat">
         <h2>Region chat</h2>
         <p class="section-desc">Local chat scoped to whichever region you're currently looking at — you talk to the people whose territory you actually share.</p>
-        <p>Open it from the speech-bubble button on the map. The room follows your camera: pan into a different unlocked region and the chat switches with it. Locked regions show a hint to unlock first rather than an empty room.</p>
+        <p>Open it from the speech-bubble button on the map. The room follows your camera live — pan into a different unlocked region and the header, the message list, and where your next message goes all switch the instant you arrive, with a small notification confirming the new room. No need to close and reopen it to "refresh." Locked regions show a hint to unlock first rather than an empty room. Each region is named after the nearest real place close enough to be recognizable, or by coordinates when nothing nearby has a name.</p>
         <div class="callout">
           <span class="callout-label">Limits</span>
           Up to 10 messages per minute, per account. Each region keeps its most recent 100 messages.
@@ -725,7 +723,7 @@
 
       <section id="inactivity">
         <h2>Inactivity &amp; repossession</h2>
-        <p>If an account goes untouched for <strong>60+ days</strong>, its tiles are gradually returned to the world a few at a time, with a <strong>30% refund</strong> credited to that account and a notification waiting on next login. This keeps abandoned land from sitting locked forever in a world where every tile is one-of-one — it's not a punishment, just how a shared, finite world stays healthy. Repossessed tiles go back to genuinely unclaimed status — anyone can buy them fresh, no adjacency or region-unlock shortcuts.</p>
+        <p>If an account goes untouched for <strong>30+ days</strong>, its tiles are gradually returned to the world a few at a time, with a <strong>30% refund</strong> credited to that account and a notification waiting on next login. This keeps abandoned land from sitting locked forever in a world where every tile is one-of-one — it's not a punishment, just how a shared, finite world stays healthy. Repossessed tiles go back to genuinely unclaimed status — anyone can buy them fresh, no adjacency or region-unlock shortcuts.</p>
       </section>
 
       <section id="strategies">
@@ -799,7 +797,7 @@ win_chance = clamp( attack_power / (attack_power + defense_power), 5%, 90% )</di
 
         <h4>Refunds</h4>
         <div class="formula">abandon refund   = 50% of everything paid into the tile
-repossession refund = 30% of everything paid, after 60+ days inactive</div>
+repossession refund = 30% of everything paid, after 30+ days inactive</div>
 
         <h4>Daily streak</h4>
         <div class="formula">reward = ₲150 × min(current streak, 7)</div>
@@ -824,9 +822,9 @@ energy_boost:                                    +2 energy/day per tile owned (a
               <tr><td>Building levels</td><td>Vacant → Cottage (5m) → Duplex (30m) → Apartments (2h) → Tower (8h)</td></tr>
               <tr><td>Redevelop bonus</td><td>+25% rent per cycle, free, permanent, uncapped; cost/time penalty caps at 10 cycles</td></tr>
               <tr><td>Region unlock cost</td><td>₲1,000 → ₲2,000 → ₲4,000 → doubling each time</td></tr>
-              <tr><td>Daily energy</td><td>10–20/day by status rank, hard reset at UTC midnight</td></tr>
-              <tr><td>Builder slots</td><td>2–4 by status rank</td></tr>
-              <tr><td>Daily attacks / per-tile defense</td><td>6 launched/day · 2 absorbed/day per tile</td></tr>
+              <tr><td>Daily energy</td><td>10–24/day by status rank, hard reset at UTC midnight</td></tr>
+              <tr><td>Builder slots</td><td>2–6 by status rank</td></tr>
+              <tr><td>Daily attacks / per-tile defense</td><td>6–20/day by status rank · 2 absorbed/day per tile, flat</td></tr>
               <tr><td>Attack cost floor</td><td>0.2% of attacker's peak net worth</td></tr>
               <tr><td>Win chance range</td><td>5%–90%, never certain either way</td></tr>
               <tr><td>Landmarks</td><td>24 worldwide, 9 tiles each, ₲1,000,000/tile, 48h attack grace, ×1.5 defense</td></tr>
@@ -834,7 +832,7 @@ energy_boost:                                    +2 energy/day per tile owned (a
               <tr><td>Offline earnings</td><td>Half rate after 2 min away, capped at 8 hours</td></tr>
               <tr><td>Boost</td><td>2× rent, 5 min, 30-min cooldown, active-play only</td></tr>
               <tr><td>Abandon refund</td><td>50% of invested</td></tr>
-              <tr><td>Inactivity threshold</td><td>60 days → 30% refund, tile returns to the world</td></tr>
+              <tr><td>Inactivity threshold</td><td>30 days → 30% refund, tile returns to the world</td></tr>
               <tr><td>Friend requests / DMs / region chat limits</td><td>20/day · 20/min (200 kept per chat) · 10/min (100 kept per region)</td></tr>
               <tr><td>Reports</td><td>10/day, private to the game's operator</td></tr>
             </tbody>
@@ -845,8 +843,20 @@ energy_boost:                                    +2 energy/day per tile owned (a
 
       <section id="version-history">
         <h2>Version history</h2>
-        <p class="section-desc">The game auto-detects new deploys and prompts a refresh; a "What's new" popup and version badge live in the header. This wiki reflects <strong>v1.7.0</strong>. Recent highlights:</p>
+        <p class="section-desc">The game auto-detects new deploys and prompts a refresh; a "What's new" popup and version badge live in the header. This wiki reflects <strong>v1.8.0</strong>. Recent highlights:</p>
         <div class="verhist">
+          <div class="verentry"><span class="vertag">v1.8.0</span><span class="verdate">Jul 21, 2026</span>
+            <ul>
+              <li>Tile decay shortened from 60 to 30 days of inactivity.</li>
+              <li>Status ranks: Magnate's threshold raised 2M → 10M, plus two new ranks above it (Tycoon, Mogul).</li>
+              <li>Daily attack allowance now scales with status rank instead of being flat for everyone.</li>
+              <li>Region chat rebuilt to follow the camera live — no more closing and reopening it to switch rooms.</li>
+              <li>Region names are now far more accurate — real nearby places instead of "unnamed territory" for most of the world.</li>
+            </ul>
+          </div>
+          <div class="verentry"><span class="vertag">v1.7.1</span><span class="verdate">Jul 21, 2026</span>
+            <ul><li>Replaced "How to play" with a direct Wiki link on the sign-in screen.</li></ul>
+          </div>
           <div class="verentry"><span class="vertag">v1.7.0</span><span class="verdate">Jul 21, 2026</span>
             <ul><li>This wiki is now deployed alongside the game itself, linked from the sign-in screen and HQ.</li></ul>
           </div>
