@@ -41,6 +41,14 @@ const VERSION_CHECK_MS = 5 * 60 * 1000;
 // commit, not after the fact.
 const CHANGELOG = [
   {
+    id: "1.5.0",
+    date: "Jul 20, 2026",
+    notes: [
+      "Message your friends! Open a chat from the Friends list in HQ.",
+      "A dot on the HQ tab and a count next to each friend show unread messages.",
+    ],
+  },
+  {
     id: "1.4.0",
     date: "Jul 20, 2026",
     notes: [
@@ -347,6 +355,7 @@ const ACH = [
   { k: "conqueror", name: "Conqueror", desc: "Win a PvP attack and capture a tile" },
   { k: "tutorial", name: "Oriented", desc: "Complete the tutorial" },
   { k: "friend1", name: "Sociable", desc: "Make a friend" },
+  { k: "dm1", name: "Pen pal", desc: "Send a friend a message" },
 ];
 
 /* ── math: mercator + quadkeys ──────────────────────────────── */
@@ -940,6 +949,12 @@ function Game({ G, onExit, startFresh }) {
   // unlockedRegions: renders don't depend on it, the draw loop just reads
   // whatever's current.
   const friendIds = useRef(new Set());
+  // DMs (social phase 2)
+  const [chatMsgs, setChatMsgs] = useState({ loading: false, rows: null });
+  const [chatDraft, setChatDraft] = useState("");
+  const [unread, setUnread] = useState({}); // sender uuid -> unread count
+  const unreadPrevTotal = useRef(0);
+  const chatListRef = useRef(null);
   const [assetQuery, setAssetQuery] = useState("");
   const [assetClsFilter, setAssetClsFilter] = useState("all");
   const [assetRarityFilter, setAssetRarityFilter] = useState(-1);
@@ -1871,6 +1886,70 @@ function Game({ G, onExit, startFresh }) {
     const wx = (tx + 0.5) / rn, wy = (ty + 0.5) / rn;
     setTab("map");
     flyTo(wyToLat(wy), wx * 360 - 180, 0.8);
+  };
+
+  /* ── DMs (social phase 2) — friends-only, delivered by polling.
+     History reads are direct RLS-scoped selects (I can only ever see
+     rows I'm in, so `.or(sender/recipient = friend)` yields exactly our
+     pair); sends go through the send_message RPC which enforces the
+     friendship, a rate limit, and per-pair retention server-side. ── */
+  const refreshUnread = useCallback(async () => {
+    const { data, error } = await supabase
+      .from("messages").select("sender").eq("recipient", g.uid).is("read_at", null).limit(500);
+    if (error) return;
+    const counts = {};
+    for (const r of data || []) counts[r.sender] = (counts[r.sender] || 0) + 1;
+    const total = (data || []).length;
+    if (total > unreadPrevTotal.current) toast("📬 New message — see Friends in HQ");
+    unreadPrevTotal.current = total;
+    setUnread(counts);
+  }, [g, toast]);
+  useEffect(() => {
+    if (!ready) return;
+    refreshUnread();
+    const iv = setInterval(refreshUnread, 25000);
+    return () => clearInterval(iv);
+  }, [ready, refreshUnread]);
+
+  const fetchChat = useCallback(async (uid) => {
+    const { data, error } = await supabase
+      .from("messages").select("id,sender,body,created_at")
+      .or(`sender.eq.${uid},recipient.eq.${uid}`)
+      .order("id", { ascending: false }).limit(50);
+    if (error) { setChatMsgs({ loading: false, rows: [] }); return; }
+    setChatMsgs({ loading: false, rows: (data || []).reverse() });
+    supabase.rpc("mark_messages_read", { p_from: uid }).then(() => refreshUnread());
+  }, [refreshUnread]);
+
+  const openChat = (uid, name) => {
+    setChatMsgs({ loading: true, rows: null });
+    setChatDraft("");
+    setModal({ kind: "chat", uid, name });
+    fetchChat(uid);
+  };
+
+  // poll the open conversation — modal deps restart this whenever a
+  // different chat opens, and tear it down when any other modal replaces it
+  useEffect(() => {
+    if (modal?.kind !== "chat") return;
+    const iv = setInterval(() => fetchChat(modal.uid), 5000);
+    return () => clearInterval(iv);
+  }, [modal, fetchChat]);
+
+  // keep the newest message in view
+  useEffect(() => {
+    const el = chatListRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [chatMsgs]);
+
+  const sendChat = async () => {
+    const body = chatDraft.trim();
+    if (!body || modal?.kind !== "chat") return;
+    const { data, error } = await supabase.rpc("send_message", { p_to: modal.uid, p_body: body });
+    if (error) { toast(error.message || "Couldn't send that."); return; }
+    setChatDraft("");
+    if (data) setChatMsgs((m) => ({ ...m, rows: [...(m.rows || []), data] }));
+    if (!g.ach.dm1) { g.ach.dm1 = 1; toast("Unlocked — Pen pal"); dirty.current = true; }
   };
 
   // ── landmarks: small, near-static reference data — fetched once at
@@ -3088,6 +3167,9 @@ function Game({ G, onExit, startFresh }) {
     ? Math.max(0, 48 * 3600 - Math.round((Date.now() - new Date(selRec.os).getTime()) / 1000))
     : 0;
   const tilePxNow = cam.current.s / N;
+  // unread DMs from current friends only — a count from someone since
+  // unfriended would otherwise light the HQ dot with no row to clear it
+  const unreadTotal = Object.entries(unread).reduce((a, [uid, c]) => a + (friendIds.current.has(uid) ? c : 0), 0);
 
   // Only actually filters/sorts when the Assets tab is showing — skipped
   // otherwise so a 50+ tile portfolio doesn't pay this cost 4x/sec on the
@@ -3953,7 +4035,10 @@ function Game({ G, onExit, startFresh }) {
                           <span className="h-2 w-2 shrink-0 rounded-full" style={{ background: C.friend, boxShadow: `0 0 6px ${C.friend}99` }} />
                           <span className="truncate">{r.username}</span>
                         </span>
-                        <span className="flex shrink-0 gap-2.5">
+                        <span className="flex shrink-0 items-center gap-2.5">
+                          <button className="pt11 font-bold focus-visible:outline focus-visible:outline-2" style={act} onClick={() => openChat(r.other_user, r.username)}>
+                            Chat{unread[r.other_user] > 0 ? ` (${unread[r.other_user]})` : ""}
+                          </button>
                           {r.home_region && <button className="pt11 font-bold focus-visible:outline focus-visible:outline-2" style={act} onClick={() => visitRegion(r.home_region)}>Visit</button>}
                           <button className="pt11 focus-visible:outline focus-visible:outline-2" style={actDim} onClick={() => removeFriend(r.other_user)}>Remove</button>
                         </span>
@@ -4141,8 +4226,12 @@ function Game({ G, onExit, startFresh }) {
               outlineColor: C.amber,
             }}>
             {label}
-            {k === "hq" && g.hasUnseenLoss && (
-              <span className="absolute right-2.5 top-1.5 h-2 w-2 rounded-full" style={{ background: "#F08A8A", boxShadow: "0 0 6px #F08A8A99" }} title="Territory lost while you were away" />
+            {k === "hq" && (g.hasUnseenLoss || unreadTotal > 0) && (
+              <span className="absolute right-2.5 top-1.5 h-2 w-2 rounded-full"
+                style={g.hasUnseenLoss
+                  ? { background: "#F08A8A", boxShadow: "0 0 6px #F08A8A99" }
+                  : { background: C.amber, boxShadow: `0 0 6px ${C.amber}99` }}
+                title={g.hasUnseenLoss ? "Territory lost while you were away" : "New messages"} />
             )}
           </button>
         ))}
@@ -4196,6 +4285,35 @@ function Game({ G, onExit, startFresh }) {
             </>
           )}
           {modal.kind === "ad" && <AdModal ad={modal.ad} reduced={reduced} onClaim={claimBoost} onClose={closeModal} />}
+          {modal.kind === "chat" && (
+            <>
+              <Eyebrow>Chat · {modal.name}</Eyebrow>
+              <div ref={chatListRef} className="mt-2 flex max-h-72 min-h-24 flex-col gap-1.5 overflow-y-auto py-1">
+                {chatMsgs.rows === null ? (
+                  <div className="pt11 py-2" style={{ ...mono, color: C.dim }}>Loading…</div>
+                ) : chatMsgs.rows.length === 0 ? (
+                  <div className="pt11 py-2" style={{ ...mono, color: C.dim }}>Say hi — messages stay between the two of you. Only the latest 200 are kept.</div>
+                ) : chatMsgs.rows.map((m) => {
+                  const mineMsg = m.sender === g.uid;
+                  return (
+                    <div key={m.id} className={`max-w-[85%] rounded-xl px-2.5 py-1.5 text-sm ${mineMsg ? "self-end" : "self-start"}`}
+                      style={mineMsg
+                        ? { background: `${C.amber}1f`, border: `1px solid ${C.amber}44`, color: C.text, overflowWrap: "anywhere" }
+                        : { background: C.panel, border: `1px solid ${C.hairLit}`, color: C.text, overflowWrap: "anywhere" }}>
+                      {m.body}
+                    </div>
+                  );
+                })}
+              </div>
+              <div className="mt-2 flex gap-2">
+                <input value={chatDraft} onChange={(e) => setChatDraft(e.target.value)} maxLength={500} placeholder="Message…"
+                  onKeyDown={(e) => { if (e.key === "Enter") sendChat(); }}
+                  className="min-w-0 flex-1 rounded-xl px-3 py-2.5 text-sm focus-visible:outline focus-visible:outline-2"
+                  style={{ ...display, ...inputSty }} />
+                <Btn small onClick={sendChat} disabled={!chatDraft.trim()}>Send</Btn>
+              </div>
+            </>
+          )}
           {modal.kind === "changelog" && (
             <>
               <Eyebrow>What's new</Eyebrow>

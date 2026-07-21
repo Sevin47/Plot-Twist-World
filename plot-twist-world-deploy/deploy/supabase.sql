@@ -2155,10 +2155,111 @@ $$;
 revoke all on function list_friendships() from public;
 grant execute on function list_friendships() to authenticated;
 
--- Social phases 2/3 (not yet built): DMs will be a `messages` table with
--- sender/recipient RLS and a friendship+block check in its send RPC;
--- region chat a `region_messages` table with lazy retention sweep. Both
--- MUST consult friendships.status='blocked' before delivering anything.
+-- ══════════════════════════════════════════════════════════════════
+-- Direct messages (social phase 2) — friends-only
+-- ══════════════════════════════════════════════════════════════════
+-- PRIVATE user content, like friendships above: RLS restricts reads to
+-- the two people in a message, writes happen only through send_message.
+-- Friends-only is the abuse-surface decision, not an implementation
+-- shortcut: requiring an accepted friendship before any message can
+-- exist eliminates stranger spam/harassment structurally, so this needs
+-- no separate block check — a blocked pair is by definition no longer
+-- 'accepted'. Delivery is client polling for now; if this ever moves to
+-- Supabase Realtime, RLS already covers postgres_changes, so it's an
+-- additive publication change, not a schema one.
+create table if not exists messages (
+  id bigserial primary key,
+  sender uuid not null references profiles(user_id) on delete cascade,
+  recipient uuid not null references profiles(user_id) on delete cascade,
+  body text not null check (char_length(body) between 1 and 500),
+  created_at timestamptz not null default now(),
+  read_at timestamptz
+);
+create index if not exists idx_messages_recipient_unread on messages(recipient) where read_at is null;
+create index if not exists idx_messages_pair on messages(sender, recipient, id desc);
+
+alter table messages enable row level security;
+drop policy if exists "read own messages" on messages;
+create policy "read own messages" on messages for select using (auth.uid() in (sender, recipient));
+grant select on messages to authenticated;
+
+-- ── send_message: friends-only, rate-limited, self-pruning ──
+create or replace function send_message(p_to uuid, p_body text)
+returns messages
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_uid uuid := auth.uid();
+  v_body text := trim(p_body);
+  v_a uuid; v_b uuid;
+  v_row messages;
+begin
+  if v_uid is null then raise exception 'not authenticated'; end if;
+  if v_body is null or char_length(v_body) < 1 then raise exception 'empty message'; end if;
+  if char_length(v_body) > 500 then raise exception 'message too long (500 characters max)'; end if;
+  if p_to = v_uid then raise exception 'that is you'; end if;
+
+  v_a := least(v_uid, p_to); v_b := greatest(v_uid, p_to);
+  if not exists (select 1 from friendships
+      where user_a = v_a and user_b = v_b and status = 'accepted') then
+    -- same message whether they're a stranger, pending, or blocked —
+    -- never a distinct "blocked" answer (see send_friend_request)
+    raise exception 'you can only message friends';
+  end if;
+
+  if (select count(*) from messages
+      where sender = v_uid and created_at > now() - interval '1 minute') >= 20 then
+    raise exception 'sending too fast — give it a moment';
+  end if;
+
+  insert into messages (sender, recipient, body)
+  values (v_uid, p_to, v_body)
+  returning * into v_row;
+
+  -- lazy retention, same philosophy as repossess_stale_tiles: no cron,
+  -- the write path itself keeps the table bounded. Only the latest 200
+  -- messages per pair survive — a DM history, not an archive.
+  delete from messages m
+  where ((m.sender = v_uid and m.recipient = p_to) or (m.sender = p_to and m.recipient = v_uid))
+    and m.id not in (
+      select m2.id from messages m2
+      where (m2.sender = v_uid and m2.recipient = p_to) or (m2.sender = p_to and m2.recipient = v_uid)
+      order by m2.id desc
+      limit 200
+    );
+
+  return v_row;
+end;
+$$;
+revoke all on function send_message(uuid, text) from public;
+grant execute on function send_message(uuid, text) to authenticated;
+
+-- ── mark_messages_read: one conversation at a time (recipient only) ──
+create or replace function mark_messages_read(p_from uuid)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_uid uuid := auth.uid();
+begin
+  if v_uid is null then raise exception 'not authenticated'; end if;
+  update messages set read_at = now()
+    where recipient = v_uid and sender = p_from and read_at is null;
+end;
+$$;
+revoke all on function mark_messages_read(uuid) from public;
+grant execute on function mark_messages_read(uuid) to authenticated;
+
+-- Social phase 3 (not yet built): region chat — a `region_messages` table
+-- (region text, sender, body, created_at) with public-read RLS scoped to
+-- the reader's unlocked regions, a send RPC gated on region-unlocked +
+-- rate limit + a per-region lazy retention sweep, and block filtering at
+-- read time (blocked senders' rows excluded for the blocker). Needs the
+-- report mechanism before shipping.
 
 -- Force PostgREST to pick up schema changes from this script immediately.
 -- It normally reloads on its own shortly after DDL, but that can lag or
