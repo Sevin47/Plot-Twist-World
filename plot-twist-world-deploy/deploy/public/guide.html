@@ -1,5 +1,14 @@
 <title>Plot Twist Wiki — the Player's Guide</title>
 <style>
+  /* Tells the browser this page fully implements both color schemes itself
+     (see the prefers-color-scheme query + :root[data-theme] overrides
+     below) — without this, some browsers' own automatic dark-mode color
+     inversion can fight the page's colors, especially ones derived from
+     CSS custom properties. Confirmed in the wild: wikitable body text
+     (pure-inherited color, no explicit rule of its own) was rendering
+     near-black-on-dark-navy, unreadable, while headers (explicit color)
+     were fine — classic symptom of exactly this conflict. */
+  :root { color-scheme: light dark; }
   :root {
     --ink: #EEF1F6; --panel: #FFFFFF; --panel-hi: #F8FAFC; --hair: #D8DFE9; --hair-lit: #C4CEDC;
     --text: #17233A; --dim: #5B6B85; --amber: #B4720E; --amber-deep: #8F5A0A;
@@ -153,6 +162,7 @@
   table.wikitable { border-collapse: collapse; width: 100%; margin: 12px 0 18px; font-size: 13px; }
   .table-wrap { overflow-x: auto; border-radius: 10px; border: 1px solid var(--hair); }
   .wikitable th, .wikitable td { text-align: left; padding: 8px 13px; border-bottom: 1px solid var(--hair); white-space: nowrap; }
+  .wikitable td { color: var(--text); }
   .wikitable th { font-family: var(--font-mono); font-size: 10px; text-transform: uppercase; letter-spacing: 0.07em; color: var(--dim); background: var(--wikitable-head); font-weight: 700; }
   .wikitable tr:last-child td { border-bottom: none; }
   .wikitable td.num, .wikitable th.num { font-family: var(--font-mono); font-variant-numeric: tabular-nums; text-align: right; }
