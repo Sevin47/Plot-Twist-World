@@ -41,6 +41,17 @@ const VERSION_CHECK_MS = 5 * 60 * 1000;
 // commit, not after the fact.
 const CHANGELOG = [
   {
+    id: "1.8.0",
+    date: "Jul 21, 2026",
+    notes: [
+      "Tile decay shortened from 60 to 30 days of inactivity.",
+      "Status ranks: Magnate now needs ₲10M (was 2M), plus two new ranks above it — Tycoon and Mogul.",
+      "Daily attacks now scale with status rank, 6 to 20, instead of a flat 6 for everyone.",
+      "Region chat now follows the map live — no more closing and reopening it to switch rooms.",
+      "Regions are named far more accurately now, using real nearby places instead of \"unnamed territory.\"",
+    ],
+  },
+  {
     id: "1.7.1",
     date: "Jul 21, 2026",
     notes: [
@@ -338,19 +349,29 @@ const MAX_LVL = 4;
 
 // MUST match status_tier in supabase.sql exactly. Sticky/high-water-mark:
 // driven by peak_net_worth (all-time-highest net worth this account has
-// ever reached), never demotes for spending down or losing tiles. Tier 6's
-// cap of 20 is the old unconditional energy default from before the
-// daily-cap rework — you used to start with it for free, now you earn
-// your way back to it.
+// ever reached), never demotes for spending down or losing tiles.
 // `slots` = max tiles this tier can have under construction at once —
 // MUST match status_tier.builder_slots in supabase.sql exactly.
+// `atk` = max attacks this tier may LAUNCH per day — MUST match
+// status_tier.daily_atk_cap exactly. Added 2026-07 alongside the Tycoon/
+// Mogul tiers below — attacks used to be flat 6/day for everyone
+// regardless of status, unlike energy; status now buys combat throughput
+// too, not just claim throughput.
+//
+// Magnate moved from a 2,000,000 threshold to 10,000,000, and two tiers
+// were added above it — 2,000,000 was reachable with a modest amount of
+// playtime, which left nothing to aspire to once you got there. The new
+// ceiling (Mogul, 250,000,000) sits well past what even a serious
+// landmark collector needs (216 tiles world-wide at ₲1,000,000 each).
 const STATUS_TIERS = [
-  { tier: 1, name: "Squatter",    min: 0,       cap: 10, slots: 2 },
-  { tier: 2, name: "Homesteader", min: 5000,    cap: 12, slots: 2 },
-  { tier: 3, name: "Landholder",  min: 25000,   cap: 14, slots: 3 },
-  { tier: 4, name: "Developer",   min: 100000,  cap: 16, slots: 3 },
-  { tier: 5, name: "Baron",       min: 500000,  cap: 18, slots: 4 },
-  { tier: 6, name: "Magnate",     min: 2000000, cap: 20, slots: 4 },
+  { tier: 1, name: "Squatter",    min: 0,         cap: 10, slots: 2, atk: 6 },
+  { tier: 2, name: "Homesteader", min: 5000,      cap: 12, slots: 2, atk: 8 },
+  { tier: 3, name: "Landholder",  min: 25000,     cap: 14, slots: 3, atk: 10 },
+  { tier: 4, name: "Developer",   min: 100000,    cap: 16, slots: 3, atk: 12 },
+  { tier: 5, name: "Baron",       min: 500000,    cap: 18, slots: 4, atk: 14 },
+  { tier: 6, name: "Magnate",     min: 10000000,  cap: 20, slots: 4, atk: 16 },
+  { tier: 7, name: "Tycoon",      min: 50000000,  cap: 22, slots: 5, atk: 18 },
+  { tier: 8, name: "Mogul",       min: 250000000, cap: 24, slots: 6, atk: 20 },
 ];
 // Highest tier whose threshold this net worth clears, plus the next tier
 // up (null once already at the top) for progress-bar display.
@@ -361,10 +382,7 @@ const statusFor = (netWorth) => {
   return { ...STATUS_TIERS[idx], next: STATUS_TIERS[idx + 1] || null };
 };
 
-// PvP: mirrors attack_tile()'s hardcoded caps in supabase.sql — flat for
-// every player regardless of status tier, unlike energy's cap.
-const ATTACK_DAILY_CAP = 6;    // attacks a player may LAUNCH per UTC day
-const ATTACK_RECEIVED_CAP = 2; // attacks a single TILE may absorb per UTC day
+const ATTACK_RECEIVED_CAP = 2; // attacks a single TILE may absorb per UTC day — flat, not status-scaled
 
 const ADS = [
   { brand: "Bolder Boulders", line: "Rocks, but bolder." },
@@ -459,6 +477,29 @@ function coordLabel(qk) {
   const [wx, wy] = centerOfQk(qk);
   const lat = wyToLat(wy), lon = wx * 360 - 180;
   return `${Math.abs(lat).toFixed(2)}°${lat >= 0 ? "N" : "S"} ${Math.abs(lon).toFixed(2)}°${lon >= 0 ? "E" : "W"}`;
+}
+
+// A region (~150km across) is much bigger than urbanAt's own search
+// radius (~45-60km, tuned for "what's under this one tile"), so a
+// center-only lookup misses real cities sitting near a region's edge —
+// used to just fall back to a blunt "unnamed territory" for most of the
+// world's regions. Samples the center plus all four corners and keeps
+// whichever hit is closest, so a city anywhere in the region's real
+// footprint is findable, not just one directly under its midpoint.
+// Falls back to coordinates (always available, never "unnamed") only
+// when truly nothing is close by any of the five samples.
+function regionLabel(region) {
+  const [rx, ry] = txyOf(region);
+  const rn = 1 << region.length;
+  const samples = [[0.5, 0.5], [0.08, 0.08], [0.92, 0.08], [0.08, 0.92], [0.92, 0.92]];
+  let best = null, bestD = Infinity;
+  for (const [fx, fy] of samples) {
+    const wx = (rx + fx) / rn, wy = (ry + fy) / rn;
+    const { city, dkm } = urbanAt(wyToLat(wy), wx * 360 - 180);
+    if (city && dkm < bestD) { bestD = dkm; best = city; }
+  }
+  if (best) return bestD < 25 ? best.name : `near ${best.name}`;
+  return coordLabel(region);
 }
 
 /* ── real urban geography: Natural Earth populated places ───── */
@@ -983,6 +1024,7 @@ function Game({ G, onExit, startFresh }) {
   // region chat (social phase 3) — a drawer over the map, scoped to
   // whichever unlocked region the camera is currently centered on
   const [rchatOpen, setRchatOpen] = useState(false);
+  const [rchatRegion, setRchatRegion] = useState(null); // live — the region the camera is over right now
   const [rchat, setRchat] = useState({ loading: false, rows: null, region: null, locked: false });
   const [rchatDraft, setRchatDraft] = useState("");
   const [rchatSel, setRchatSel] = useState(null); // message id with its Report/Block row expanded
@@ -1075,7 +1117,7 @@ function Game({ G, onExit, startFresh }) {
     if (repo_count) {
       // a tile going stale isn't "trading" — kept separate from the sale
       // toast/achievement above on purpose
-      toast(`+₲${fmt(repo_total)} refunded — ${repo_count} tile${repo_count === 1 ? "" : "s"} repossessed for inactivity (60+ days)`);
+      toast(`+₲${fmt(repo_total)} refunded — ${repo_count} tile${repo_count === 1 ? "" : "s"} repossessed for inactivity (30+ days)`);
     }
   }, [g, toast]);
 
@@ -1984,11 +2026,29 @@ function Game({ G, onExit, startFresh }) {
     if (!g.ach.dm1) { g.ach.dm1 = 1; toast("Unlocked — Pen pal"); dirty.current = true; }
   };
 
-  /* ── region chat (social phase 3) — the drawer tracks whichever region
-     the camera is centered on, so panning across a boundary switches
-     rooms on the next poll. Reads/writes both go through RPCs that
-     enforce the territory gate and block filtering server-side; the
-     client just mirrors the gate for a friendlier locked-region hint. ── */
+  /* ── region chat (social phase 3), redesigned for live room-follow.
+     The old version conflated two different concerns into one 5s-polled
+     effect: "which region is the camera over" and "fetch messages for
+     it" — so the displayed room, the send target, and the actual camera
+     position could all disagree for up to 5 seconds after panning,
+     which read as "you have to close and reopen the chat to switch
+     rooms." Split apart:
+       1. rchatRegion — LIVE, recomputed after every render while the
+          drawer is open (piggybacking the ambient re-render cascade the
+          250ms economy tick already drives, same no-dep-array pattern
+          as the tutorial's zoom-step detection). Always matches the
+          camera instantly; drives the header label and the locked/
+          unlocked decision with zero lag.
+       2. message fetching — a separate effect that takes rchatRegion as
+          a real dependency, so a region change triggers an IMMEDIATE
+          refetch (React tears down the old interval and reruns the
+          effect the instant the dependency changes) instead of waiting
+          for the next 5s tick. The 5s interval still runs *within* a
+          room, to pick up new messages from other players.
+     Sends always target rchatRegion (live), never a stale fetch result —
+     what you type always goes where you're actually standing, matching
+     the header. A toast fires when the room actually changes (not on
+     first open) so switching feels intentional instead of silent. ── */
   const centerRegionQk = () => {
     const { s, x, y } = cam.current;
     const { w, h } = size.current;
@@ -2004,8 +2064,21 @@ function Game({ G, onExit, startFresh }) {
     return q;
   };
 
-  const refreshRegionChat = useCallback(async () => {
-    const region = centerRegionQk();
+  const rchatRegionPrev = useRef(null);
+  useEffect(() => {
+    if (!rchatOpen || tab !== "map") return;
+    const r = centerRegionQk();
+    if (r === rchatRegionPrev.current) return;
+    const first = rchatRegionPrev.current == null;
+    rchatRegionPrev.current = r;
+    setRchatRegion(r);
+    if (!first) toast(`📍 Now chatting in ${regionLabel(r)}`);
+  });
+  // closing resets the "first open" marker so reopening (even at the same
+  // spot) never fires a spurious "now chatting in" toast
+  useEffect(() => { if (!rchatOpen) rchatRegionPrev.current = null; }, [rchatOpen]);
+
+  const fetchRegionMessages = useCallback(async (region) => {
     if (!unlockedRegions.current.has(region)) {
       setRchat({ loading: false, rows: null, region, locked: true });
       return;
@@ -2017,11 +2090,11 @@ function Game({ G, onExit, startFresh }) {
   }, []);
 
   useEffect(() => {
-    if (!ready || !rchatOpen || tab !== "map") return;
-    refreshRegionChat();
-    const iv = setInterval(refreshRegionChat, 5000);
+    if (!ready || !rchatOpen || tab !== "map" || !rchatRegion) return;
+    fetchRegionMessages(rchatRegion);
+    const iv = setInterval(() => fetchRegionMessages(rchatRegion), 5000);
     return () => clearInterval(iv);
-  }, [ready, rchatOpen, tab, refreshRegionChat]);
+  }, [ready, rchatOpen, tab, rchatRegion, fetchRegionMessages]);
 
   useEffect(() => {
     const el = rchatListRef.current;
@@ -2030,8 +2103,8 @@ function Game({ G, onExit, startFresh }) {
 
   const sendRegionChat = async () => {
     const body = rchatDraft.trim();
-    if (!body || !rchat.region) return;
-    const { data, error } = await supabase.rpc("send_region_message", { p_region: rchat.region, p_body: body });
+    if (!body || !rchatRegion) return;
+    const { data, error } = await supabase.rpc("send_region_message", { p_region: rchatRegion, p_body: body });
     if (error) { toast(error.message || "Couldn't send that."); return; }
     setRchatDraft("");
     if (data) setRchat((s) => ({ ...s, rows: [...(s.rows || []), { ...data, username: g.name }] }));
@@ -2225,8 +2298,8 @@ function Game({ G, onExit, startFresh }) {
     if (!attackableFrom(qk)) { toast("You need to own a neighboring tile to attack this one."); return; }
     const cost = attackCostFor(rec, qk);
     if (g.bal < cost) { toast("Not enough ₲ to launch this attack."); return; }
-    if (!g.devMode && (g.attacksSent || 0) >= ATTACK_DAILY_CAP) {
-      toast(`No attacks left today (${ATTACK_DAILY_CAP}/day) — resets at midnight UTC`);
+    if (!g.devMode && (g.attacksSent || 0) >= myStatus.atk) {
+      toast(`No attacks left today (${myStatus.atk}/day) — resets at midnight UTC`);
       return;
     }
     if (!g.devMode && (rec.arc || 0) >= ATTACK_RECEIVED_CAP) {
@@ -3475,8 +3548,8 @@ function Game({ G, onExit, startFresh }) {
             {energyNow(g) < myStatus.cap && (
               <span className="pt10" style={{ ...mono, color: C.dim }}>resets in {hm(energySecsToReset())}</span>
             )}
-            <span className="pt10 font-bold" style={{ ...mono, color: (g.attacksSent || 0) < ATTACK_DAILY_CAP ? C.text : "#F08A8A", fontVariantNumeric: "tabular-nums" }} title="Attacks launched — resets once per day">
-              ⚔{Math.max(0, ATTACK_DAILY_CAP - (g.attacksSent || 0))}/{ATTACK_DAILY_CAP} today
+            <span className="pt10 font-bold" style={{ ...mono, color: (g.attacksSent || 0) < myStatus.atk ? C.text : "#F08A8A", fontVariantNumeric: "tabular-nums" }} title="Attacks launched — resets once per day">
+              ⚔{Math.max(0, myStatus.atk - (g.attacksSent || 0))}/{myStatus.atk} today
             </span>
             <span className="pt10 font-bold" style={{ ...mono, color: C.text, fontVariantNumeric: "tabular-nums" }} title="Tiles currently under construction">
               🔨{g.own.filter((t) => t.bu).length}/{myStatus.slots} building
@@ -3599,7 +3672,7 @@ function Game({ G, onExit, startFresh }) {
                 )}
               </div>
               <div>energy {energyNow(g)}/{myStatus.cap} today ({myStatus.name}) · resets in {hm(energySecsToReset())}</div>
-              <div>builds: {g.own.filter((t) => t.bu).length}/{myStatus.slots} slots · attacks {g.attacksSent || 0}/{ATTACK_DAILY_CAP} sent</div>
+              <div>builds: {g.own.filter((t) => t.bu).length}/{myStatus.slots} slots · attacks {g.attacksSent || 0}/{myStatus.atk} sent</div>
               <div>territory: {unlockedRegions.current.size} region(s){homeRegionRef.current ? ` · home ${homeRegionRef.current}` : ""}{sel ? ` · sel ${regionOf(sel)} locked=${String(selLocked)}` : ""}</div>
               <div>fps {D.fps} · draw {D.avg}ms · max {D.max}ms</div>
               <div>tilePx {D.tilePx.toFixed(2)} · grid {String(D.gridOn)} · tiles {D.cnt}</div>
@@ -3630,28 +3703,29 @@ function Game({ G, onExit, startFresh }) {
           {/* region chat drawer — yields to the tile sheet (both live at
               the bottom edge); rchatOpen persists so closing the sheet
               brings the chat back. Room = whatever unlocked region the
-              camera is centered on; panning across a boundary switches
-              rooms on the next poll. */}
+              camera is centered on RIGHT NOW (rchatRegion, live — see the
+              effect above) — the header name and the locked/unlocked
+              decision both track it directly rather than waiting on
+              rchat's last completed fetch, so panning into a new or
+              locked region updates the drawer instantly instead of
+              needing a manual close/reopen. */}
           {rchatOpen && !sel && (
             <div className="absolute inset-x-0 bottom-0 z-10 flex flex-col rounded-t-2xl p-3"
               style={{ background: `${C.panel}f5`, borderTop: `1px solid ${C.hairLit}`, boxShadow: C.shadowLg, maxHeight: "42%", ...blur(16) }}>
               <div className="mb-1 flex items-center justify-between">
-                <Eyebrow>
-                  Local chat{rchat.region ? (() => {
-                    const [wx, wy] = centerOfQk(rchat.region);
-                    const { n } = nearestCity(wyToLat(wy), wx * 360 - 180);
-                    return ` · ${n || "unnamed territory"}`;
-                  })() : ""}
-                </Eyebrow>
+                <Eyebrow>Local chat{rchatRegion ? ` · ${regionLabel(rchatRegion)}` : ""}</Eyebrow>
                 <button onClick={() => setRchatOpen(false)} aria-label="Close chat"
                   className="pt11 px-1 focus-visible:outline focus-visible:outline-2" style={{ ...mono, color: C.dim, outlineColor: C.amber }}>✕</button>
               </div>
-              {rchat.locked ? (
+              {rchatRegion && !unlockedRegions.current.has(rchatRegion) ? (
                 <div className="pt11 py-2" style={{ ...mono, color: C.dim }}>This region isn't yours yet — unlock it to join its local chat.</div>
               ) : (
                 <>
                   <div ref={rchatListRef} className="flex min-h-16 flex-col gap-1 overflow-y-auto py-1">
-                    {rchat.rows === null ? (
+                    {rchat.region !== rchatRegion || rchat.rows === null ? (
+                      // rchat.region !== rchatRegion: the fetch for the room we just
+                      // switched into hasn't landed yet — show Loading rather than
+                      // flashing the previous room's messages under the new name
                       <div className="pt11 py-1" style={{ ...mono, color: C.dim }}>Loading…</div>
                     ) : rchat.rows.length === 0 ? (
                       <div className="pt11 py-1" style={{ ...mono, color: C.dim }}>Quiet out here — say something. Everyone who's unlocked this region can read it.</div>
@@ -3809,7 +3883,7 @@ function Game({ G, onExit, startFresh }) {
                   ) : attackableFrom(sel) && (
                     <div className="mt-2 border-t pt-2" style={{ borderColor: C.hair }}>
                       <div className="mb-1.5 flex items-center justify-between pt10" style={{ ...mono, color: C.dim }}>
-                        <span>attacks left today: {Math.max(0, ATTACK_DAILY_CAP - (g.attacksSent || 0))}/{ATTACK_DAILY_CAP}</span>
+                        <span>attacks left today: {Math.max(0, myStatus.atk - (g.attacksSent || 0))}/{myStatus.atk}</span>
                         <span>attacked {selRec.arc || 0}/{ATTACK_RECEIVED_CAP} today</span>
                       </div>
                       <div className="mb-1.5 pt10" style={{ ...mono, color: C.dim }}>
@@ -3821,8 +3895,8 @@ function Game({ G, onExit, startFresh }) {
                       </div>
                       <Btn full tone="danger"
                         onClick={() => attackTile(sel)}
-                        disabled={g.bal < attackCostFor(selRec, sel) || (!g.devMode && ((g.attacksSent || 0) >= ATTACK_DAILY_CAP || (selRec.arc || 0) >= ATTACK_RECEIVED_CAP))}>
-                        {!g.devMode && (g.attacksSent || 0) >= ATTACK_DAILY_CAP ? "No attacks left today"
+                        disabled={g.bal < attackCostFor(selRec, sel) || (!g.devMode && ((g.attacksSent || 0) >= myStatus.atk || (selRec.arc || 0) >= ATTACK_RECEIVED_CAP))}>
+                        {!g.devMode && (g.attacksSent || 0) >= myStatus.atk ? "No attacks left today"
                           : !g.devMode && (selRec.arc || 0) >= ATTACK_RECEIVED_CAP ? "Tile defended twice today"
                           : g.bal < attackCostFor(selRec, sel) ? "Not enough ₲ to attack"
                           : `Attack — ₲${fmt(attackCostFor(selRec, sel))}`}
@@ -4141,12 +4215,11 @@ function Game({ G, onExit, startFresh }) {
                   .map((region) => {
                     const [wx, wy] = centerOfQk(region);
                     const lat = wyToLat(wy), lon = wx * 360 - 180;
-                    const { n } = nearestCity(lat, lon);
                     const isHome = region === homeRegionRef.current;
                     return (
                       <button key={region} className="flex w-full items-center justify-between py-1.5 text-left focus-visible:outline focus-visible:outline-2" style={{ outlineColor: C.amber }}
                         onClick={() => { setTab("map"); flyTo(lat, lon); }}>
-                        <span className="text-sm font-bold" style={display}>{n || "Unnamed territory"}</span>
+                        <span className="text-sm font-bold" style={display}>{regionLabel(region)}</span>
                         {isHome && <Chip color={C.amber}>Home</Chip>}
                       </button>
                     );

@@ -54,9 +54,17 @@ on conflict (cls) do update set price = excluded.price, rps = excluded.rps, sell
 --    PlotTwistWorld.jsx). Sticky/high-water-mark — driven by
 --    profiles.peak_net_worth (all-time-highest net worth), which never
 --    decreases, not live current net worth — see reset_daily_energy and
---    the accrue_rent peak-tracking block below. Tier 6's cap of 20 is the
---    old unconditional energy default from before the daily-cap rework:
---    you used to start with it for free, now you earn your way back. ──
+--    the accrue_rent peak-tracking block below.
+--
+--    2026-07: added two tiers above the old ceiling (Magnate at 2M was
+--    reachable by almost anyone with a bit of playtime, which flattened
+--    the whole point of a status ladder — nothing left to aspire to).
+--    Magnate itself moved from 2M to 10M; Tycoon and Mogul extend the
+--    climb well past what a landmark-collecting whale needs (216 tiles
+--    world-wide at 1M each). Also added daily_atk_cap, alongside
+--    daily_energy_cap — attacks were flat for every tier before this,
+--    which meant status only ever bought you claim throughput, never
+--    combat throughput. ──
 create table if not exists status_tier (
   tier int primary key,
   name text not null,
@@ -68,15 +76,21 @@ create table if not exists status_tier (
 -- as a hardcoded CASE so it lives alongside daily_energy_cap as one
 -- tier-indexed config table, same reasoning as that column.
 alter table status_tier add column if not exists builder_slots int not null default 2;
+-- daily_atk_cap: mirrors attack_tile's old hardcoded "6" — see the
+-- 2026-07 note above. Default matches tier 1 so any pre-existing row
+-- keeps working even before the insert below runs.
+alter table status_tier add column if not exists daily_atk_cap int not null default 6;
 
-insert into status_tier (tier, name, min_net_worth, daily_energy_cap, builder_slots) values
-  (1, 'Squatter',    0,       10, 2),
-  (2, 'Homesteader', 5000,    12, 2),
-  (3, 'Landholder',  25000,   14, 3),
-  (4, 'Developer',   100000,  16, 3),
-  (5, 'Baron',       500000,  18, 4),
-  (6, 'Magnate',     2000000, 20, 4)
-on conflict (tier) do update set name = excluded.name, min_net_worth = excluded.min_net_worth, daily_energy_cap = excluded.daily_energy_cap, builder_slots = excluded.builder_slots;
+insert into status_tier (tier, name, min_net_worth, daily_energy_cap, builder_slots, daily_atk_cap) values
+  (1, 'Squatter',    0,         10, 2, 6),
+  (2, 'Homesteader', 5000,      12, 2, 8),
+  (3, 'Landholder',  25000,     14, 3, 10),
+  (4, 'Developer',   100000,    16, 3, 12),
+  (5, 'Baron',       500000,    18, 4, 14),
+  (6, 'Magnate',     10000000,  20, 4, 16),
+  (7, 'Tycoon',      50000000,  22, 5, 18),
+  (8, 'Mogul',       250000000, 24, 6, 20)
+on conflict (tier) do update set name = excluded.name, min_net_worth = excluded.min_net_worth, daily_energy_cap = excluded.daily_energy_cap, builder_slots = excluded.builder_slots, daily_atk_cap = excluded.daily_atk_cap;
 
 -- ── accounts ──
 create table if not exists profiles (
@@ -416,7 +430,7 @@ end;
 $$;
 revoke all on function reset_daily_attacks_sent(uuid) from public;
 
--- ── repossess_stale_tiles: land decay. An owner absent 60+ days (profiles.
+-- ── repossess_stale_tiles: land decay. An owner absent 30+ days (profiles.
 --    last_seen — already tracked by accrue_rent for every player, no new
 --    activity column needed) has their tiles returned to the unclaimed pool
 --    a few at a time, with a 30% refund of what they paid credited to their
@@ -454,7 +468,7 @@ begin
     -- target within seconds of being created. flip_price is not null is
     -- exactly how a real orphaned owner=null row (deleted account, see
     -- above) is told apart from a live flip listing.
-    where (t.owner is null and t.flip_price is null) or p.last_seen < now() - interval '60 days'
+    where (t.owner is null and t.flip_price is null) or p.last_seen < now() - interval '30 days'
     order by coalesce(p.last_seen, 'epoch'::timestamptz) asc
     limit 5
     for update of t skip locked
@@ -1352,6 +1366,7 @@ declare
   v_landmark_price bigint;
   v_defense_mult numeric;
   v_siege_discount_pct numeric;
+  v_atk_cap int;
 begin
   if v_uid is null then raise exception 'not authenticated'; end if;
   if not exists (select 1 from profiles where user_id = v_uid) then raise exception 'no profile'; end if;
@@ -1425,8 +1440,16 @@ begin
     raise exception 'this tile has already been attacked twice today — try again tomorrow';
   end if;
 
-  -- mirrors ATTACK_DAILY_CAP in PlotTwistWorld.jsx — keep both in sync
-  if not v_dev_mode and (select attacks_sent_count from profiles where user_id = v_uid) >= 6 then
+  -- daily attack cap now scales with status, same lookup pattern as
+  -- reset_daily_energy's daily_energy_cap — mirrors statusFor(...).atk in
+  -- PlotTwistWorld.jsx.
+  select st.daily_atk_cap into v_atk_cap
+  from status_tier st
+  where st.min_net_worth <= (select peak_net_worth from profiles where user_id = v_uid)
+  order by st.min_net_worth desc
+  limit 1;
+
+  if not v_dev_mode and (select attacks_sent_count from profiles where user_id = v_uid) >= v_atk_cap then
     raise exception 'no attacks left today — resets tomorrow';
   end if;
 
