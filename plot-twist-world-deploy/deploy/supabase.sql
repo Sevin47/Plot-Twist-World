@@ -808,6 +808,9 @@ begin
   update tiles set owner = v_uid, paid = p_expected_price, list_price = null, owner_since = now(), updated_at = now()
   where qk = p_qk
   returning * into v_tile;
+  -- see the "Tile nicknames" section below: the seller's private nickname
+  -- (if any) doesn't carry over to a new owner
+  delete from tile_nicknames where tile_nicknames.qk = p_qk;
 
   if v_is_first_tile then
     insert into unlocked_regions (owner, region, is_home)
@@ -1551,6 +1554,9 @@ begin
           attacks_received_date = v_today,
           updated_at = now()
       where tiles.qk = p_qk;
+    -- see the "Tile nicknames" section below: a captured tile's private
+    -- nickname doesn't carry over to whoever just took it
+    delete from tile_nicknames where tile_nicknames.qk = p_qk;
   else
     update tiles
       set level = v_tile.level, build_until = v_tile.build_until,
@@ -2421,6 +2427,73 @@ end;
 $$;
 revoke all on function report_player(uuid, text, text) from public;
 grant execute on function report_player(uuid, text, text) to authenticated;
+
+-- ══════════════════════════════════════════════════════════════════
+-- Tile nicknames — private to the owner, cleared on transfer
+-- ══════════════════════════════════════════════════════════════════
+-- A separate table rather than a column on `tiles`, on purpose: `tiles`
+-- has a public-read policy (everyone needs to see who owns what, at what
+-- price/level), and RLS can't restrict individual COLUMNS of an
+-- otherwise-visible row — only which ROWS a query sees. A private
+-- per-owner column would need Postgres column-level GRANTs layered on
+-- top of that policy, which is real surface area to get right on a
+-- table this central. A separate table with its own "read own" policy
+-- (same shape as unlocked_regions/bank_ledger above) is simpler and
+-- can't leak: RLS alone is enough here.
+--
+-- No explicit "clear on transfer" column/flag needed either — the row's
+-- qk is only ever meaningful for the CURRENT owner, so any ownership
+-- change just deletes it outright rather than trying to keep it in
+-- sync. `on delete cascade` handles abandon_tile and
+-- repossess_stale_tiles for free (both delete the tiles row outright);
+-- buy_listed_tile and attack_tile's win branch update the row in place
+-- instead of deleting it, so those two explicitly delete the nickname
+-- as part of the transfer — see both below.
+create table if not exists tile_nicknames (
+  qk text primary key references tiles(qk) on delete cascade,
+  owner uuid not null references profiles(user_id) on delete cascade,
+  nickname text not null check (char_length(nickname) between 1 and 24),
+  updated_at timestamptz not null default now()
+);
+create index if not exists idx_tile_nicknames_owner on tile_nicknames(owner);
+
+alter table tile_nicknames enable row level security;
+drop policy if exists "read own tile_nicknames" on tile_nicknames;
+create policy "read own tile_nicknames" on tile_nicknames for select using (auth.uid() = owner);
+grant select on tile_nicknames to authenticated;
+
+-- ── set_tile_nickname: owner-only. Empty/whitespace-only body clears the
+--    nickname (deletes the row) instead of erroring — "rename to nothing"
+--    is how a player removes one, there's no separate "clear" action in
+--    the UI. ──
+create or replace function set_tile_nickname(p_qk text, p_nickname text)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_uid uuid := auth.uid();
+  v_name text := trim(coalesce(p_nickname, ''));
+begin
+  if v_uid is null then raise exception 'not authenticated'; end if;
+  if not exists (select 1 from tiles where tiles.qk = p_qk and owner = v_uid) then
+    raise exception 'tile not found or not yours';
+  end if;
+
+  if v_name = '' then
+    delete from tile_nicknames where tile_nicknames.qk = p_qk;
+    return;
+  end if;
+  if char_length(v_name) > 24 then raise exception 'nicknames are 24 characters max'; end if;
+
+  insert into tile_nicknames (qk, owner, nickname, updated_at)
+  values (p_qk, v_uid, v_name, now())
+  on conflict (qk) do update set nickname = excluded.nickname, owner = excluded.owner, updated_at = now();
+end;
+$$;
+revoke all on function set_tile_nickname(text, text) from public;
+grant execute on function set_tile_nickname(text, text) to authenticated;
 
 -- Force PostgREST to pick up schema changes from this script immediately.
 -- It normally reloads on its own shortly after DDL, but that can lag or

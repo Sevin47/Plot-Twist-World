@@ -2,6 +2,25 @@
 
 html, body, #root { height: 100%; }
 
+/* Large-viewport text scaling — reported illegible on 32"+ monitors.
+   The whole UI is sized in fixed px/rem tuned for a phone-width column
+   (deliberately: the map itself should still use all available screen
+   space, this isn't a max-width/layout constraint), so on a maximized
+   4K-class browser window every Tailwind text-* utility stays the same
+   physical size it is on a phone while the surrounding chrome gets huge
+   by comparison. Bumping the root font-size scales every rem-based
+   Tailwind utility (text-xs, text-sm, spacing, etc.) throughout the app
+   in one place; the custom pt9/pt10/pt11 px-based classes are NOT
+   rem-based and get their own matching override where they're defined
+   (PlotTwistWorld.jsx's inline <style> blocks), since a rule here would
+   lose to those on selector source order. */
+@media (min-width: 1600px) {
+  html { font-size: 17.5px; }
+}
+@media (min-width: 2200px) {
+  html { font-size: 19px; }
+}
+
 body {
   font-family: 'Space Grotesk', ui-sans-serif, system-ui, sans-serif;
   -webkit-font-smoothing: antialiased;
