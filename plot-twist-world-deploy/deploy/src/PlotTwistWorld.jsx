@@ -41,6 +41,13 @@ const VERSION_CHECK_MS = 5 * 60 * 1000;
 // commit, not after the fact.
 const CHANGELOG = [
   {
+    id: "1.7.1",
+    date: "Jul 21, 2026",
+    notes: [
+      "Replaced \"How to play\" with a direct Wiki link on the sign-in screen — the tutorial and wiki cover it better now.",
+    ],
+  },
+  {
     id: "1.7.0",
     date: "Jul 21, 2026",
     notes: [
@@ -770,31 +777,10 @@ function MenuShell({ children }) {
   );
 }
 
-function HowToModal({ onClose }) {
-  return (
-    <Modal onClose={onClose}>
-      <Eyebrow>How to play</Eyebrow>
-      <div className="mt-3 flex flex-col gap-2.5 text-sm leading-relaxed" style={{ color: C.text }}>
-        <div>Zoom into anywhere on Earth until the deed grid appears, then tap a ~300 m tile and buy it. Everyone plays on the same planet — one tile, one owner.</div>
-        <div>Tiles pay rent per second. Rarity is rolled when you buy (up to 8×). Build them up from cottage to tower for more rent.</div>
-        <div>Trade with real players: list your tiles at any price on the open market, or buy theirs. Sales pay you even while you're offline.</div>
-        <div>Every tile has a property classification — the kind of land it sits on (Downtown, Rural, and so on) — that sets its price and rent. Classifications come from real OpenStreetMap data: actual water, land-use and building footprints, not a guess. A freshly-revealed tile briefly shows as "Surveying…" (not yet purchasable) until its real data finishes loading, which is usually well under a second.</div>
-      </div>
-      <div className="mt-4"><Btn full onClick={onClose}>Got it</Btn></div>
-      <a href={`${import.meta.env.BASE_URL}guide.html`} target="_blank" rel="noopener noreferrer"
-        className="pt10 mt-3 block text-center underline decoration-dotted underline-offset-2 focus-visible:outline focus-visible:outline-2"
-        style={{ ...mono, color: C.dim, outlineColor: C.amber }}>
-        Full wiki — formulas, strategies &amp; every mechanic ↗
-      </a>
-    </Modal>
-  );
-}
-
 export default function PlotTwistWorld() {
   // checking | unconfigured | signedOut | needsUsername | ready
   const [authState, setAuthState] = useState(MULTIPLAYER ? "checking" : "unconfigured");
   const [session, setSession] = useState(null);
-  const [howto, setHowto] = useState(false);
   const [nameDraft, setNameDraft] = useState("");
   const [nameErr, setNameErr] = useState("");
   const [nameBusy, setNameBusy] = useState(false);
@@ -895,12 +881,11 @@ export default function PlotTwistWorld() {
       <MenuShell>
         <div className="mx-auto flex w-64 flex-col gap-2.5">
           <Btn full onClick={() => signInWithGoogle()}>Sign in with Google</Btn>
-          <Btn full tone="ghost" onClick={() => setHowto(true)}>How to play</Btn>
+          <Btn full tone="ghost" onClick={() => window.open(`${import.meta.env.BASE_URL}guide.html`, "_blank", "noopener,noreferrer")}>Wiki</Btn>
         </div>
         <div className="pt9 mx-auto mt-10 max-w-xs leading-relaxed" style={{ ...mono, color: C.dim }}>
           One account per player, tied to your Google sign-in — no separate "new game," ever. Parody idle game. ₲ Geobux are virtual and worth nothing.
         </div>
-        {howto && <HowToModal onClose={() => setHowto(false)} />}
       </MenuShell>
     );
   }
@@ -928,10 +913,9 @@ export default function PlotTwistWorld() {
       <MenuShell>
         <div className="mx-auto flex w-64 flex-col gap-2.5">
           <Btn full onClick={() => setInGame(true)}>Continue</Btn>
-          <Btn full tone="ghost" onClick={() => setHowto(true)}>How to play</Btn>
+          <Btn full tone="ghost" onClick={() => window.open(`${import.meta.env.BASE_URL}guide.html`, "_blank", "noopener,noreferrer")}>Wiki</Btn>
           <Btn full tone="ghost" onClick={() => signOut()}>Sign out</Btn>
         </div>
-        {howto && <HowToModal onClose={() => setHowto(false)} />}
       </MenuShell>
     );
   }
