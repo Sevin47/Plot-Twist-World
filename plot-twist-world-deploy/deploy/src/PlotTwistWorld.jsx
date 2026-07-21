@@ -41,6 +41,13 @@ const VERSION_CHECK_MS = 5 * 60 * 1000;
 // commit, not after the fact.
 const CHANGELOG = [
   {
+    id: "1.6.2",
+    date: "Jul 21, 2026",
+    notes: [
+      "Fixed the Building section in Assets flickering/reordering when several tiles started upgrading at once.",
+    ],
+  },
+  {
     id: "1.6.1",
     date: "Jul 21, 2026",
     notes: [
@@ -3267,7 +3274,20 @@ function Game({ G, onExit, startFresh }) {
   // all" results are visible at a glance instead of buried in a sorted
   // list — always the full unfiltered set (build state isn't one of the
   // filter dimensions), soonest-to-finish first.
-  const assetsBuilding = tab !== "assets" ? [] : g.own.filter((t) => t.bu).sort((a, b) => buildSecsLeft(a) - buildSecsLeft(b));
+  //
+  // Sorts on the fixed absolute finish timestamp (t.bu), NOT the live
+  // buildSecsLeft countdown. buildSecsLeft rounds to the nearest second
+  // off Date.now(), which is fine to *display* but unstable to *sort by*:
+  // Upgrade All starts several builds within the same second, so their
+  // rounded remaining-time is briefly identical and then flickers by ±1
+  // as the wall clock crosses each tile's own rounding boundary at a
+  // slightly different instant — every render (this list re-renders
+  // constantly off the 250ms economy tick), so the sort order visibly
+  // flapped. t.bu itself never changes while a tile is building, so
+  // sorting on it directly gives the identical "soonest first" order
+  // with zero drift. Confirmed live: this exact symptom, reproduced from
+  // a bug-report recording of Upgrade All.
+  const assetsBuilding = tab !== "assets" ? [] : g.own.filter((t) => t.bu).sort((a, b) => new Date(a.bu).getTime() - new Date(b.bu).getTime());
   const assetsFiltered = tab !== "assets" ? g.own : (() => {
     const q = assetQuery.trim().toLowerCase();
     let list = g.own.filter((t) => !t.bu);
