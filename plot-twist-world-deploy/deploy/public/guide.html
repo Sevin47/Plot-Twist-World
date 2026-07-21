@@ -234,7 +234,7 @@
       <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.4"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
       <input id="navFilter" type="text" placeholder="Filter pages…" oninput="ptwFilterNav(this.value)" />
     </div>
-    <div class="verchip">v1.8.0</div>
+    <div class="verchip">v1.9.0</div>
   </div>
 
   <div class="shell">
@@ -252,6 +252,7 @@
         <a class="navlink" href="#rarity">Rarity</a>
         <a class="navlink" href="#buying-land">Buying land &amp; energy</a>
         <a class="navlink" href="#buildings">Buildings &amp; construction</a>
+        <a class="navlink" href="#nicknames">Naming your tiles</a>
         <a class="navlink" href="#redevelop">Redeveloping (prestige)</a>
         <a class="navlink" href="#letting-go">Abandoning a tile</a>
       </div>
@@ -321,7 +322,7 @@
             <tr><th>Max building level</th><td>4 (Tower)</td></tr>
             <tr><th>Landmarks</th><td>24 (216 tiles)</td></tr>
             <tr><th>Achievements</th><td>13</td></tr>
-            <tr><th>Current version</th><td>1.8.0</td></tr>
+            <tr><th>Current version</th><td>1.9.0</td></tr>
           </table>
         </div>
         <h2>What is this?</h2>
@@ -346,6 +347,7 @@
           <li><a href="#rarity">Rarity</a></li>
           <li><a href="#buying-land">Buying land &amp; energy</a></li>
           <li><a href="#buildings">Buildings &amp; construction</a></li>
+          <li><a href="#nicknames">Naming your tiles</a></li>
           <li><a href="#redevelop">Redeveloping (prestige)</a></li>
           <li><a href="#letting-go">Abandoning a tile</a></li>
           <li><a href="#regions">Regions &amp; unlocking</a></li>
@@ -500,6 +502,17 @@
         <p>Impatient? Rushing pays the <strong>remaining fraction</strong> of the full upgrade cost to finish instantly — rush a build that's 90% done and you're only paying for the last 10%, not the whole thing again. See <a href="#formulas">Formula reference</a> for the exact math.</p>
         <h3>Upgrade All</h3>
         <p>From the Assets tab, Upgrade All starts a build on every eligible, affordable tile (cheapest first) until your builder slots or balance run out. Anything it starts appears in the dedicated Building section at the top of Assets, so you can see exactly what it did.</p>
+      </section>
+
+      <section id="nicknames">
+        <h2>Naming your tiles</h2>
+        <p class="section-desc">Give any tile you own a private nickname — useful once your portfolio grows past a handful of coordinates that all start to look alike.</p>
+        <p>Tap the ✎ next to a tile's name in its sheet to set one, up to 24 characters. It's private to you — nobody else, including whoever owned the tile before you or buys/captures it after you, ever sees it. It also shows up in the Assets tab in place of the raw coordinates, and Assets search matches nicknames too.</p>
+        <div class="callout">
+          <span class="callout-label">Resets on transfer</span>
+          A nickname is cleared automatically the moment a tile changes hands — sold on the market, captured in a raid, or repossessed for inactivity. The next owner starts with a blank slate to name it themselves, the same as you did.
+        </div>
+        <p>Every tile also has a short, permanent, non-editable ID (the last 6 characters of its map coordinate string) shown in both the sheet and the Assets list — two nearby tiles can round to the same displayed coordinates, or even end up with the same nickname, so this ID is what actually guarantees you're looking at the right one.</p>
       </section>
 
       <section id="redevelop">
@@ -853,8 +866,16 @@ energy_boost:                                    +2 energy/day per tile owned (a
 
       <section id="version-history">
         <h2>Version history</h2>
-        <p class="section-desc">The game auto-detects new deploys and prompts a refresh; a "What's new" popup and version badge live in the header. This wiki reflects <strong>v1.8.0</strong>. Recent highlights:</p>
+        <p class="section-desc">The game auto-detects new deploys and prompts a refresh; a "What's new" popup and version badge live in the header. This wiki reflects <strong>v1.9.0</strong>. Recent highlights:</p>
         <div class="verhist">
+          <div class="verentry"><span class="vertag">v1.9.0</span><span class="verdate">Jul 21, 2026</span>
+            <ul>
+              <li>Tiles can now be given a private nickname — visible only to you, cleared automatically if the tile is ever sold or captured.</li>
+              <li>Assets list and the tile sheet now always show a short permanent ID too, so tiles with similar names or coordinates are never ambiguous.</li>
+              <li>UI text and spacing now scale up on large monitors (1600px+, and again past 2200px) — previously fixed-size everywhere, which read as tiny on 32"+ screens.</li>
+              <li>Reworded the tutorial's upgrade step after player feedback that it wasn't clear how to actually reach the Upgrade button.</li>
+            </ul>
+          </div>
           <div class="verentry"><span class="vertag">v1.8.0</span><span class="verdate">Jul 21, 2026</span>
             <ul>
               <li>Tile decay shortened from 60 to 30 days of inactivity.</li>

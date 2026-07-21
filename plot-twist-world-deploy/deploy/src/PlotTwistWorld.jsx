@@ -41,6 +41,16 @@ const VERSION_CHECK_MS = 5 * 60 * 1000;
 // commit, not after the fact.
 const CHANGELOG = [
   {
+    id: "1.9.0",
+    date: "Jul 21, 2026",
+    notes: [
+      "Name your tiles! Private to you, and it clears automatically if the tile is ever sold or captured.",
+      "Assets list and the tile sheet now always show a short permanent ID, so similar-looking tiles are never ambiguous.",
+      "UI text and spacing now scale up on large monitors — previously fixed-size everywhere, tiny on 32\"+ screens.",
+      "Clarified the tutorial's upgrade step.",
+    ],
+  },
+  {
     id: "1.8.0",
     date: "Jul 21, 2026",
     notes: [
@@ -164,7 +174,7 @@ const TUT_STEPS = [
   },
   {
     title: "Build it up",
-    text: "Tap Upgrade on a tile you own to start a build. Buildings take real time to finish, and each level pays noticeably more rent.",
+    text: "Tap your tile on the map to open it, then hit Upgrade in the sheet that pops up. Building takes real time — as little as 5 minutes for a Cottage — and each level pays noticeably more rent.",
   },
   {
     title: "Zoom way out",
@@ -799,7 +809,9 @@ function MenuShell({ children }) {
   return (
     <div className="relative flex h-screen w-full flex-col items-center justify-center overflow-hidden p-6" style={{ color: C.text,
       background: `radial-gradient(60% 46% at 50% 20%, #1C2E46 0%, ${C.ink} 62%), radial-gradient(90% 60% at 50% 100%, #0E1A2A 0%, ${C.ink} 55%), ${C.ink}` }}>
-      <style>{`.pt9{font-size:9px}.pt10{font-size:10px}.pt11{font-size:11px}.trk{letter-spacing:.22em}`}</style>
+      <style>{`.pt9{font-size:9px}.pt10{font-size:10px}.pt11{font-size:11px}.trk{letter-spacing:.22em}
+        @media (min-width: 1600px) { .pt9{font-size:10px}.pt10{font-size:11px}.pt11{font-size:12.5px} }
+        @media (min-width: 2200px) { .pt9{font-size:11.5px}.pt10{font-size:13px}.pt11{font-size:14.5px} }`}</style>
       <WorldMap />
       <div aria-hidden className="pt-anim-glowPulse pointer-events-none absolute rounded-full"
         style={{ width: 440, height: 440, top: "10%", background: `radial-gradient(circle, ${C.glow} 0%, transparent 72%)`, filter: "blur(18px)" }} />
@@ -1036,6 +1048,7 @@ function Game({ G, onExit, startFresh }) {
   const [batchBusy, setBatchBusy] = useState(null);
   const [nameDraft, setNameDraft] = useState(G.current.name || "");
   const [priceDraft, setPriceDraft] = useState("");
+  const [nickDraft, setNickDraft] = useState("");
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleteBusy, setDeleteBusy] = useState(false);
   const pendings = useRef([]);
@@ -1146,13 +1159,22 @@ function Game({ G, onExit, startFresh }) {
   // fetch this mirrors): a failure here just means the next resync trigger
   // tries again, not a real player watching an empty portfolio.
   const refreshOwnedTiles = useCallback(async () => {
-    const { data, error } = await supabase
-      .from("tiles").select("qk,cls,level,rarity,paid,list_price,prestige,build_until").eq("owner", g.uid);
+    // nicknames are a separate, RLS-private table (see supabase.sql) — safe
+    // to fetch unconditionally alongside the tiles query since the "read
+    // own tile_nicknames" policy already scopes it to this account, same
+    // pattern as unlocked_regions/bank_ledger elsewhere in this file
+    const [tilesRes, nickRes] = await Promise.all([
+      supabase.from("tiles").select("qk,cls,level,rarity,paid,list_price,prestige,build_until").eq("owner", g.uid),
+      supabase.from("tile_nicknames").select("qk,nickname"),
+    ]);
+    const { data, error } = tilesRes;
     if (error || !data) return;
+    const nicks = new Map((nickRes.data || []).map((n) => [n.qk, n.nickname]));
     g.own = data.map((t) => ({
       qk: t.qk, cls: t.cls, l: t.level, r: t.rarity, pd: t.paid, pr: t.prestige || 0,
       ...(t.list_price != null ? { p: t.list_price } : {}),
       ...(t.build_until != null ? { bu: t.build_until } : {}),
+      ...(nicks.has(t.qk) ? { nick: nicks.get(t.qk) } : {}),
     }));
     rebuildOwn();
     dirty.current = true;
@@ -2512,6 +2534,22 @@ function Game({ G, onExit, startFresh }) {
     toast("Deeds will be signed as " + data.username);
   };
 
+  // Private to this account (see the "Tile nicknames" section in
+  // supabase.sql) — never sent anywhere but this player's own portfolio.
+  // Submitting empty/whitespace clears it, same "rename to nothing"
+  // convention as everywhere else in this file that has a clear action
+  // without a dedicated button for it.
+  const setTileNickname = async (qk) => {
+    const n = nickDraft.trim().slice(0, 24);
+    const { error } = await supabase.rpc("set_tile_nickname", { p_qk: qk, p_nickname: n || null });
+    if (error) { toast(error.message || "Couldn't rename that tile."); return; }
+    const t = ownMap.current.get(qk);
+    if (t) { if (n) t.nick = n; else delete t.nick; }
+    dirty.current = true;
+    setModal(null);
+    toast(n ? `Renamed to "${n}"` : "Nickname cleared");
+  };
+
   // Deleting an auth user needs the service-role key, which must never ship
   // to the client — this calls the delete-account edge function instead
   // (see supabase/functions/delete-account), which runs with that key
@@ -3367,7 +3405,9 @@ function Game({ G, onExit, startFresh }) {
         const city = classify(t.qk).n || "";
         return (CLS[t.cls]?.name || "").toLowerCase().includes(q)
           || city.toLowerCase().includes(q)
-          || coordLabel(t.qk).toLowerCase().includes(q);
+          || coordLabel(t.qk).toLowerCase().includes(q)
+          || (t.nick || "").toLowerCase().includes(q)
+          || t.qk.slice(-6).includes(q);
       });
     }
     const sorted = list.slice();
@@ -3387,9 +3427,13 @@ function Game({ G, onExit, startFresh }) {
     <div key={t.qk} className="mb-2 rounded-xl p-3 transition-transform duration-150 hover:-translate-y-0.5" style={cardSty}>
       <button className="flex w-full items-center justify-between text-left focus-visible:outline focus-visible:outline-2" style={{ outlineColor: C.amber }}
         onClick={() => { setTab("map"); setSel(t.qk); const [wx, wy] = centerOfQk(t.qk); const { w, h } = size.current; const s = N * 16; cam.current = { s, x: w / 2 - wx * s, y: h / 2 - wy * s, init: true }; ensureRegion(regionOf(t.qk), true); }}>
-        <div className="flex min-w-0 items-center gap-2">
+        <div className="flex min-w-0 items-center gap-1.5">
           <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: CLS[t.cls].color, boxShadow: `0 0 6px ${CLS[t.cls].color}99` }} />
-          <span className="truncate text-sm font-bold" style={mono}>{coordLabel(t.qk)}</span>
+          <span className="truncate text-sm font-bold" style={mono}>{t.nick || coordLabel(t.qk)}</span>
+          {/* nearby tiles' coordinates round to the same 2-decimal label, and
+              two tiles can share a nickname too — this stays visible
+              regardless so the row is always unambiguous at a glance */}
+          <span className="pt9 shrink-0" style={{ ...mono, color: C.dim }}>#{t.qk.slice(-6)}</span>
           <Chip color={RAR[t.r].color}>{RAR[t.r].name}</Chip>
           {t.pr > 0 && <Chip color={C.amber}>★{t.pr}</Chip>}
         </div>
@@ -3519,7 +3563,9 @@ function Game({ G, onExit, startFresh }) {
 
   return (
     <div className="relative flex h-screen w-full flex-col overflow-hidden select-none" style={{ background: C.ink, color: C.text }}>
-      <style>{`.pt9{font-size:9px}.pt10{font-size:10px}.pt11{font-size:11px}.trk{letter-spacing:.22em}`}</style>
+      <style>{`.pt9{font-size:9px}.pt10{font-size:10px}.pt11{font-size:11px}.trk{letter-spacing:.22em}
+        @media (min-width: 1600px) { .pt9{font-size:10px}.pt10{font-size:11px}.pt11{font-size:12.5px} }
+        @media (min-width: 2200px) { .pt9{font-size:11.5px}.pt10{font-size:13px}.pt11{font-size:14.5px} }`}</style>
 
       {/* ticker */}
       <div className="relative z-10 flex items-center justify-between gap-3 px-4 pb-2.5 pt-3"
@@ -3766,10 +3812,19 @@ function Game({ G, onExit, startFresh }) {
               style={{ background: `${C.panel}f7`, backgroundImage: C.panelGrad, borderTop: `1px solid ${C.hairLit}`, boxShadow: C.shadowLg, ...blur(16) }}>
               <div aria-hidden className="mx-auto mb-3 h-1 w-9 rounded-full" style={{ background: C.hairLit }} />
               <div className="mb-2 flex items-start justify-between">
-                <div>
+                <div className="min-w-0">
                   <Eyebrow>{CLS[selCls].name}{selInfo.n ? ` · near ${selInfo.n} (${selInfo.d} km)` : selCls !== "water" && selCls !== "pending" ? " · remote" : ""}</Eyebrow>
-                  <div className="text-lg font-bold" style={mono}>{coordLabel(sel)}</div>
-                  <div className="pt10" style={{ ...mono, color: C.dim }}>tile #{sel.slice(-6)} · ~306 m square</div>
+                  <div className="flex items-center gap-1.5">
+                    <div className="truncate text-lg font-bold" style={mono}>{selMine?.nick || coordLabel(sel)}</div>
+                    {selMine && (
+                      <button onClick={() => { setNickDraft(selMine.nick || ""); setModal({ kind: "nickname", qk: sel }); }}
+                        aria-label="Name this tile" title="Name this tile — just for you"
+                        className="shrink-0 px-1 focus-visible:outline focus-visible:outline-2" style={{ color: C.dim, outlineColor: C.amber }}>✎</button>
+                    )}
+                  </div>
+                  <div className="pt10" style={{ ...mono, color: C.dim }}>
+                    {selMine?.nick ? `${coordLabel(sel)} · ` : ""}tile #{sel.slice(-6)} · ~306 m square
+                  </div>
                 </div>
                 <button onClick={() => { setSel(null); setRoll(null); }} className="px-2 text-lg focus-visible:outline focus-visible:outline-2" style={{ color: C.dim, outlineColor: C.amber }}>✕</button>
               </div>
@@ -3996,7 +4051,7 @@ function Game({ G, onExit, startFresh }) {
               <div className="mb-3"><Eyebrow>Your holdings · {g.own.length} tile{g.own.length === 1 ? "" : "s"} · net worth ₲{fmt(netWorth())}</Eyebrow></div>
               {g.own.length > 0 && (
                 <div className="mb-1">
-                  <input value={assetQuery} onChange={(e) => setAssetQuery(e.target.value)} placeholder="Search by classification or nearby city…"
+                  <input value={assetQuery} onChange={(e) => setAssetQuery(e.target.value)} placeholder="Search by name, classification, or nearby city…"
                     className="mb-2 w-full rounded-xl px-3 py-2 text-sm focus-visible:outline focus-visible:outline-2"
                     style={{ ...display, ...inputSty }} />
                   <div className="mb-2 flex gap-1.5 overflow-x-auto pb-1">
@@ -4549,6 +4604,21 @@ function Game({ G, onExit, startFresh }) {
                   className="min-w-0 flex-1 rounded-xl px-3 py-2.5 text-sm focus-visible:outline focus-visible:outline-2"
                   style={{ ...mono, ...inputSty }} />
                 <Btn small onClick={() => { const p = parseInt(priceDraft, 10); if (p > 0) { listTile(modal.qk, p); closeModal(); } }} disabled={!(parseInt(priceDraft, 10) > 0)}>List</Btn>
+              </div>
+            </>
+          )}
+          {modal.kind === "nickname" && (
+            <>
+              <Eyebrow>Name {coordLabel(modal.qk)}</Eyebrow>
+              <div className="mb-3 mt-2 text-xs" style={{ color: C.dim }}>
+                Just for you — nobody else ever sees it. Clears automatically if this tile is ever sold or captured, so the next owner can pick their own.
+              </div>
+              <div className="flex gap-2">
+                <input value={nickDraft} onChange={(e) => setNickDraft(e.target.value)} maxLength={24} placeholder="e.g. Beach House"
+                  onKeyDown={(e) => { if (e.key === "Enter") setTileNickname(modal.qk); }}
+                  className="min-w-0 flex-1 rounded-xl px-3 py-2.5 text-sm focus-visible:outline focus-visible:outline-2"
+                  style={{ ...display, ...inputSty }} />
+                <Btn small onClick={() => setTileNickname(modal.qk)}>{nickDraft.trim() ? "Save" : "Clear"}</Btn>
               </div>
             </>
           )}
