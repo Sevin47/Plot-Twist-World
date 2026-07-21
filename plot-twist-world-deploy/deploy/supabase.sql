@@ -2254,12 +2254,149 @@ $$;
 revoke all on function mark_messages_read(uuid) from public;
 grant execute on function mark_messages_read(uuid) to authenticated;
 
--- Social phase 3 (not yet built): region chat — a `region_messages` table
--- (region text, sender, body, created_at) with public-read RLS scoped to
--- the reader's unlocked regions, a send RPC gated on region-unlocked +
--- rate limit + a per-region lazy retention sweep, and block filtering at
--- read time (blocked senders' rows excluded for the blocker). Needs the
--- report mechanism before shipping.
+-- ══════════════════════════════════════════════════════════════════
+-- Region chat (social phase 3) + reports
+-- ══════════════════════════════════════════════════════════════════
+-- Local chat scoped to a REGION_LEN=8 quadkey region — you talk to the
+-- people whose territory you share. Unlike DMs, this is semi-public
+-- content, so it ships WITH the abuse tooling: reports, block-pair
+-- filtering, tight rate limits, small retention window.
+--
+-- RLS is deny-all (no select policy at all): every read goes through
+-- list_region_messages below, which is the single enforcement point for
+-- BOTH the territory gate (only regions you've unlocked) and block
+-- filtering. A permissive select policy here would let a direct
+-- PostgREST query bypass the block filter.
+create table if not exists region_messages (
+  id bigserial primary key,
+  region text not null,
+  sender uuid not null references profiles(user_id) on delete cascade,
+  body text not null check (char_length(body) between 1 and 300),
+  created_at timestamptz not null default now()
+);
+create index if not exists idx_region_messages_region on region_messages(region, id desc);
+alter table region_messages enable row level security;
+
+-- ── send_region_message: territory-gated, rate-limited, self-pruning ──
+create or replace function send_region_message(p_region text, p_body text)
+returns region_messages
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_uid uuid := auth.uid();
+  v_body text := trim(p_body);
+  v_row region_messages;
+begin
+  if v_uid is null then raise exception 'not authenticated'; end if;
+  if v_body is null or char_length(v_body) < 1 then raise exception 'empty message'; end if;
+  if char_length(v_body) > 300 then raise exception 'message too long (300 characters max)'; end if;
+
+  if not exists (select 1 from unlocked_regions
+      where owner = v_uid and region = p_region) then
+    raise exception 'unlock this region to join its chat';
+  end if;
+
+  if (select count(*) from region_messages
+      where sender = v_uid and created_at > now() - interval '1 minute') >= 10 then
+    raise exception 'sending too fast — give it a moment';
+  end if;
+
+  insert into region_messages (region, sender, body)
+  values (p_region, v_uid, v_body)
+  returning * into v_row;
+
+  -- lazy retention: latest 100 messages per region, pruned on the write
+  -- path (same no-cron pattern as messages/repossess_stale_tiles)
+  delete from region_messages rm
+  where rm.region = p_region
+    and rm.id not in (
+      select rm2.id from region_messages rm2
+      where rm2.region = p_region
+      order by rm2.id desc
+      limit 100
+    );
+
+  return v_row;
+end;
+$$;
+revoke all on function send_region_message(text, text) from public;
+grant execute on function send_region_message(text, text) to authenticated;
+
+-- ── list_region_messages: the only read path. Territory-gated, joins
+--    usernames live (renames stay correct), and filters out any sender
+--    the caller shares a blocked pair with — in BOTH directions, which
+--    is standard mutual-ignore semantics and doesn't confirm to the
+--    blocked party which side initiated. Newest first, latest 50. ──
+create or replace function list_region_messages(p_region text)
+returns table(id bigint, sender uuid, username text, body text, created_at timestamptz)
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_uid uuid := auth.uid();
+begin
+  if v_uid is null then raise exception 'not authenticated'; end if;
+  if not exists (select 1 from unlocked_regions ur
+      where ur.owner = v_uid and ur.region = p_region) then
+    raise exception 'unlock this region to join its chat';
+  end if;
+  return query
+  select rm.id, rm.sender, p.username, rm.body, rm.created_at
+  from region_messages rm
+  join profiles p on p.user_id = rm.sender
+  where rm.region = p_region
+    and not exists (select 1 from friendships f
+      where f.status = 'blocked'
+        and f.user_a = least(v_uid, rm.sender)
+        and f.user_b = greatest(v_uid, rm.sender))
+  order by rm.id desc
+  limit 50;
+end;
+$$;
+revoke all on function list_region_messages(text) from public;
+grant execute on function list_region_messages(text) to authenticated;
+
+-- ── reports: write-only from players' perspective — no select policy,
+--    no select grant; rows are read via the Supabase dashboard (service
+--    role) only. body carries a copy of the offending text since chat
+--    retention prunes aggressively. ──
+create table if not exists reports (
+  id bigserial primary key,
+  reporter uuid not null references profiles(user_id) on delete cascade,
+  reported uuid not null references profiles(user_id) on delete cascade,
+  context text not null,
+  body text,
+  created_at timestamptz not null default now()
+);
+alter table reports enable row level security;
+
+create or replace function report_player(p_user uuid, p_context text, p_body text)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_uid uuid := auth.uid();
+begin
+  if v_uid is null then raise exception 'not authenticated'; end if;
+  if p_user = v_uid then raise exception 'that is you'; end if;
+  if not exists (select 1 from profiles where user_id = p_user) then
+    raise exception 'no such player';
+  end if;
+  if (select count(*) from reports
+      where reporter = v_uid and created_at > now() - interval '1 day') >= 10 then
+    raise exception 'too many reports today';
+  end if;
+  insert into reports (reporter, reported, context, body)
+  values (v_uid, p_user, left(coalesce(p_context, 'unspecified'), 40), left(p_body, 600));
+end;
+$$;
+revoke all on function report_player(uuid, text, text) from public;
+grant execute on function report_player(uuid, text, text) to authenticated;
 
 -- Force PostgREST to pick up schema changes from this script immediately.
 -- It normally reloads on its own shortly after DDL, but that can lag or
