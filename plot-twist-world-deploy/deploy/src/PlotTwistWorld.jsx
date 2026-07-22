@@ -20,7 +20,7 @@ import VectorWorker from "./vectorWorker.js?worker&inline";
 // Bumped by hand alongside any fix worth confirming actually shipped —
 // shows in the debug panel so a stale cached bundle is immediately obvious
 // instead of looking like the bug is still unfixed.
-const BUILD_TAG = "2026-07-21.3-combat-tile-fx";
+const BUILD_TAG = "2026-07-21.4-reduce-motion-toggle";
 
 // APP_VERSION: player-facing semver, sourced from package.json (see
 // vite.config.js) — bump package.json's "version" by hand per release.
@@ -40,6 +40,13 @@ const VERSION_CHECK_MS = 5 * 60 * 1000;
 // player-visible change ships with a version bump + entry in the same
 // commit, not after the fact.
 const CHANGELOG = [
+  {
+    id: "1.12.0",
+    date: "Jul 21, 2026",
+    notes: [
+      "Added a Reduce Motion toggle to the start menu — it follows your device's setting by default, but you can override it either way.",
+    ],
+  },
   {
     id: "1.11.0",
     date: "Jul 21, 2026",
@@ -853,6 +860,11 @@ function MenuShell({ children }) {
   );
 }
 
+// the device/browser's own accessibility preference — the default whenever
+// the player hasn't explicitly overridden it via the start menu toggle
+const osReducedMotion = () => typeof window !== "undefined" && window.matchMedia &&
+  window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
 export default function PlotTwistWorld() {
   // checking | unconfigured | signedOut | needsUsername | ready
   const [authState, setAuthState] = useState(MULTIPLAYER ? "checking" : "unconfigured");
@@ -867,6 +879,24 @@ export default function PlotTwistWorld() {
   // internal pickingHome state on mount; Game owns the rest of that flow.
   const [freshAccount, setFreshAccount] = useState(false);
   const G = useRef(null);
+
+  // Reduce-motion: null = no explicit choice, follow the device's own
+  // prefers-reduced-motion setting (osReducedMotion, checked live); true/
+  // false = the player overrode it via the start-menu toggle below, and
+  // that choice sticks regardless of what the device says. Device-wide
+  // (unscoped by uid, unlike the tutorial's ptw_tutorial:${uid} key) since
+  // it's a physical-comfort preference, not account progress.
+  const [reducedOverride, setReducedOverride] = useState(() => {
+    try {
+      const v = localStorage.getItem("ptw_reducedMotion");
+      return v === "1" ? true : v === "0" ? false : null;
+    } catch { return null; }
+  });
+  const reducedEffective = reducedOverride ?? osReducedMotion();
+  const setReducedMotion = (v) => {
+    setReducedOverride(v);
+    try { localStorage.setItem("ptw_reducedMotion", v ? "1" : "0"); } catch { /* ignore */ }
+  };
 
   useEffect(() => {
     if (!MULTIPLAYER) return;
@@ -990,13 +1020,19 @@ export default function PlotTwistWorld() {
         <div className="mx-auto flex w-64 flex-col gap-2.5">
           <Btn full onClick={() => setInGame(true)}>Continue</Btn>
           <Btn full tone="ghost" onClick={() => window.open(`${import.meta.env.BASE_URL}guide.html`, "_blank", "noopener,noreferrer")}>Wiki</Btn>
+          <Btn full tone="ghost" onClick={() => setReducedMotion(!reducedEffective)}>
+            Reduce motion: {reducedEffective ? "On" : "Off"}
+          </Btn>
           <Btn full tone="ghost" onClick={() => signOut()}>Sign out</Btn>
+        </div>
+        <div className="pt9 mx-auto mt-3 max-w-xs text-center leading-relaxed" style={{ ...mono, color: C.dim }}>
+          Reduce motion follows your device by default — this overrides it just for Plot Twist.
         </div>
       </MenuShell>
     );
   }
 
-  return <Game key={session.user.id} G={G} onExit={() => setInGame(false)} startFresh={freshAccount} />;
+  return <Game key={session.user.id} G={G} onExit={() => setInGame(false)} startFresh={freshAccount} reducedOverride={reducedOverride} />;
 }
 
 function Modal({ children, onClose }) {
@@ -1014,7 +1050,7 @@ function Modal({ children, onClose }) {
    GAME
    ═════════════════════════════════════════════════════════════ */
 
-function Game({ G, onExit, startFresh }) {
+function Game({ G, onExit, startFresh, reducedOverride }) {
   const [, force] = useReducer((x) => x + 1, 0);
   // Brand-new accounts (startFresh, seeded once from the mount-time prop —
   // see claimName in PlotTwistWorld) start on a basemap-only "pick your
@@ -1096,8 +1132,7 @@ function Game({ G, onExit, startFresh }) {
   const dbgRef = useRef({ fps: 0, avg: 0, max: 0, s: 0, tilePx: 0, cnt: 0, gridOn: false, long: 0, longMax: 0, errs: [], lastEvt: "-" });
   const logEvt = (n) => { dbgRef.current.lastEvt = n; };
 
-  const reduced = typeof window !== "undefined" && window.matchMedia &&
-    window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const reduced = reducedOverride ?? osReducedMotion();
 
   const toast = useCallback((text) => {
     const id = Math.random();
