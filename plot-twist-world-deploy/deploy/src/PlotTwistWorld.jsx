@@ -20,7 +20,7 @@ import VectorWorker from "./vectorWorker.js?worker&inline";
 // Bumped by hand alongside any fix worth confirming actually shipped —
 // shows in the debug panel so a stale cached bundle is immediately obvious
 // instead of looking like the bug is still unfixed.
-const BUILD_TAG = "2026-07-21.2-region-cache-eviction-fix";
+const BUILD_TAG = "2026-07-21.3-combat-tile-fx";
 
 // APP_VERSION: player-facing semver, sourced from package.json (see
 // vite.config.js) — bump package.json's "version" by hand per release.
@@ -40,6 +40,13 @@ const VERSION_CHECK_MS = 5 * 60 * 1000;
 // player-visible change ships with a version bump + entry in the same
 // commit, not after the fact.
 const CHANGELOG = [
+  {
+    id: "1.11.0",
+    date: "Jul 21, 2026",
+    notes: [
+      "Attacking now plays out on the tile itself — an explosion when you capture it, a shield pulse when their defenses hold.",
+    ],
+  },
   {
     id: "1.10.1",
     date: "Jul 21, 2026",
@@ -2426,10 +2433,23 @@ function Game({ G, onExit, startFresh }) {
       if (!g.ach.conqueror) { g.ach.conqueror = 1; toast("Unlocked — Conqueror"); }
     }
     dirty.current = true; save();
-    setTimeout(() => setRoll({
-      qk, phase: "battle-done", won: result.won,
-      attPower: Number(result.att_power), defPower: Number(result.def_power),
-    }), reduced ? 50 : 1100);
+    setTimeout(() => {
+      // fires alongside the reveal below, not at RPC-return time, so the
+      // burst/shield lands on the tile at the same moment "Victory!" /
+      // "Defeated" appears in the sheet instead of spoiling it early.
+      // Attacker-side only — the defender isn't present for this fight.
+      tileFx.current.push({
+        qk, kind: result.won ? "explosion" : "fortify", t0: Date.now(), dur: reduced ? 50 : 900,
+        // 8 evenly-spaced burst angles with light jitter, seeded once so
+        // explosion particles fly outward smoothly instead of re-randomizing
+        // every frame; unused by the fortify effect.
+        seeds: result.won ? Array.from({ length: 8 }, (_, i) => (i / 8) * Math.PI * 2 + (Math.random() - 0.5) * 0.6) : undefined,
+      });
+      setRoll({
+        qk, phase: "battle-done", won: result.won,
+        attPower: Number(result.att_power), defPower: Number(result.def_power),
+      });
+    }, reduced ? 50 : 1100);
   };
 
   const listTile = async (qk, price) => {
@@ -2637,6 +2657,11 @@ function Game({ G, onExit, startFresh }) {
   const frame = useRef(0);
   const ptrs = useRef(new Map());
   const gesture = useRef(null);
+  // transient on-tile combat effects (explosion on a capture, shield pulse
+  // on a repelled attack) — attacker-side only, pushed by attackTile below,
+  // drawn + expired in draw() each frame. A ref, not state: purely a
+  // draw-loop concern, doesn't need to trigger a React re-render on its own.
+  const tileFx = useRef([]);
 
   const fitWorld = useCallback(() => {
     const { w, h } = size.current;
@@ -2729,6 +2754,70 @@ function Game({ G, onExit, startFresh }) {
       ctx.fillStyle = A;
       for (let i = 0; i < 6; i++) if (win(i))
         ctx.fillRect(px + cs * (0.36 + (i % 2) * 0.18), py + cs * (0.28 + Math.floor(i / 2) * 0.21), cs * 0.09, cs * 0.11);
+    }
+  };
+
+  // attacker-side combat feedback (see tileFx/attackTile) drawn on top of
+  // the tile grid: a hot burst for a capture, a cool shield pulse for a
+  // repelled attack. `p` is this effect's progress, 0 (just started) to 1
+  // (about to expire this frame).
+  const drawTileFx = (ctx, px, py, cs, fx, p) => {
+    const cx = px + cs / 2, cy = py + cs / 2;
+    if (fx.kind === "explosion") {
+      const flash = Math.max(0, 1 - p * 5);
+      if (flash > 0) {
+        ctx.fillStyle = hexA("#FFFFFF", flash * 0.8);
+        ctx.beginPath(); ctx.arc(cx, cy, cs * 0.5, 0, 7); ctx.fill();
+      }
+      // two rings, the second starting a beat behind the first, both
+      // expanding outward and fading — reads as a single punchier blast
+      ctx.strokeStyle = hexA("#FF5A36", 0.85 * (1 - p));
+      ctx.lineWidth = Math.max(1, 3 * (1 - p));
+      ctx.beginPath(); ctx.arc(cx, cy, cs * (0.28 + p * 1.1), 0, 7); ctx.stroke();
+      if (p > 0.15) {
+        const p2 = (p - 0.15) / 0.85;
+        ctx.strokeStyle = hexA("#FF5A36", 0.5 * (1 - p2));
+        ctx.beginPath(); ctx.arc(cx, cy, cs * (0.28 + p2 * 1.1), 0, 7); ctx.stroke();
+      }
+      ctx.lineWidth = 1;
+      // shards flying outward along the seeded angles, shrinking as they go
+      ctx.fillStyle = hexA(C.amber, Math.max(0, 1 - p * 1.3));
+      for (const ang of fx.seeds || []) {
+        const size = Math.max(0, cs * 0.08 * (1 - p));
+        if (size <= 0) continue;
+        const dist = cs * 0.85 * p;
+        ctx.beginPath();
+        ctx.arc(cx + Math.cos(ang) * dist, cy + Math.sin(ang) * dist, size, 0, 7);
+        ctx.fill();
+      }
+    } else {
+      // fortify: a shield glyph pops in, two pulse rings ripple outward,
+      // everything fades over the back half of the effect's duration
+      const grow = Math.min(1, p / 0.3);
+      const fade = p > 0.5 ? Math.max(0, 1 - (p - 0.5) / 0.5) : 1;
+      ctx.strokeStyle = hexA("#5FD0FF", 0.9 * fade);
+      ctx.lineWidth = 2.5;
+      ctx.beginPath(); ctx.arc(cx, cy, cs * (0.24 + 0.2 * Math.sin((grow * Math.PI) / 2)), 0, 7); ctx.stroke();
+      if (p > 0.1) {
+        const p2 = Math.min(1, (p - 0.1) / 0.7);
+        ctx.strokeStyle = hexA("#5FD0FF", 0.45 * (1 - p2));
+        ctx.lineWidth = 1.5;
+        ctx.beginPath(); ctx.arc(cx, cy, cs * (0.3 + p2 * 0.8), 0, 7); ctx.stroke();
+      }
+      ctx.lineWidth = 1;
+      const shieldScale = grow * fade;
+      if (shieldScale > 0.03) {
+        const sw = cs * 0.24 * shieldScale, sh = cs * 0.3 * shieldScale;
+        ctx.fillStyle = hexA("#5FD0FF", 0.9 * fade);
+        ctx.beginPath();
+        ctx.moveTo(cx - sw / 2, cy - sh / 2);
+        ctx.lineTo(cx + sw / 2, cy - sh / 2);
+        ctx.lineTo(cx + sw / 2, cy + sh * 0.05);
+        ctx.lineTo(cx, cy + sh / 2);
+        ctx.lineTo(cx - sw / 2, cy + sh * 0.05);
+        ctx.closePath();
+        ctx.fill();
+      }
     }
   };
 
@@ -3035,6 +3124,22 @@ function Game({ G, onExit, startFresh }) {
       ctx.strokeStyle = C.amber; ctx.lineWidth = 2;
       ctx.strokeRect(px + 0.5, py + 0.5, tilePx - 1, tilePx - 1);
       ctx.lineWidth = 1;
+    }
+
+    /* combat effects: explosion on a captured tile, shield pulse on a
+       repelled attack (see tileFx/attackTile) — attacker-side only, drawn
+       on top of everything else for that tile so it always reads clearly.
+       Gated on gridOn since individual tiles (and the fights over them)
+       only render at fine-grid zoom in the first place. */
+    if (gridOn && tileFx.current.length) {
+      const now = Date.now();
+      tileFx.current = tileFx.current.filter((fx) => now - fx.t0 < fx.dur);
+      for (const fx of tileFx.current) {
+        const [ftx, fty] = txyOf(fx.qk);
+        const fpx = ox + ftx * tilePx, fpy = oy + fty * tilePx;
+        if (fpx + tilePx < 0 || fpy + tilePx < 0 || fpx > w || fpy > h) continue;
+        drawTileFx(ctx, fpx, fpy, tilePx, fx, Math.min(1, (now - fx.t0) / fx.dur));
+      }
     }
     } // !pickingHome
 
