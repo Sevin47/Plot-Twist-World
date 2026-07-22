@@ -20,7 +20,7 @@ import VectorWorker from "./vectorWorker.js?worker&inline";
 // Bumped by hand alongside any fix worth confirming actually shipped —
 // shows in the debug panel so a stale cached bundle is immediately obvious
 // instead of looking like the bug is still unfixed.
-const BUILD_TAG = "2026-07-09.4-concurrency-and-margin-tuning";
+const BUILD_TAG = "2026-07-21.1-local-chat-tab";
 
 // APP_VERSION: player-facing semver, sourced from package.json (see
 // vite.config.js) — bump package.json's "version" by hand per release.
@@ -40,6 +40,14 @@ const VERSION_CHECK_MS = 5 * 60 * 1000;
 // player-visible change ships with a version bump + entry in the same
 // commit, not after the fact.
 const CHANGELOG = [
+  {
+    id: "1.10.0",
+    date: "Jul 21, 2026",
+    notes: [
+      "Local chat now has its own tab instead of a drawer over the map — selecting a tile no longer hides it.",
+      "The Local tab lights up with a dot when there's new activity in your region.",
+    ],
+  },
   {
     id: "1.9.0",
     date: "Jul 21, 2026",
@@ -1033,13 +1041,14 @@ function Game({ G, onExit, startFresh }) {
   const [unread, setUnread] = useState({}); // sender uuid -> unread count
   const unreadPrevTotal = useRef(0);
   const chatListRef = useRef(null);
-  // region chat (social phase 3) — a drawer over the map, scoped to
-  // whichever unlocked region the camera is currently centered on
-  const [rchatOpen, setRchatOpen] = useState(false);
+  // region chat (social phase 3) — its own tab, scoped to whichever
+  // unlocked region the camera is centered on while browsing the map
   const [rchatRegion, setRchatRegion] = useState(null); // live — the region the camera is over right now
   const [rchat, setRchat] = useState({ loading: false, rows: null, region: null, locked: false });
   const [rchatDraft, setRchatDraft] = useState("");
   const [rchatSel, setRchatSel] = useState(null); // message id with its Report/Block row expanded
+  const [rchatUnread, setRchatUnread] = useState(false); // new messages in the tracked region since we last viewed the Local tab
+  const rchatSeenRef = useRef({}); // region -> highest message id already shown as read (session-only, not persisted)
   const rchatListRef = useRef(null);
   const [assetQuery, setAssetQuery] = useState("");
   const [assetClsFilter, setAssetClsFilter] = useState("all");
@@ -2088,7 +2097,7 @@ function Game({ G, onExit, startFresh }) {
 
   const rchatRegionPrev = useRef(null);
   useEffect(() => {
-    if (!rchatOpen || tab !== "map") return;
+    if (tab !== "map") return;
     const r = centerRegionQk();
     if (r === rchatRegionPrev.current) return;
     const first = rchatRegionPrev.current == null;
@@ -2096,27 +2105,53 @@ function Game({ G, onExit, startFresh }) {
     setRchatRegion(r);
     if (!first) toast(`📍 Now chatting in ${regionLabel(r)}`);
   });
-  // closing resets the "first open" marker so reopening (even at the same
-  // spot) never fires a spurious "now chatting in" toast
-  useEffect(() => { if (!rchatOpen) rchatRegionPrev.current = null; }, [rchatOpen]);
 
-  const fetchRegionMessages = useCallback(async (region) => {
+  // markSeen: true while the player is actually looking at the Local tab
+  // (fast poll, always counts as "read"); false for the slow background
+  // watch that only exists to light up the nav badge (see below) — it
+  // must NOT silently mark things read, or the badge would never fire.
+  const fetchRegionMessages = useCallback(async (region, markSeen) => {
     if (!unlockedRegions.current.has(region)) {
       setRchat({ loading: false, rows: null, region, locked: true });
       return;
     }
     const { data, error } = await supabase.rpc("list_region_messages", { p_region: region });
     if (error) { setRchat({ loading: false, rows: [], region, locked: false }); return; }
-    // RPC returns newest-first; the drawer renders oldest-at-top
+    // RPC returns newest-first; the tab renders oldest-at-top
     setRchat({ loading: false, rows: (data || []).reverse(), region, locked: false });
+    const latestId = data && data.length ? (data[0].id || 0) : 0;
+    if (markSeen) {
+      rchatSeenRef.current[region] = Math.max(rchatSeenRef.current[region] || 0, latestId);
+      setRchatUnread(false);
+    } else if (rchatSeenRef.current[region] === undefined) {
+      // first sight of this region this session — baseline only, not a notification
+      rchatSeenRef.current[region] = latestId;
+    } else if (latestId > rchatSeenRef.current[region]) {
+      setRchatUnread(true);
+    }
   }, []);
 
+  // foreground: fast poll while the Local tab is actually open
   useEffect(() => {
-    if (!ready || !rchatOpen || tab !== "map" || !rchatRegion) return;
-    fetchRegionMessages(rchatRegion);
-    const iv = setInterval(() => fetchRegionMessages(rchatRegion), 5000);
+    if (!ready || tab !== "local" || !rchatRegion) return;
+    fetchRegionMessages(rchatRegion, true);
+    const iv = setInterval(() => fetchRegionMessages(rchatRegion, true), 5000);
     return () => clearInterval(iv);
-  }, [ready, rchatOpen, tab, rchatRegion, fetchRegionMessages]);
+  }, [ready, tab, rchatRegion, fetchRegionMessages]);
+
+  // background: slow watch so the nav badge can light up with new local
+  // activity even while the player is elsewhere — same cadence as the DM
+  // unread poll (refreshUnread) above
+  useEffect(() => {
+    if (!ready || tab === "local" || !rchatRegion) return;
+    fetchRegionMessages(rchatRegion, false);
+    const iv = setInterval(() => fetchRegionMessages(rchatRegion, false), 25000);
+    return () => clearInterval(iv);
+  }, [ready, tab, rchatRegion, fetchRegionMessages]);
+
+  // stepping into the tab clears the badge right away, instead of waiting
+  // on the next poll tick to resolve
+  useEffect(() => { if (tab === "local") setRchatUnread(false); }, [tab]);
 
   useEffect(() => {
     const el = rchatListRef.current;
@@ -3631,7 +3666,7 @@ function Game({ G, onExit, startFresh }) {
               [IconMinus, () => { zoomAt(size.current.w / 2, size.current.h / 2, cam.current.s * 0.62); prefetchVectorTiles(); }, "Zoom out"],
               [IconGlobe, fitWorld, "Fit whole world"],
               [IconPlane, () => setCities((c) => !c), "Search cities"],
-              [IconChat, () => setRchatOpen((v) => !v), "Local chat"],
+              [IconChat, () => setTab("local"), "Local chat"],
               [IconBug, () => setDbg((v) => !v), "Debug overlay"],
             ].map(([IconC, fn, label], i) => (
               <button key={label} onClick={fn} title={label} aria-label={label}
@@ -3745,66 +3780,6 @@ function Game({ G, onExit, startFresh }) {
               </button>
             </div>
           ); })()}
-
-          {/* region chat drawer — yields to the tile sheet (both live at
-              the bottom edge); rchatOpen persists so closing the sheet
-              brings the chat back. Room = whatever unlocked region the
-              camera is centered on RIGHT NOW (rchatRegion, live — see the
-              effect above) — the header name and the locked/unlocked
-              decision both track it directly rather than waiting on
-              rchat's last completed fetch, so panning into a new or
-              locked region updates the drawer instantly instead of
-              needing a manual close/reopen. */}
-          {rchatOpen && !sel && (
-            <div className="absolute inset-x-0 bottom-0 z-10 flex flex-col rounded-t-2xl p-3"
-              style={{ background: `${C.panel}f5`, borderTop: `1px solid ${C.hairLit}`, boxShadow: C.shadowLg, maxHeight: "42%", ...blur(16) }}>
-              <div className="mb-1 flex items-center justify-between">
-                <Eyebrow>Local chat{rchatRegion ? ` · ${regionLabel(rchatRegion)}` : ""}</Eyebrow>
-                <button onClick={() => setRchatOpen(false)} aria-label="Close chat"
-                  className="pt11 px-1 focus-visible:outline focus-visible:outline-2" style={{ ...mono, color: C.dim, outlineColor: C.amber }}>✕</button>
-              </div>
-              {rchatRegion && !unlockedRegions.current.has(rchatRegion) ? (
-                <div className="pt11 py-2" style={{ ...mono, color: C.dim }}>This region isn't yours yet — unlock it to join its local chat.</div>
-              ) : (
-                <>
-                  <div ref={rchatListRef} className="flex min-h-16 flex-col gap-1 overflow-y-auto py-1">
-                    {rchat.region !== rchatRegion || rchat.rows === null ? (
-                      // rchat.region !== rchatRegion: the fetch for the room we just
-                      // switched into hasn't landed yet — show Loading rather than
-                      // flashing the previous room's messages under the new name
-                      <div className="pt11 py-1" style={{ ...mono, color: C.dim }}>Loading…</div>
-                    ) : rchat.rows.length === 0 ? (
-                      <div className="pt11 py-1" style={{ ...mono, color: C.dim }}>Quiet out here — say something. Everyone who's unlocked this region can read it.</div>
-                    ) : rchat.rows.map((m) => (
-                      <div key={m.id}>
-                        <button onClick={() => { if (m.sender !== g.uid) setRchatSel(rchatSel === m.id ? null : m.id); }}
-                          className="w-full text-left text-sm leading-snug focus-visible:outline focus-visible:outline-2"
-                          style={{ overflowWrap: "anywhere", outlineColor: C.amber }}>
-                          <span className="font-bold" style={{ ...mono, color: m.sender === g.uid ? C.amber : friendIds.current.has(m.sender) ? C.friend : C.dim }}>{m.username}</span>
-                          <span style={{ color: C.text }}> {m.body}</span>
-                        </button>
-                        {rchatSel === m.id && (
-                          <div className="flex gap-3 pb-0.5 pl-2 pt-0.5">
-                            <button className="pt10 focus-visible:outline focus-visible:outline-2" style={{ ...mono, color: "#F08A8A", outlineColor: C.amber }}
-                              onClick={() => reportPlayer(m.sender, "region_chat", `${m.username}: ${m.body}`)}>Report</button>
-                            <button className="pt10 focus-visible:outline focus-visible:outline-2" style={{ ...mono, color: C.dim, outlineColor: C.amber }}
-                              onClick={() => { blockPlayer(m.sender); setRchatSel(null); }}>Block</button>
-                          </div>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                  <div className="mt-1.5 flex gap-2">
-                    <input value={rchatDraft} onChange={(e) => setRchatDraft(e.target.value)} maxLength={300} placeholder="Say something to the neighbors…"
-                      onKeyDown={(e) => { if (e.key === "Enter") sendRegionChat(); }}
-                      className="min-w-0 flex-1 rounded-xl px-3 py-2 text-sm focus-visible:outline focus-visible:outline-2"
-                      style={{ ...display, ...inputSty }} />
-                    <Btn small onClick={sendRegionChat} disabled={!rchatDraft.trim()}>Send</Btn>
-                  </div>
-                </>
-              )}
-            </div>
-          )}
 
           {/* tile sheet */}
           {sel && (
@@ -4043,6 +4018,66 @@ function Game({ G, onExit, startFresh }) {
             </div>
           )}
         </div>
+
+        {/* LOCAL CHAT — its own tab. Used to be a drawer pinned over the
+            map, but that shared the bottom edge with the tile sheet, so
+            selecting a tile hid the chat entirely. Room = whichever
+            unlocked region the camera was last centered on (rchatRegion,
+            live-tracked while the Map tab is active — see the effect
+            above), so panning the map still picks your room even though
+            you now read/send from here instead of an overlay. */}
+        {tab === "local" && (
+          <div className="absolute inset-0 flex flex-col">
+            <div className="shrink-0 flex items-center justify-between px-4 pt-4 pb-2">
+              <Eyebrow>Local chat{rchatRegion ? ` · ${regionLabel(rchatRegion)}` : ""}</Eyebrow>
+              <button onClick={() => setTab("map")} className="pt11 font-bold focus-visible:outline focus-visible:outline-2" style={{ ...mono, color: C.amber, outlineColor: C.amber }}>
+                Change region
+              </button>
+            </div>
+            {!rchatRegion ? (
+              <div className="px-4 text-sm" style={{ ...mono, color: C.dim }}>Loading your region…</div>
+            ) : !unlockedRegions.current.has(rchatRegion) ? (
+              <div className="px-4 text-sm" style={{ ...mono, color: C.dim }}>This region isn't yours yet — unlock it to join its local chat.</div>
+            ) : (
+              <>
+                <div ref={rchatListRef} className="flex flex-1 flex-col gap-1 overflow-y-auto px-4 py-1">
+                  {rchat.region !== rchatRegion || rchat.rows === null ? (
+                    // rchat.region !== rchatRegion: the fetch for the room we just
+                    // switched into hasn't landed yet — show Loading rather than
+                    // flashing the previous room's messages under the new name
+                    <div className="pt11 py-1" style={{ ...mono, color: C.dim }}>Loading…</div>
+                  ) : rchat.rows.length === 0 ? (
+                    <div className="pt11 py-1" style={{ ...mono, color: C.dim }}>Quiet out here — say something. Everyone who's unlocked this region can read it.</div>
+                  ) : rchat.rows.map((m) => (
+                    <div key={m.id}>
+                      <button onClick={() => { if (m.sender !== g.uid) setRchatSel(rchatSel === m.id ? null : m.id); }}
+                        className="w-full text-left text-sm leading-snug focus-visible:outline focus-visible:outline-2"
+                        style={{ overflowWrap: "anywhere", outlineColor: C.amber }}>
+                        <span className="font-bold" style={{ ...mono, color: m.sender === g.uid ? C.amber : friendIds.current.has(m.sender) ? C.friend : C.dim }}>{m.username}</span>
+                        <span style={{ color: C.text }}> {m.body}</span>
+                      </button>
+                      {rchatSel === m.id && (
+                        <div className="flex gap-3 pb-0.5 pl-2 pt-0.5">
+                          <button className="pt10 focus-visible:outline focus-visible:outline-2" style={{ ...mono, color: "#F08A8A", outlineColor: C.amber }}
+                            onClick={() => reportPlayer(m.sender, "region_chat", `${m.username}: ${m.body}`)}>Report</button>
+                          <button className="pt10 focus-visible:outline focus-visible:outline-2" style={{ ...mono, color: C.dim, outlineColor: C.amber }}
+                            onClick={() => { blockPlayer(m.sender); setRchatSel(null); }}>Block</button>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+                <div className="shrink-0 flex gap-2 p-3" style={{ borderTop: `1px solid ${C.hair}` }}>
+                  <input value={rchatDraft} onChange={(e) => setRchatDraft(e.target.value)} maxLength={300} placeholder="Say something to the neighbors…"
+                    onKeyDown={(e) => { if (e.key === "Enter") sendRegionChat(); }}
+                    className="min-w-0 flex-1 rounded-xl px-3 py-2 text-sm focus-visible:outline focus-visible:outline-2"
+                    style={{ ...display, ...inputSty }} />
+                  <Btn small onClick={sendRegionChat} disabled={!rchatDraft.trim()}>Send</Btn>
+                </div>
+              </>
+            )}
+          </div>
+        )}
 
         {/* PORTFOLIO */}
         {tab === "assets" && (
@@ -4539,7 +4574,7 @@ function Game({ G, onExit, startFresh }) {
 
       {/* nav */}
       <div className="flex gap-1 p-1.5" style={{ background: C.panel, borderTop: `1px solid ${C.hair}` }}>
-        {[["map", "Map"], ["assets", "Assets"], ["market", "Market"], ["hq", "HQ"]].map(([k, label]) => (
+        {[["map", "Map"], ["local", "Local"], ["assets", "Assets"], ["market", "Market"], ["hq", "HQ"]].map(([k, label]) => (
           <button key={k} onClick={() => setTab(k)} className="relative pt11 trk flex-1 rounded-xl py-2.5 font-bold uppercase transition-all duration-150 focus-visible:outline focus-visible:outline-2"
             style={{
               ...display,
@@ -4549,6 +4584,11 @@ function Game({ G, onExit, startFresh }) {
               outlineColor: C.amber,
             }}>
             {label}
+            {k === "local" && rchatUnread && (
+              <span className="absolute right-2.5 top-1.5 h-2 w-2 rounded-full"
+                style={{ background: C.amber, boxShadow: `0 0 6px ${C.amber}99` }}
+                title="New messages in this region" />
+            )}
             {k === "hq" && (g.hasUnseenLoss || unreadTotal > 0) && (
               <span className="absolute right-2.5 top-1.5 h-2 w-2 rounded-full"
                 style={g.hasUnseenLoss
