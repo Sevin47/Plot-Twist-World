@@ -20,7 +20,7 @@ import VectorWorker from "./vectorWorker.js?worker&inline";
 // Bumped by hand alongside any fix worth confirming actually shipped —
 // shows in the debug panel so a stale cached bundle is immediately obvious
 // instead of looking like the bug is still unfixed.
-const BUILD_TAG = "2026-07-21.1-local-chat-tab";
+const BUILD_TAG = "2026-07-21.2-region-cache-eviction-fix";
 
 // APP_VERSION: player-facing semver, sourced from package.json (see
 // vite.config.js) — bump package.json's "version" by hand per release.
@@ -40,6 +40,14 @@ const VERSION_CHECK_MS = 5 * 60 * 1000;
 // player-visible change ships with a version bump + entry in the same
 // commit, not after the fact.
 const CHANGELOG = [
+  {
+    id: "1.10.1",
+    date: "Jul 21, 2026",
+    notes: [
+      "Fixed claimed tiles occasionally vanishing from the map for a few seconds, then reappearing.",
+      "Panning the map no longer spams a toast every time you cross into a new region.",
+    ],
+  },
   {
     id: "1.10.0",
     date: "Jul 21, 2026",
@@ -1822,6 +1830,19 @@ function Game({ G, onExit, startFresh }) {
     // here forever, each holding a full region's worth of tile-ownership
     // data. Evicting the oldest just means a re-fetch next time that
     // region is actually viewed again, not a correctness issue.
+    //
+    // Dedupe before pushing: the viewport background sync (see the "region
+    // sync for viewport" effect below) re-fetches whatever's on screen
+    // every ~8s for as long as the player stays put, so a long stay in one
+    // area pushes the same prefix over and over. Without this dedupe, the
+    // oldest entry `shift()` evicts below can be an earlier duplicate push
+    // of the SAME prefix this call just freshly `rc.set()` a moment ago —
+    // silently deleting the region's own just-written data and making its
+    // claimed tiles vanish from the map for up to 8s (confirmed live: a
+    // recording showed the debug overlay's "regions" count hit 0, with no
+    // fetch error logged, exactly when this happened).
+    const existingIdx = regionOrder.current.indexOf(prefix);
+    if (existingIdx !== -1) regionOrder.current.splice(existingIdx, 1);
     regionOrder.current.push(prefix);
     if (regionOrder.current.length > 50) rc.delete(regionOrder.current.shift());
     // reconcile: recover tiles deeded to me that I lost track of on this
@@ -2095,15 +2116,21 @@ function Game({ G, onExit, startFresh }) {
     return q;
   };
 
+  // Used to toast "Now chatting in X" on every region change, which made
+  // sense while this lived in a drawer pinned open over the map — the
+  // visible panel's room was changing in front of you. Now that chat is
+  // its own tab, panning the Map tab (the primary, most-of-the-time
+  // activity) fired that toast on every region-boundary crossing with no
+  // chat panel even in view, reported as spam. The Local tab's header
+  // already shows the live region name whenever you actually check it, so
+  // no proactive notification is needed here.
   const rchatRegionPrev = useRef(null);
   useEffect(() => {
     if (tab !== "map") return;
     const r = centerRegionQk();
     if (r === rchatRegionPrev.current) return;
-    const first = rchatRegionPrev.current == null;
     rchatRegionPrev.current = r;
     setRchatRegion(r);
-    if (!first) toast(`📍 Now chatting in ${regionLabel(r)}`);
   });
 
   // markSeen: true while the player is actually looking at the Local tab
