@@ -45,7 +45,7 @@ Deno.serve(async (req) => {
     // table grows, since it's a partial index on exactly this predicate.
     const { data: captures, error } = await admin
       .from("battle_log")
-      .select("id, defender, qk")
+      .select("id, attacker, defender, qk")
       .eq("attacker_won", true)
       .eq("notified", false)
       .limit(500);
@@ -66,11 +66,21 @@ Deno.serve(async (req) => {
     if (subsErr) throw subsErr;
     const subByUser = new Map((subs || []).map((s) => [s.user_id, s]));
 
-    const payload = JSON.stringify({
-      title: "Tile captured ⚔️",
-      body: "One of your tiles was just taken in a raid — go check the damage.",
-      url: ".",
-    });
+    // Only look up usernames for attackers whose defender is actually
+    // opted in — no point paying for a profiles round-trip for captures
+    // nobody will be notified about.
+    const attackerIds = [...new Set(
+      captures.filter((c) => subByUser.has(c.defender)).map((c) => c.attacker)
+    )];
+    const usernameByAttacker = new Map();
+    if (attackerIds.length > 0) {
+      const { data: attackers, error: attackersErr } = await admin
+        .from("profiles")
+        .select("user_id, username")
+        .in("user_id", attackerIds);
+      if (attackersErr) throw attackersErr;
+      for (const a of attackers || []) usernameByAttacker.set(a.user_id, a.username);
+    }
 
     let sent = 0;
     let pruned = 0;
@@ -78,6 +88,14 @@ Deno.serve(async (req) => {
       captures.map(async (cap) => {
         const sub = subByUser.get(cap.defender);
         if (!sub) return; // not opted in (or no subscription at all) — still counts as "processed" below
+        const attackerName = usernameByAttacker.get(cap.attacker);
+        const payload = JSON.stringify({
+          title: "Tile captured ⚔️",
+          body: attackerName
+            ? `${attackerName} just captured one of your tiles — go check the damage.`
+            : "One of your tiles was just taken in a raid — go check the damage.",
+          url: ".",
+        });
         try {
           await webpush.sendNotification(
             { endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth_key } },
