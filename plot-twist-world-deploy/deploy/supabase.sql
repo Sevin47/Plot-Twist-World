@@ -2608,10 +2608,22 @@ create index if not exists idx_battle_log_unnotified on battle_log(id) where att
 --
 --    pg_cron/pg_net may need enabling once via Dashboard -> Database ->
 --    Extensions if the CREATE EXTENSION lines below fail for lack of
---    privilege. Replace <SERVICE_ROLE_KEY> before running — it's a secret:
---    never commit this block with the real value filled in, paste it
---    directly in the SQL Editor instead. (project ref below matches
---    VITE_SUPABASE_URL in .env — that part isn't sensitive.)
+--    privilege.
+--
+--    Auth: NOT a Bearer JWT. This project's service-role credential is
+--    the newer sb_secret_... format (see VITE_SUPABASE_ANON_KEY in .env,
+--    which is the sibling sb_publishable_... key) — that's not JWT-shaped,
+--    so Supabase's automatic Authorization-header verification on the
+--    function rejects it with 401 UNAUTHORIZED_INVALID_JWT_FORMAT before
+--    the function's own code ever runs. Both send-*-alerts functions are
+--    instead deployed with `--no-verify-jwt` and check the x-cron-secret
+--    header themselves against the CRON_SECRET function secret (`supabase
+--    secrets set CRON_SECRET=...`, a random value, not the service-role
+--    key). Replace <CRON_SECRET> below with that same value before
+--    running — it's still a secret: never commit this block with the
+--    real value filled in, paste it directly in the SQL Editor instead.
+--    (project ref below matches VITE_SUPABASE_URL in .env — that part
+--    isn't sensitive.)
 create extension if not exists pg_cron;
 create extension if not exists pg_net;
 
@@ -2622,7 +2634,7 @@ select cron.schedule(
   $$
   select net.http_post(
     url := 'https://trjrbqkwxmsfxlqermam.supabase.co/functions/v1/send-energy-alerts',
-    headers := jsonb_build_object('Authorization', 'Bearer <SERVICE_ROLE_KEY>', 'Content-Type', 'application/json'),
+    headers := jsonb_build_object('x-cron-secret', '<CRON_SECRET>', 'Content-Type', 'application/json'),
     body := '{}'::jsonb
   );
   $$
@@ -2633,7 +2645,7 @@ select cron.schedule(
 --    happens, so this is a short poll of battle_log's not-yet-notified
 --    rows rather than a once-a-day fire. 2 minutes keeps it feeling close
 --    to real-time without invoking the function 1440 times/day for what's
---    usually a near-empty query. ──
+--    usually a near-empty query. Same x-cron-secret auth as above. ──
 select cron.unschedule('attack-alert-push') where exists (select 1 from cron.job where jobname = 'attack-alert-push');
 select cron.schedule(
   'attack-alert-push',
@@ -2641,7 +2653,7 @@ select cron.schedule(
   $$
   select net.http_post(
     url := 'https://trjrbqkwxmsfxlqermam.supabase.co/functions/v1/send-attack-alerts',
-    headers := jsonb_build_object('Authorization', 'Bearer <SERVICE_ROLE_KEY>', 'Content-Type', 'application/json'),
+    headers := jsonb_build_object('x-cron-secret', '<CRON_SECRET>', 'Content-Type', 'application/json'),
     body := '{}'::jsonb
   );
   $$
