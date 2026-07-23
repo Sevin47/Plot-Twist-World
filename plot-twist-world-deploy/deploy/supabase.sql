@@ -217,6 +217,12 @@ alter table profiles add column if not exists peak_net_worth bigint not null def
 update profiles p set peak_net_worth = p.balance + coalesce((select sum(t.paid) from tiles t where t.owner = p.user_id), 0)
 where p.peak_net_worth = 0;
 
+-- Commendations (ACH in PlotTwistWorld.jsx) — see sync_achievements far
+-- below for why this is persisted at all (badges used to be client-only
+-- and un-viewable for anyone but yourself). Declared up here, ahead of
+-- the leaderboard view below, since that view selects it.
+alter table profiles add column if not exists ach jsonb not null default '{}'::jsonb;
+
 -- ── territory: a player's fine-deed-grid interaction is gated to regions
 --    they've unlocked (see unlock_region / buy_unowned_tile below) — the
 --    same REGION_LEN=8 quadkey-prefix "region" (~150km) the client already
@@ -1202,14 +1208,19 @@ revoke all on function claim_bank_ledger() from public;
 grant execute on function claim_bank_ledger() to authenticated;
 
 -- ── leaderboard: real joined data, no client-submitted net-worth blob ──
+-- ach (added alongside a friend-stats card — see sync_achievements further
+-- down) rides on the same no-per-row-privacy-gate trust model as
+-- net_worth/tile_count here: nothing in this view is scoped to the
+-- caller, so exposing badges the same way isn't a new exposure.
 create or replace view leaderboard as
 select p.user_id, p.username,
        p.balance + coalesce(sum(t.paid), 0) as net_worth,
        count(t.qk) as tile_count,
-       p.peak_net_worth
+       p.peak_net_worth,
+       p.ach
 from profiles p
 left join tiles t on t.owner = p.user_id
-group by p.user_id, p.username, p.balance, p.peak_net_worth
+group by p.user_id, p.username, p.balance, p.peak_net_worth, p.ach
 order by net_worth desc;
 grant select on leaderboard to anon, authenticated;
 
@@ -2658,6 +2669,31 @@ select cron.schedule(
   );
   $$
 );
+
+-- ── friend stats: sync_achievements — see the `ach` column comment far
+--    above (right before the leaderboard view) for why this is persisted
+--    at all. Called from the client's save() whenever a badge changes. ──
+create or replace function sync_achievements(p_ach jsonb)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if auth.uid() is null then raise exception 'not authenticated'; end if;
+  -- merge, never overwrite — badges are monotonic (once true, always
+  -- true client-side), so this only ever adds keys; a stale/older client
+  -- syncing a smaller ach blob can't un-unlock one another client already set.
+  update profiles set ach = coalesce(ach, '{}'::jsonb) || p_ach where user_id = auth.uid();
+end;
+$$;
+revoke all on function sync_achievements(jsonb) from public;
+grant execute on function sync_achievements(jsonb) to authenticated;
+
+-- leaderboard (see its definition above) now also selects p.ach — it
+-- already has no per-row privacy gate (net worth/tile count are public
+-- to any authenticated/anon client), so adding ach alongside them is the
+-- same trust model, not a new exposure.
 
 -- Force PostgREST to pick up schema changes from this script immediately.
 -- It normally reloads on its own shortly after DDL, but that can lag or
