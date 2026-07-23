@@ -29,21 +29,36 @@ self.addEventListener("push", (event) => {
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();
   const { url = ".", qk } = event.notification.data || {};
+  const target = qk ? `${url}${url.includes("?") ? "&" : "?"}qk=${encodeURIComponent(qk)}` : url;
   event.waitUntil(
     (async () => {
       const clientsList = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
       const existing = clientsList.find((c) => c.url.includes(self.location.origin));
       if (existing) {
-        // Already open — message the live app rather than navigating it,
-        // so it can zoom the map in place without losing in-memory game
-        // state (a full reload would re-fetch everything from scratch).
-        if (qk) existing.postMessage({ type: "ptw:zoom-to-qk", qk });
+        if (qk) {
+          // navigate(), not postMessage, to an existing tab — iOS
+          // frequently suspends (or silently re-executes) a backgrounded
+          // PWA's JS between the phone locking and the notification being
+          // tapped, so a postMessage sent to that page can arrive before
+          // its message listener has re-registered, or after the page's
+          // gone entirely — it's just lost, no error, no retry. navigate()
+          // forces a real (re)load of the qk-bearing URL, which the app
+          // parses fresh on every mount regardless of what state its JS
+          // was in a moment ago — the one path already confirmed to work.
+          try {
+            await existing.navigate(target);
+            return existing.focus();
+          } catch {
+            // navigate() unsupported/blocked in this browser — best-effort
+            // postMessage for a page that's actually still alive.
+            existing.postMessage({ type: "ptw:zoom-to-qk", qk });
+          }
+        }
         return existing.focus();
       }
-      // Cold start — no running app to message, so the qk rides along as
-      // a query param the app reads for itself once it's loaded (see
+      // Cold start — nothing to navigate, so the qk rides along as a query
+      // param the app reads for itself once it's loaded (see
       // PlotTwistWorld.jsx's jumpToQk state).
-      const target = qk ? `${url}${url.includes("?") ? "&" : "?"}qk=${encodeURIComponent(qk)}` : url;
       return self.clients.openWindow(target);
     })()
   );
