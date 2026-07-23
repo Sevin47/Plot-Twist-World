@@ -5,13 +5,22 @@
 // supabase.sql), so there's nothing to check per-row here beyond "does a
 // subscription exist" — no need to look at energy_date/energy at all.
 //
-// Deploy: `supabase functions deploy send-energy-alerts` (same one-time
-// `supabase login` / `supabase link` as delete-account).
+// Deploy: `supabase functions deploy send-energy-alerts --no-verify-jwt`
+// (same one-time `supabase login` / `supabase link` as delete-account).
+// --no-verify-jwt is required: this project's service-role credential is
+// the newer sb_secret_... format, not a JWT, so Supabase's automatic
+// Authorization-header check (which expects a JWT) would 401 every call
+// pg_cron makes before this code ever runs — auth here is the x-cron-
+// secret header check below instead.
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import webpush from "npm:web-push@3";
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok");
+
+  if (req.headers.get("x-cron-secret") !== Deno.env.get("CRON_SECRET")) {
+    return new Response(JSON.stringify({ error: "unauthorized" }), { status: 401 });
+  }
 
   try {
     const supabaseUrl = Deno.env.get("SUPABASE_URL");
