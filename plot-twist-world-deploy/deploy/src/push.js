@@ -67,8 +67,14 @@ export async function disablePushAlerts() {
   if (supabase) {
     // Best-effort — the row is harmless if this fails (send-energy-alerts
     // will just prune it after one failed delivery to the dead endpoint),
-    // so a network blip here shouldn't block unsubscribing locally.
-    await supabase.rpc("disable_push_alerts").catch(() => {});
+    // so a network blip here shouldn't block unsubscribing locally. try/
+    // catch, not .catch() — supabase.rpc(...) returns a thenable builder,
+    // not a real Promise, so it has no .catch method to chain.
+    try {
+      await supabase.rpc("disable_push_alerts");
+    } catch {
+      /* ignore */
+    }
   }
   if (!pushSupported()) return;
   const reg = await navigator.serviceWorker.getRegistration();

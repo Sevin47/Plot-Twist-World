@@ -21,7 +21,7 @@ import VectorWorker from "./vectorWorker.js?worker&inline";
 // Bumped by hand alongside any fix worth confirming actually shipped —
 // shows in the debug panel so a stale cached bundle is immediately obvious
 // instead of looking like the bug is still unfixed.
-const BUILD_TAG = "2026-07-23.1-energy-alerts";
+const BUILD_TAG = "2026-07-23.2-energy-alerts-toggle-off-fix";
 
 // APP_VERSION: player-facing semver, sourced from package.json (see
 // vite.config.js) — bump package.json's "version" by hand per release.
@@ -41,6 +41,13 @@ const VERSION_CHECK_MS = 5 * 60 * 1000;
 // player-visible change ships with a version bump + entry in the same
 // commit, not after the fact.
 const CHANGELOG = [
+  {
+    id: "1.13.1",
+    date: "Jul 23, 2026",
+    notes: [
+      "Fixed the Energy alerts toggle throwing an error when switching it back off.",
+    ],
+  },
   {
     id: "1.13.0",
     date: "Jul 23, 2026",
