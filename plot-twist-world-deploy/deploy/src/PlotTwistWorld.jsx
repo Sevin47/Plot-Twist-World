@@ -21,7 +21,7 @@ import VectorWorker from "./vectorWorker.js?worker&inline";
 // Bumped by hand alongside any fix worth confirming actually shipped —
 // shows in the debug panel so a stale cached bundle is immediately obvious
 // instead of looking like the bug is still unfixed.
-const BUILD_TAG = "2026-07-23.3-attack-alerts";
+const BUILD_TAG = "2026-07-23.4-badge-repeat-fix";
 
 // APP_VERSION: player-facing semver, sourced from package.json (see
 // vite.config.js) — bump package.json's "version" by hand per release.
@@ -41,6 +41,13 @@ const VERSION_CHECK_MS = 5 * 60 * 1000;
 // player-visible change ships with a version bump + entry in the same
 // commit, not after the fact.
 const CHANGELOG = [
+  {
+    id: "1.14.4",
+    date: "Jul 23, 2026",
+    notes: [
+      "Badges (Sociable, Trader, Conqueror, Redeveloper, Pen pal) no longer re-announce themselves on a later login once you've already earned them.",
+    ],
+  },
   {
     id: "1.14.3",
     date: "Jul 23, 2026",
@@ -1174,6 +1181,11 @@ function Game({ G, onExit, startFresh, reducedOverride }) {
   // unlockedRegions: renders don't depend on it, the draw loop just reads
   // whatever's current.
   const friendIds = useRef(new Set());
+  // First refreshSocial() call each session is a hydration, not an event —
+  // without this, a friendship accepted in a *previous* session would
+  // still toast "Unlocked — Sociable" again on this login, since g.ach
+  // resets every session (see the boot effect's pre-populate comment).
+  const socialHydrated = useRef(false);
   // DMs (social phase 2)
   const [chatMsgs, setChatMsgs] = useState({ loading: false, rows: null });
   const [chatDraft, setChatDraft] = useState("");
@@ -1412,7 +1424,11 @@ function Game({ G, onExit, startFresh, reducedOverride }) {
 
       // silently pre-populate already-earned achievement flags so they
       // don't re-toast every login — checkAch()'s unlock() only toasts
-      // achievements that become newly true *during* this session
+      // achievements that become newly true *during* this session. g.ach
+      // itself is never persisted (Postgres is the only source of truth,
+      // see gameFromProfile above), so every one of these has to be
+      // re-derived from real synced data or it'll re-fire the first time
+      // its trigger condition is true again in a later session.
       const n = g.own.length;
       if (n >= 1) g.ach.deed1 = 1;
       if (n >= 10) g.ach.deed10 = 1;
@@ -1421,6 +1437,23 @@ function Game({ G, onExit, startFresh, reducedOverride }) {
       if (g.own.some((t) => t.l >= 4)) g.ach.tower = 1;
       if (g.bal >= 50000) g.ach.rich = 1;
       if ((g.streak || 0) >= 3) g.ach.streak3 = 1;
+      if (g.own.some((t) => t.pr > 0)) g.ach.redevelop1 = 1;
+
+      // The remaining three (trader/conqueror/dm1) have no locally-synced
+      // field to check against — their history lives entirely in
+      // row-level-security-scoped tables the client can already read
+      // directly (same "read own X" policies as bank_ledger/battle_log
+      // elsewhere). One cheap existence check each, in parallel, not
+      // gating boot on any of them — a failed check just means that badge
+      // stays un-pre-populated and, worst case, re-toasts once more.
+      const [everSold, everWon, everMessaged] = await Promise.all([
+        supabase.from("bank_ledger").select("id").eq("recipient", g.uid).in("kind", ["sale", "flip"]).limit(1),
+        supabase.from("battle_log").select("id").eq("attacker", g.uid).eq("attacker_won", true).limit(1),
+        supabase.from("messages").select("id").eq("sender", g.uid).limit(1),
+      ]);
+      if (everSold.data?.length) g.ach.trader = 1;
+      if (everWon.data?.length) g.ach.conqueror = 1;
+      if (everMessaged.data?.length) g.ach.dm1 = 1;
 
       setReady(true);
       if (pendings.current.length) setModal(pendings.current.shift());
@@ -2091,7 +2124,11 @@ function Game({ G, onExit, startFresh, reducedOverride }) {
     if (error) { setSocial({ loading: false, rows: null, err: true }); return; }
     const rows = data || [];
     friendIds.current = new Set(rows.filter((r) => r.status === "accepted").map((r) => r.other_user));
-    if (friendIds.current.size > 0 && !g.ach.friend1) { g.ach.friend1 = 1; toast("Unlocked — Sociable"); dirty.current = true; }
+    if (friendIds.current.size > 0) {
+      if (!socialHydrated.current) g.ach.friend1 = 1; // already true going in — silent
+      else if (!g.ach.friend1) { g.ach.friend1 = 1; toast("Unlocked — Sociable"); dirty.current = true; }
+    }
+    socialHydrated.current = true;
     setSocial({ loading: false, rows, err: false });
   }, [g, toast]);
   useEffect(() => { if (ready) refreshSocial(); }, [ready, refreshSocial]);
