@@ -42,6 +42,13 @@ const VERSION_CHECK_MS = 5 * 60 * 1000;
 // commit, not after the fact.
 const CHANGELOG = [
   {
+    id: "1.14.1",
+    date: "Jul 23, 2026",
+    notes: [
+      "The back button to the start menu is now a proper labeled button instead of a tiny chevron — easier to spot and clearer about where it takes you.",
+    ],
+  },
+  {
     id: "1.14.0",
     date: "Jul 23, 2026",
     notes: [
@@ -782,6 +789,11 @@ const IconChat = (p) => (
   <Icon {...p}>
     <path d="M4 5.5h16v10.5H9.5L5.5 20v-4H4Z" />
     <path d="M8 9.5h8M8 12.5h5" />
+  </Icon>
+);
+const IconChevronLeft = (p) => (
+  <Icon {...p}>
+    <path d="M14.5 5 8 12l6.5 7" />
   </Icon>
 );
 
@@ -3835,8 +3847,13 @@ function Game({ G, onExit, startFresh, reducedOverride }) {
       <div className="relative z-10 flex items-center justify-between gap-3 px-4 pb-2.5 pt-3"
         style={{ borderBottom: `1px solid ${C.hair}`, background: C.panel, backgroundImage: `linear-gradient(180deg, #16233a 0%, ${C.panel} 100%)`, boxShadow: C.shadowSm }}>
         <div className="min-w-0">
-          <button onClick={() => { save(); onExit(); }} className="pt9 trk flex items-center gap-1 uppercase font-semibold focus-visible:outline focus-visible:outline-2" style={{ ...display, color: C.dim, outlineColor: C.amber }}>
-            ‹ Plot Twist · World Deed
+          <button onClick={() => { save(); onExit(); }} title="Back to menu" aria-label="Back to menu"
+            className="-ml-1.5 mb-1 flex items-center gap-1.5 rounded-full py-1 pl-1.5 pr-2.5 transition-colors hover:bg-white/[0.08] active:scale-95 focus-visible:outline focus-visible:outline-2"
+            style={{ border: `1px solid ${C.hairLit}`, background: `${C.panel}b3`, outlineColor: C.amber, ...blur(8) }}>
+            <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full" style={{ background: `${C.amber}22`, color: C.amber }}>
+              <IconChevronLeft size={13} />
+            </span>
+            <span className="pt9 trk uppercase font-semibold" style={{ ...display, color: C.text }}>Menu</span>
           </button>
           <div className="pt9 flex items-center gap-1.5" style={{ ...mono, color: C.dim }}>
             <span>v{APP_VERSION}</span>
