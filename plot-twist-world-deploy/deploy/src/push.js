@@ -1,10 +1,15 @@
 import { supabase } from "./storage.js";
 
 /*
-  Opt-in Web Push for the "energy reset" alert. Entirely separate from
+  Opt-in Web Push, two independent alert types (energy reset, tile
+  captured) sharing one underlying browser subscription — a device only
+  ever holds one PushManager subscription regardless of how many alert
+  types it's opted into, so subscribing/unsubscribing is shared plumbing
+  here while each alert type's on/off state is its own column server-side
+  (see push_subscriptions in supabase.sql). Entirely separate from
   MULTIPLAYER/Supabase configuration below the browser-capability check —
   a device without notification support (or over plain HTTP in dev) just
-  can't offer the toggle at all.
+  can't offer either toggle at all.
 */
 
 const VAPID_PUBLIC_KEY = import.meta.env.VITE_VAPID_PUBLIC_KEY;
@@ -22,21 +27,37 @@ function urlBase64ToUint8Array(base64) {
   return Uint8Array.from([...raw].map((c) => c.charCodeAt(0)));
 }
 
-// Reflects only whether *this browser* holds a live subscription — the
-// source of truth for "are alerts on" the account. Deliberately not
-// mirrored into profiles/localStorage: asking the browser directly means
-// it can never drift from reality (e.g. the user revoking the permission
-// from browser settings instead of the in-game toggle).
-export async function pushIsSubscribed() {
-  if (!pushSupported()) return false;
+// Reads back this account's actual preferences, cross-checked against
+// whether the browser still holds a live subscription — the latter can
+// never drift from reality (e.g. the player revoking the permission from
+// browser settings instead of the in-game toggles), so a missing browser
+// subscription forces both to read as off regardless of what's stored
+// server-side. A stale "on" in the DB in that case is harmless: the next
+// send attempt against the dead endpoint gets pruned server-side, same as
+// always.
+export async function getPushPrefs() {
+  const off = { energyAlerts: false, attackAlerts: false };
+  if (!pushSupported() || !supabase) return off;
   const reg = await navigator.serviceWorker.getRegistration();
-  if (!reg) return false;
-  const sub = await reg.pushManager.getSubscription();
-  return !!sub;
+  const sub = reg ? await reg.pushManager.getSubscription() : null;
+  if (!sub) return off;
+  const { data, error } = await supabase.rpc("get_push_prefs");
+  if (error || !data || !data.length) return off;
+  return { energyAlerts: !!data[0].energy_alerts, attackAlerts: !!data[0].attack_alerts };
 }
 
-export async function enablePushAlerts() {
+// Applies the full desired pair in one shot (not a partial update) —
+// callers always pass both current values, one changed. Handles
+// subscribing the browser on first opt-in of either kind, and tearing the
+// subscription down entirely once both are off.
+export async function setPushPrefs(energyAlerts, attackAlerts) {
   if (!pushSupported() || !supabase) throw new Error("Push not supported here");
+
+  if (!energyAlerts && !attackAlerts) {
+    await disablePushAlerts();
+    return;
+  }
+
   const permission = await Notification.requestPermission();
   if (permission !== "granted") throw new Error("Notification permission denied");
 
@@ -59,17 +80,20 @@ export async function enablePushAlerts() {
     p_endpoint: json.endpoint,
     p_p256dh: json.keys.p256dh,
     p_auth: json.keys.auth,
+    p_energy_alerts: energyAlerts,
+    p_attack_alerts: attackAlerts,
   });
   if (error) throw error;
 }
 
 export async function disablePushAlerts() {
   if (supabase) {
-    // Best-effort — the row is harmless if this fails (send-energy-alerts
-    // will just prune it after one failed delivery to the dead endpoint),
-    // so a network blip here shouldn't block unsubscribing locally. try/
-    // catch, not .catch() — supabase.rpc(...) returns a thenable builder,
-    // not a real Promise, so it has no .catch method to chain.
+    // Best-effort — the row is harmless if this fails (the send-*-alerts
+    // functions will just prune it after one failed delivery to the dead
+    // endpoint), so a network blip here shouldn't block unsubscribing
+    // locally. try/catch, not .catch() — supabase.rpc(...) returns a
+    // thenable builder, not a real Promise, so it has no .catch method to
+    // chain.
     try {
       await supabase.rpc("disable_push_alerts");
     } catch {
