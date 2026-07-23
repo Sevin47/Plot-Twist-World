@@ -2495,6 +2495,96 @@ $$;
 revoke all on function set_tile_nickname(text, text) from public;
 grant execute on function set_tile_nickname(text, text) to authenticated;
 
+-- ── push_subscriptions: opt-in Web Push registrations for the "energy
+--    reset" alert. One row per account (a second device resubscribing just
+--    overwrites the first — v1 doesn't fan out to multiple devices). No
+--    client-facing RLS policy at all, same reasoning as the SELECT-only
+--    philosophy above but taken one step further: a push endpoint is
+--    bearer-credential-shaped (anyone holding it can make the push service
+--    fire a notification at that browser), so unlike tiles/profiles this
+--    table isn't even publicly readable — every access goes through the
+--    two security-definer functions below (owner read/write) or the
+--    service-role key inside the send-energy-alerts edge function (bypasses
+--    RLS entirely, never shipped to the client). ──
+create table if not exists push_subscriptions (
+  user_id uuid primary key references profiles(user_id) on delete cascade,
+  endpoint text not null,
+  p256dh text not null,
+  auth_key text not null,
+  created_at timestamptz not null default now()
+);
+
+alter table push_subscriptions enable row level security;
+
+-- ── save_push_subscription: called right after the client subscribes via
+--    the browser's PushManager. Upsert keyed on user_id (not endpoint) —
+--    re-subscribing (e.g. after clearing site data) should replace this
+--    account's old registration, not accumulate stale ones. ──
+create or replace function save_push_subscription(p_endpoint text, p_p256dh text, p_auth text)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_uid uuid := auth.uid();
+begin
+  if v_uid is null then raise exception 'not authenticated'; end if;
+  insert into push_subscriptions (user_id, endpoint, p256dh, auth_key, created_at)
+  values (v_uid, p_endpoint, p_p256dh, p_auth, now())
+  on conflict (user_id) do update
+    set endpoint = excluded.endpoint, p256dh = excluded.p256dh, auth_key = excluded.auth_key, created_at = now();
+end;
+$$;
+revoke all on function save_push_subscription(text, text, text) from public;
+grant execute on function save_push_subscription(text, text, text) to authenticated;
+
+-- ── disable_push_alerts: the toggle's "off" path. Deletes the row outright
+--    rather than an opt_in flag — send-energy-alerts only ever looks at
+--    "does a row exist for this user", so there's no separate flag to keep
+--    in sync, same "absence is the off state" idiom as tile_nicknames. ──
+create or replace function disable_push_alerts()
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if auth.uid() is null then raise exception 'not authenticated'; end if;
+  delete from push_subscriptions where user_id = auth.uid();
+end;
+$$;
+revoke all on function disable_push_alerts() from public;
+grant execute on function disable_push_alerts() to authenticated;
+
+-- ── Schedule send-energy-alerts once per UTC calendar day, right at the
+--    same midnight-UTC instant reset_daily_energy uses as "today" (see
+--    v_today above) — the reset itself is still lazy/compute-on-read (no
+--    cron needed for the game logic), this cron is purely for the
+--    notification side, which has no "on read" moment to piggyback on.
+--
+--    pg_cron/pg_net may need enabling once via Dashboard -> Database ->
+--    Extensions if the CREATE EXTENSION lines below fail for lack of
+--    privilege. Replace <SERVICE_ROLE_KEY> before running — it's a secret:
+--    never commit this block with the real value filled in, paste it
+--    directly in the SQL Editor instead. (project ref below matches
+--    VITE_SUPABASE_URL in .env — that part isn't sensitive.)
+create extension if not exists pg_cron;
+create extension if not exists pg_net;
+
+select cron.unschedule('energy-reset-push') where exists (select 1 from cron.job where jobname = 'energy-reset-push');
+select cron.schedule(
+  'energy-reset-push',
+  '0 0 * * *',
+  $$
+  select net.http_post(
+    url := 'https://trjrbqkwxmsfxlqermam.supabase.co/functions/v1/send-energy-alerts',
+    headers := jsonb_build_object('Authorization', 'Bearer <SERVICE_ROLE_KEY>', 'Content-Type', 'application/json'),
+    body := '{}'::jsonb
+  );
+  $$
+);
+
 -- Force PostgREST to pick up schema changes from this script immediately.
 -- It normally reloads on its own shortly after DDL, but that can lag or
 -- occasionally not fire when running raw SQL through the dashboard editor
