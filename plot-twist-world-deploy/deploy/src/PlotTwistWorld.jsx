@@ -21,7 +21,7 @@ import VectorWorker from "./vectorWorker.js?worker&inline";
 // Bumped by hand alongside any fix worth confirming actually shipped —
 // shows in the debug panel so a stale cached bundle is immediately obvious
 // instead of looking like the bug is still unfixed.
-const BUILD_TAG = "2026-07-23.9-leaderboard-friend-stats";
+const BUILD_TAG = "2026-07-23.10-leaderboard-any-player-stats";
 
 // APP_VERSION: player-facing semver, sourced from package.json (see
 // vite.config.js) — bump package.json's "version" by hand per release.
@@ -41,6 +41,13 @@ const VERSION_CHECK_MS = 5 * 60 * 1000;
 // player-visible change ships with a version bump + entry in the same
 // commit, not after the fact.
 const CHANGELOG = [
+  {
+    id: "1.14.10",
+    date: "Jul 23, 2026",
+    notes: [
+      "Any of the top 10 on the World register is now tappable to see their stats card, not just friends.",
+    ],
+  },
   {
     id: "1.14.9",
     date: "Jul 23, 2026",
@@ -1263,7 +1270,7 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled 
   const [chatMsgs, setChatMsgs] = useState({ loading: false, rows: null });
   const [chatDraft, setChatDraft] = useState("");
   const [unread, setUnread] = useState({}); // sender uuid -> unread count
-  const [friendStats, setFriendStats] = useState(null); // { name, loading, row } — row is a `leaderboard` view row (net_worth/tile_count/peak_net_worth/ach), see openFriendStats below
+  const [playerStats, setPlayerStats] = useState(null); // { name, loading, row } — row is a `leaderboard` view row (net_worth/tile_count/peak_net_worth/ach), see openPlayerStats below. Not friends-only — any World register row or friend can open this.
   const [removeFriendTarget, setRemoveFriendTarget] = useState(null); // { uid, name } — pending confirmation, see the Friends list below
   const unreadPrevTotal = useRef(0);
   const chatListRef = useRef(null);
@@ -2269,18 +2276,18 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled 
     if (error) { toast(error.message || "Couldn't unblock — try again."); return; }
     refreshSocial();
   };
-  // Friend stats card — reads the same public `leaderboard` view the HQ
+  // Player stats card — reads the same public `leaderboard` view the HQ
   // leaderboard section already queries (net_worth/tile_count/
   // peak_net_worth, plus ach now that sync_achievements mirrors badges
   // there too — see supabase.sql), just scoped to one user_id instead of
-  // top-10. Nothing here is friends-only server-side (the view has no
-  // per-row privacy gate), so this would work for any uid, but it's only
-  // ever surfaced from the Friends list.
-  const openFriendStats = async (uid, name) => {
-    setModal({ kind: "friendStats", uid, name });
-    setFriendStats({ name, loading: true, row: null });
+  // top-10. The view has no per-row privacy gate, so this works for any
+  // uid — surfaced from both the Friends list and the World register
+  // (any of the top 10, not just friends).
+  const openPlayerStats = async (uid, name) => {
+    setModal({ kind: "playerStats", uid, name });
+    setPlayerStats({ name, loading: true, row: null });
     const { data, error } = await supabase.from("leaderboard").select("*").eq("user_id", uid).maybeSingle();
-    setFriendStats({ name, loading: false, row: error ? null : data });
+    setPlayerStats({ name, loading: false, row: error ? null : data });
   };
   // Jump to a region (own, from Territory, or a friend's home region from
   // the Friends list) and fit the camera to its FULL bounds, not just its
@@ -4838,12 +4845,13 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled 
                 <div className="pt11 py-2" style={{ ...mono, color: C.dim }}>Pulling records…</div>
               ) : lb.rows && lb.rows.length ? (
                 lb.rows.map((r, idx) => {
-                  // Only friends get the tap-for-stats treatment here — the
-                  // `leaderboard` view has no per-row privacy gate (see
-                  // supabase.sql), so this would technically work for any
-                  // row, but a stranger-profile-viewer isn't a feature
-                  // that's been asked for, just a friend one reused here.
-                  const isFriend = r.id !== g.uid && friendIds.current.has(r.id);
+                  // Every other row in the top 10 is tappable for a stats
+                  // card — the `leaderboard` view has no per-row privacy
+                  // gate (see supabase.sql), so this works for anyone on
+                  // it, not just friends. Your own row is excluded since
+                  // the "You" section above already covers it in more
+                  // depth (streak, energy, etc. that this card doesn't have).
+                  const clickable = r.id !== g.uid;
                   const nameRow = (
                     <div className="flex min-w-0 items-center gap-2" style={mono}>
                       <span className="w-5 shrink-0 text-right text-xs" style={{ color: C.dim }}>{idx + 1}</span>
@@ -4851,14 +4859,14 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled 
                         {r.n}{r.id === g.uid ? " (you)" : ""}
                       </span>
                       <Chip color={C.amber}>{statusFor(r.pnw).name}</Chip>
-                      {isFriend && <span aria-hidden className="pt10" style={{ color: C.dim }}>›</span>}
+                      {clickable && <span aria-hidden className="pt10" style={{ color: C.dim }}>›</span>}
                     </div>
                   );
                   return (
                     <div key={r.id} className="flex items-center justify-between py-1.5 text-sm" style={{ borderTop: idx ? `1px solid ${C.hair}` : "none" }}>
-                      {isFriend ? (
+                      {clickable ? (
                         <button className="min-w-0 rounded-lg -my-1 py-1 transition-colors hover:bg-white/5 active:bg-white/10 focus-visible:outline focus-visible:outline-2"
-                          style={{ outlineColor: C.amber }} onClick={() => openFriendStats(r.id, r.n)}>
+                          style={{ outlineColor: C.amber }} onClick={() => openPlayerStats(r.id, r.n)}>
                           {nameRow}
                         </button>
                       ) : nameRow}
@@ -4915,7 +4923,7 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled 
                     ) : friends.map((r) => (
                       <div key={r.other_user} className="flex items-center justify-between gap-2 py-1.5" style={rowSty}>
                         <button className="flex min-w-0 items-center gap-1.5 rounded-lg py-0.5 pr-2 text-left text-sm transition-colors hover:bg-white/5 active:bg-white/10 focus-visible:outline focus-visible:outline-2"
-                          style={{ ...mono, outlineColor: C.amber }} onClick={() => openFriendStats(r.other_user, r.username)}>
+                          style={{ ...mono, outlineColor: C.amber }} onClick={() => openPlayerStats(r.other_user, r.username)}>
                           <span className="h-2 w-2 shrink-0 rounded-full" style={{ background: C.friend, boxShadow: `0 0 6px ${C.friend}99` }} />
                           <span className="truncate">{r.username}</span>
                         </button>
@@ -5236,15 +5244,15 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled 
               <Btn full onClick={closeModal}>Close</Btn>
             </>
           )}
-          {modal.kind === "friendStats" && (
+          {modal.kind === "playerStats" && (
             <>
               <Eyebrow>{modal.name}</Eyebrow>
-              {!friendStats || friendStats.loading ? (
+              {!playerStats || playerStats.loading ? (
                 <div className="pt11 py-6 text-center" style={{ ...mono, color: C.dim }}>Loading…</div>
-              ) : !friendStats.row ? (
+              ) : !playerStats.row ? (
                 <div className="pt11 py-4" style={{ ...mono, color: C.dim }}>Couldn't load their stats — try again.</div>
               ) : (() => {
-                const row = friendStats.row;
+                const row = playerStats.row;
                 const status = statusFor(row.peak_net_worth || 0);
                 const ach = row.ach || {};
                 return (
