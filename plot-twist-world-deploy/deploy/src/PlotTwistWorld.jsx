@@ -42,6 +42,13 @@ const VERSION_CHECK_MS = 5 * 60 * 1000;
 // commit, not after the fact.
 const CHANGELOG = [
   {
+    id: "1.14.2",
+    date: "Jul 23, 2026",
+    notes: [
+      "Moved the version number and \"What's new\" link to the top-right, above the boost button.",
+    ],
+  },
+  {
     id: "1.14.1",
     date: "Jul 23, 2026",
     notes: [
@@ -3855,13 +3862,6 @@ function Game({ G, onExit, startFresh, reducedOverride }) {
             </span>
             <span className="pt9 trk uppercase font-semibold" style={{ ...display, color: C.text }}>Menu</span>
           </button>
-          <div className="pt9 flex items-center gap-1.5" style={{ ...mono, color: C.dim }}>
-            <span>v{APP_VERSION}</span>
-            <button onClick={() => setModal({ kind: "changelog" })}
-              className="underline decoration-dotted underline-offset-2 focus-visible:outline focus-visible:outline-2" style={{ outlineColor: C.amber }}>
-              What's new
-            </button>
-          </div>
           <div className="flex items-baseline gap-2">
             <div className="text-2xl font-bold" style={{ ...mono, color: C.amber, fontVariantNumeric: "tabular-nums", textShadow: `0 0 18px ${C.glow}` }}>₲{fmt(g.bal)}</div>
             <div className="text-xs" style={{ ...mono, color: C.dim }}>+{fmt1(g.rps * (boostOn ? 2 : 1))}/s{boostOn ? " ⚡" : ""}</div>
@@ -3883,17 +3883,26 @@ function Game({ G, onExit, startFresh, reducedOverride }) {
             </span>
           </div>
         </div>
-        {boostOn ? (
-          <div className="pt-anim-glowPulse rounded-xl px-3 py-2 text-xs font-bold" style={{ ...mono, color: C.amber, border: `1px solid ${C.amber}66`, background: `${C.amber}14`, fontVariantNumeric: "tabular-nums" }}>
-            2× {mmss(boostLeft)}
+        <div className="flex shrink-0 flex-col items-end gap-1.5">
+          <div className="pt9 flex items-center gap-1.5" style={{ ...mono, color: C.dim }}>
+            <span>v{APP_VERSION}</span>
+            <button onClick={() => setModal({ kind: "changelog" })}
+              className="underline decoration-dotted underline-offset-2 focus-visible:outline focus-visible:outline-2" style={{ outlineColor: C.amber }}>
+              What's new
+            </button>
           </div>
-        ) : boostOnCooldown ? (
-          <div className="rounded-xl px-3 py-2 text-xs font-bold" style={{ ...mono, color: C.dim, border: `1px solid ${C.hair}`, fontVariantNumeric: "tabular-nums" }} title="Boost recharges every 30 minutes">
-            ⚡ {mmss(boostCooldownLeft)}
-          </div>
-        ) : (
-          <Btn small onClick={() => setModal({ kind: "ad", ad: ADS[(Math.random() * ADS.length) | 0] })}>⚡ 2× boost</Btn>
-        )}
+          {boostOn ? (
+            <div className="pt-anim-glowPulse rounded-xl px-3 py-2 text-xs font-bold" style={{ ...mono, color: C.amber, border: `1px solid ${C.amber}66`, background: `${C.amber}14`, fontVariantNumeric: "tabular-nums" }}>
+              2× {mmss(boostLeft)}
+            </div>
+          ) : boostOnCooldown ? (
+            <div className="rounded-xl px-3 py-2 text-xs font-bold" style={{ ...mono, color: C.dim, border: `1px solid ${C.hair}`, fontVariantNumeric: "tabular-nums" }} title="Boost recharges every 30 minutes">
+              ⚡ {mmss(boostCooldownLeft)}
+            </div>
+          ) : (
+            <Btn small onClick={() => setModal({ kind: "ad", ad: ADS[(Math.random() * ADS.length) | 0] })}>⚡ 2× boost</Btn>
+          )}
+        </div>
       </div>
 
       {/* body */}
