@@ -42,6 +42,13 @@ const VERSION_CHECK_MS = 5 * 60 * 1000;
 // commit, not after the fact.
 const CHANGELOG = [
   {
+    id: "1.14.3",
+    date: "Jul 23, 2026",
+    notes: [
+      "Fixed a bug where attacking a tile that successfully defended itself left the Attack button unresponsive until you deselected the tile and reselected it.",
+    ],
+  },
+  {
     id: "1.14.2",
     date: "Jul 23, 2026",
     notes: [
@@ -2499,7 +2506,11 @@ function Game({ G, onExit, startFresh, reducedOverride }) {
   // this mirrors them for the optimistic debit + battle/reveal animation,
   // but who actually wins is entirely server-decided).
   const attackTile = async (qk) => {
-    if (roll || needName()) return;
+    // only block while a battle is actually resolving — roll lingers in
+    // "battle-done" after a reveal (nothing else clears it), and blocking
+    // on that too meant a repelled attack couldn't be retried without
+    // deselecting the tile and reselecting it to force setRoll(null).
+    if ((roll && roll.phase === "battle") || needName()) return;
     const rec = recOf(qk);
     if (!rec || rec.o == null || rec.o === g.uid) return;
     if (!attackableFrom(qk)) { toast("You need to own a neighboring tile to attack this one."); return; }
