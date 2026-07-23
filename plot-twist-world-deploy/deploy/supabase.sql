@@ -2514,13 +2514,27 @@ create table if not exists push_subscriptions (
   created_at timestamptz not null default now()
 );
 
+-- Per-alert-type opt-in, added alongside the "tile captured" alert below —
+-- v1 only had one alert type, so "row exists" WAS "energy alerts on".
+-- energy_alerts defaults true on the add so existing subscribers from that
+-- v1 keep getting alerts unchanged; attack_alerts defaults false since it's
+-- a brand-new ask nobody has stated a preference for yet. New rows (a
+-- player who's never subscribed before) get both defaults too, but
+-- save_push_subscription below always passes explicit values for a fresh
+-- insert, so the column default only really matters for this backfill.
+alter table push_subscriptions add column if not exists energy_alerts boolean not null default true;
+alter table push_subscriptions add column if not exists attack_alerts boolean not null default false;
+
 alter table push_subscriptions enable row level security;
 
 -- ── save_push_subscription: called right after the client subscribes via
---    the browser's PushManager. Upsert keyed on user_id (not endpoint) —
---    re-subscribing (e.g. after clearing site data) should replace this
---    account's old registration, not accumulate stale ones. ──
-create or replace function save_push_subscription(p_endpoint text, p_p256dh text, p_auth text)
+--    the browser's PushManager, and again on every toggle flip — the
+--    client always sends its full current pair of preferences, not just
+--    the one that changed, so this is a plain upsert with no partial-
+--    update ambiguity. Keyed on user_id (not endpoint): re-subscribing
+--    (e.g. after clearing site data) replaces this account's old
+--    registration rather than accumulating stale ones. ──
+create or replace function save_push_subscription(p_endpoint text, p_p256dh text, p_auth text, p_energy_alerts boolean, p_attack_alerts boolean)
 returns void
 language plpgsql
 security definer
@@ -2530,19 +2544,36 @@ declare
   v_uid uuid := auth.uid();
 begin
   if v_uid is null then raise exception 'not authenticated'; end if;
-  insert into push_subscriptions (user_id, endpoint, p256dh, auth_key, created_at)
-  values (v_uid, p_endpoint, p_p256dh, p_auth, now())
+  insert into push_subscriptions (user_id, endpoint, p256dh, auth_key, energy_alerts, attack_alerts, created_at)
+  values (v_uid, p_endpoint, p_p256dh, p_auth, p_energy_alerts, p_attack_alerts, now())
   on conflict (user_id) do update
-    set endpoint = excluded.endpoint, p256dh = excluded.p256dh, auth_key = excluded.auth_key, created_at = now();
+    set endpoint = excluded.endpoint, p256dh = excluded.p256dh, auth_key = excluded.auth_key,
+        energy_alerts = excluded.energy_alerts, attack_alerts = excluded.attack_alerts, created_at = now();
 end;
 $$;
-revoke all on function save_push_subscription(text, text, text) from public;
-grant execute on function save_push_subscription(text, text, text) to authenticated;
+drop function if exists save_push_subscription(text, text, text);
+revoke all on function save_push_subscription(text, text, text, boolean, boolean) from public;
+grant execute on function save_push_subscription(text, text, text, boolean, boolean) to authenticated;
 
--- ── disable_push_alerts: the toggle's "off" path. Deletes the row outright
---    rather than an opt_in flag — send-energy-alerts only ever looks at
---    "does a row exist for this user", so there's no separate flag to keep
---    in sync, same "absence is the off state" idiom as tile_nicknames. ──
+-- ── get_push_prefs: lets the client re-hydrate its two toggle states on
+--    load without a client-facing SELECT policy on the table itself (see
+--    the no-RLS-policy reasoning above push_subscriptions) — this only
+--    ever returns the CALLER's own two booleans, never the endpoint/keys
+--    that make this table sensitive in the first place. ──
+create or replace function get_push_prefs()
+returns table(energy_alerts boolean, attack_alerts boolean)
+language sql
+security definer
+set search_path = public
+as $$
+  select energy_alerts, attack_alerts from push_subscriptions where user_id = auth.uid();
+$$;
+revoke all on function get_push_prefs() from public;
+grant execute on function get_push_prefs() to authenticated;
+
+-- ── disable_push_alerts: full opt-out, used when BOTH toggles end up off
+--    — deletes the row outright rather than leaving a with-both-flags-
+--    false row sitting around holding a subscription nothing uses. ──
 create or replace function disable_push_alerts()
 returns void
 language plpgsql
@@ -2556,6 +2587,18 @@ end;
 $$;
 revoke all on function disable_push_alerts() from public;
 grant execute on function disable_push_alerts() to authenticated;
+
+-- ── battle_log.notified: tracks whether send-attack-alerts has already
+--    processed a given capture, same idea as attacker_claimed/
+--    defender_claimed above but for the push side rather than the in-app
+--    "unclaimed battle results" banner — entirely independent of those two
+--    flags, a player can claim the in-app result and still be waiting on
+--    (or have already gotten) the push, and vice versa. Set true whether
+--    or not a push actually went out (e.g. the defender never opted in) —
+--    it means "processed", not "delivered", so a row is never re-queried
+--    once handled. ──
+alter table battle_log add column if not exists notified boolean not null default false;
+create index if not exists idx_battle_log_unnotified on battle_log(id) where attacker_won and not notified;
 
 -- ── Schedule send-energy-alerts once per UTC calendar day, right at the
 --    same midnight-UTC instant reset_daily_energy uses as "today" (see
@@ -2579,6 +2622,25 @@ select cron.schedule(
   $$
   select net.http_post(
     url := 'https://trjrbqkwxmsfxlqermam.supabase.co/functions/v1/send-energy-alerts',
+    headers := jsonb_build_object('Authorization', 'Bearer <SERVICE_ROLE_KEY>', 'Content-Type', 'application/json'),
+    body := '{}'::jsonb
+  );
+  $$
+);
+
+-- ── Schedule send-attack-alerts every 2 minutes — unlike the energy reset
+--    (one fixed instant for everyone), a capture happens whenever it
+--    happens, so this is a short poll of battle_log's not-yet-notified
+--    rows rather than a once-a-day fire. 2 minutes keeps it feeling close
+--    to real-time without invoking the function 1440 times/day for what's
+--    usually a near-empty query. ──
+select cron.unschedule('attack-alert-push') where exists (select 1 from cron.job where jobname = 'attack-alert-push');
+select cron.schedule(
+  'attack-alert-push',
+  '*/2 * * * *',
+  $$
+  select net.http_post(
+    url := 'https://trjrbqkwxmsfxlqermam.supabase.co/functions/v1/send-attack-alerts',
     headers := jsonb_build_object('Authorization', 'Bearer <SERVICE_ROLE_KEY>', 'Content-Type', 'application/json'),
     body := '{}'::jsonb
   );

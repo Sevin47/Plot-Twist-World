@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback, useReducer } from "react";
 import { supabase, MULTIPLAYER } from "./storage.js";
 import { signInWithGoogle, signOut, onAuthStateChange } from "./auth.js";
-import { pushSupported, pushIsSubscribed, enablePushAlerts, disablePushAlerts } from "./push.js";
+import { pushSupported, getPushPrefs, setPushPrefs } from "./push.js";
 // Inlined rather than referenced by URL: Vite's separate-chunk worker
 // resolution (new Worker(new URL(...), import.meta.url)) has documented
 // failure modes specifically with a relative build base ("./", which this
@@ -21,7 +21,7 @@ import VectorWorker from "./vectorWorker.js?worker&inline";
 // Bumped by hand alongside any fix worth confirming actually shipped —
 // shows in the debug panel so a stale cached bundle is immediately obvious
 // instead of looking like the bug is still unfixed.
-const BUILD_TAG = "2026-07-23.2-energy-alerts-toggle-off-fix";
+const BUILD_TAG = "2026-07-23.3-attack-alerts";
 
 // APP_VERSION: player-facing semver, sourced from package.json (see
 // vite.config.js) — bump package.json's "version" by hand per release.
@@ -41,6 +41,13 @@ const VERSION_CHECK_MS = 5 * 60 * 1000;
 // player-visible change ships with a version bump + entry in the same
 // commit, not after the fact.
 const CHANGELOG = [
+  {
+    id: "1.14.0",
+    date: "Jul 23, 2026",
+    notes: [
+      "Added opt-in attack alerts — a push notification whenever someone captures one of your tiles. Its own toggle in the start menu, independent of energy alerts.",
+    ],
+  },
   {
     id: "1.13.1",
     date: "Jul 23, 2026",
@@ -913,29 +920,27 @@ export default function PlotTwistWorld() {
     try { localStorage.setItem("ptw_reducedMotion", v ? "1" : "0"); } catch { /* ignore */ }
   };
 
-  // Energy-reset push alerts: source of truth is the browser's own
-  // PushManager subscription (see pushIsSubscribed), not a locally-cached
-  // flag — that way it can't drift from reality if the player revokes the
-  // OS/browser notification permission outside the game.
-  const [pushOn, setPushOn] = useState(false);
+  // Push alerts: two independent toggles (energy reset, tile captured)
+  // sharing one browser subscription. Source of truth is getPushPrefs,
+  // which cross-checks the stored preference against the browser's own
+  // live PushManager subscription — that way neither toggle can drift from
+  // reality if the player revokes the OS/browser notification permission
+  // outside the game.
+  const [pushPrefs, setPushPrefsState] = useState({ energyAlerts: false, attackAlerts: false });
   const [pushBusy, setPushBusy] = useState(false);
   const [pushErr, setPushErr] = useState("");
   useEffect(() => {
     if (!pushSupported()) return;
-    pushIsSubscribed().then(setPushOn);
+    getPushPrefs().then(setPushPrefsState);
   }, []);
-  const togglePushAlerts = async () => {
+  const togglePushAlert = async (kind) => {
     if (pushBusy) return;
     setPushBusy(true);
     setPushErr("");
+    const next = { ...pushPrefs, [kind]: !pushPrefs[kind] };
     try {
-      if (pushOn) {
-        await disablePushAlerts();
-        setPushOn(false);
-      } else {
-        await enablePushAlerts();
-        setPushOn(true);
-      }
+      await setPushPrefs(next.energyAlerts, next.attackAlerts);
+      setPushPrefsState(next);
     } catch (e) {
       setPushErr(e.message || "Couldn't update notification settings");
     } finally {
@@ -1069,15 +1074,20 @@ export default function PlotTwistWorld() {
             Reduce motion: {reducedEffective ? "On" : "Off"}
           </Btn>
           {pushSupported() && (
-            <Btn full tone="ghost" onClick={togglePushAlerts} disabled={pushBusy}>
-              Energy alerts: {pushBusy ? "…" : pushOn ? "On" : "Off"}
-            </Btn>
+            <>
+              <Btn full tone="ghost" onClick={() => togglePushAlert("energyAlerts")} disabled={pushBusy}>
+                Energy alerts: {pushBusy ? "…" : pushPrefs.energyAlerts ? "On" : "Off"}
+              </Btn>
+              <Btn full tone="ghost" onClick={() => togglePushAlert("attackAlerts")} disabled={pushBusy}>
+                Attack alerts: {pushBusy ? "…" : pushPrefs.attackAlerts ? "On" : "Off"}
+              </Btn>
+            </>
           )}
           <Btn full tone="ghost" onClick={() => signOut()}>Sign out</Btn>
         </div>
         <div className="pt9 mx-auto mt-3 max-w-xs text-center leading-relaxed" style={{ ...mono, color: C.dim }}>
           Reduce motion follows your device by default — this overrides it just for Plot Twist.
-          {pushSupported() && " Energy alerts send one push a day, right when your daily claim energy resets."}
+          {pushSupported() && " Energy alerts send one push a day, right when your daily claim energy resets. Attack alerts send one push whenever someone captures one of your tiles."}
           {pushErr && <div style={{ color: "#F08A8A" }}>{pushErr}</div>}
         </div>
       </MenuShell>
