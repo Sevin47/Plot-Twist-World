@@ -21,7 +21,7 @@ import VectorWorker from "./vectorWorker.js?worker&inline";
 // Bumped by hand alongside any fix worth confirming actually shipped —
 // shows in the debug panel so a stale cached bundle is immediately obvious
 // instead of looking like the bug is still unfixed.
-const BUILD_TAG = "2026-07-23.10-leaderboard-any-player-stats";
+const BUILD_TAG = "2026-07-23.11-changelog-version-numbers";
 
 // APP_VERSION: player-facing semver, sourced from package.json (see
 // vite.config.js) — bump package.json's "version" by hand per release.
@@ -41,6 +41,13 @@ const VERSION_CHECK_MS = 5 * 60 * 1000;
 // player-visible change ships with a version bump + entry in the same
 // commit, not after the fact.
 const CHANGELOG = [
+  {
+    id: "1.14.11",
+    date: "Jul 23, 2026",
+    notes: [
+      "Each entry in \"What's new\" now shows its version number next to the date, so you can tell which build a fix or feature actually landed in.",
+    ],
+  },
   {
     id: "1.14.10",
     date: "Jul 23, 2026",
@@ -5234,7 +5241,7 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled 
               <div className="mt-2 max-h-80 overflow-y-auto">
                 {CHANGELOG.map((entry) => (
                   <div key={entry.id} className="mb-3">
-                    <div className="pt10 mb-1 font-bold" style={{ ...mono, color: C.amber }}>{entry.date}</div>
+                    <div className="pt10 mb-1 font-bold" style={{ ...mono, color: C.amber }}>v{entry.id} · {entry.date}</div>
                     <ul className="pt11 list-disc pl-4 leading-relaxed" style={{ color: C.text }}>
                       {entry.notes.map((n, idx) => <li key={idx}>{n}</li>)}
                     </ul>
