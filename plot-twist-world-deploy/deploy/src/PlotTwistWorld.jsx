@@ -21,7 +21,7 @@ import VectorWorker from "./vectorWorker.js?worker&inline";
 // Bumped by hand alongside any fix worth confirming actually shipped —
 // shows in the debug panel so a stale cached bundle is immediately obvious
 // instead of looking like the bug is still unfixed.
-const BUILD_TAG = "2026-07-23.8-fix-ach-sync-catch";
+const BUILD_TAG = "2026-07-23.9-leaderboard-friend-stats";
 
 // APP_VERSION: player-facing semver, sourced from package.json (see
 // vite.config.js) — bump package.json's "version" by hand per release.
@@ -41,6 +41,13 @@ const VERSION_CHECK_MS = 5 * 60 * 1000;
 // player-visible change ships with a version bump + entry in the same
 // commit, not after the fact.
 const CHANGELOG = [
+  {
+    id: "1.14.9",
+    date: "Jul 23, 2026",
+    notes: [
+      "Friends on the World register (top landlords) are now tappable too, same as in your Friends list — opens their stats card.",
+    ],
+  },
   {
     id: "1.14.8",
     date: "Jul 23, 2026",
@@ -4830,18 +4837,35 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled 
               {lb.loading ? (
                 <div className="pt11 py-2" style={{ ...mono, color: C.dim }}>Pulling records…</div>
               ) : lb.rows && lb.rows.length ? (
-                lb.rows.map((r, idx) => (
-                  <div key={r.id} className="flex items-center justify-between py-1.5 text-sm" style={{ borderTop: idx ? `1px solid ${C.hair}` : "none" }}>
+                lb.rows.map((r, idx) => {
+                  // Only friends get the tap-for-stats treatment here — the
+                  // `leaderboard` view has no per-row privacy gate (see
+                  // supabase.sql), so this would technically work for any
+                  // row, but a stranger-profile-viewer isn't a feature
+                  // that's been asked for, just a friend one reused here.
+                  const isFriend = r.id !== g.uid && friendIds.current.has(r.id);
+                  const nameRow = (
                     <div className="flex min-w-0 items-center gap-2" style={mono}>
                       <span className="w-5 shrink-0 text-right text-xs" style={{ color: C.dim }}>{idx + 1}</span>
                       <span className={`truncate ${r.id === g.uid ? "font-bold" : ""}`} style={r.id === g.uid ? { color: C.amber } : {}}>
                         {r.n}{r.id === g.uid ? " (you)" : ""}
                       </span>
                       <Chip color={C.amber}>{statusFor(r.pnw).name}</Chip>
+                      {isFriend && <span aria-hidden className="pt10" style={{ color: C.dim }}>›</span>}
                     </div>
-                    <span className="shrink-0 text-xs" style={{ ...mono, color: C.dim }}>₲{fmt(r.nw || 0)} · {r.pc || 0} tiles</span>
-                  </div>
-                ))
+                  );
+                  return (
+                    <div key={r.id} className="flex items-center justify-between py-1.5 text-sm" style={{ borderTop: idx ? `1px solid ${C.hair}` : "none" }}>
+                      {isFriend ? (
+                        <button className="min-w-0 rounded-lg -my-1 py-1 transition-colors hover:bg-white/5 active:bg-white/10 focus-visible:outline focus-visible:outline-2"
+                          style={{ outlineColor: C.amber }} onClick={() => openFriendStats(r.id, r.n)}>
+                          {nameRow}
+                        </button>
+                      ) : nameRow}
+                      <span className="shrink-0 text-xs" style={{ ...mono, color: C.dim }}>₲{fmt(r.nw || 0)} · {r.pc || 0} tiles</span>
+                    </div>
+                  );
+                })
               ) : (
                 <div className="pt11 py-2" style={{ ...mono, color: C.dim }}>{g.name ? "No landlords on record yet." : "Set a name to appear here."}</div>
               )}
