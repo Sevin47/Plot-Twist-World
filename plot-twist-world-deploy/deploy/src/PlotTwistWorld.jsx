@@ -21,7 +21,7 @@ import VectorWorker from "./vectorWorker.js?worker&inline";
 // Bumped by hand alongside any fix worth confirming actually shipped —
 // shows in the debug panel so a stale cached bundle is immediately obvious
 // instead of looking like the bug is still unfixed.
-const BUILD_TAG = "2026-07-23.5-attack-alert-zoom";
+const BUILD_TAG = "2026-07-23.6-hq-tap-affordance";
 
 // APP_VERSION: player-facing semver, sourced from package.json (see
 // vite.config.js) — bump package.json's "version" by hand per release.
@@ -41,6 +41,14 @@ const VERSION_CHECK_MS = 5 * 60 * 1000;
 // player-visible change ships with a version bump + entry in the same
 // commit, not after the fact.
 const CHANGELOG = [
+  {
+    id: "1.14.6",
+    date: "Jul 23, 2026",
+    notes: [
+      "HQ rows you can tap (regions, landmarks, activity) now show a hover highlight and a › arrow so it's clearer they're clickable.",
+      "Territory now lists your regions in a two-column grid instead of one long column, and collapses behind a \"Show all\" once you've unlocked more than 6.",
+    ],
+  },
   {
     id: "1.14.5",
     date: "Jul 23, 2026",
@@ -375,6 +383,7 @@ function distToSegSq(px, py, ax, ay, bx, by) {
   return ex * ex + ey * ey;
 }
 const REGION_LEN = 8;         // shared-storage shard prefix (~150km regions)
+const REGION_PREVIEW_COUNT = 6; // HQ territory grid rows shown before "Show all" — keeps the tab from growing unbounded as players unlock more regions
 
 const C = {
   ink: "#0A1622", panel: "#111C2B", hair: "#243146",
@@ -1245,6 +1254,7 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled 
   const [assetQuery, setAssetQuery] = useState("");
   const [assetClsFilter, setAssetClsFilter] = useState("all");
   const [assetRarityFilter, setAssetRarityFilter] = useState(-1);
+  const [regionsExpanded, setRegionsExpanded] = useState(false); // HQ territory list starts collapsed once it outgrows the grid preview
   const [assetSort, setAssetSort] = useState("rent");
   const [batchBusy, setBatchBusy] = useState(null);
   const [nameDraft, setNameDraft] = useState(G.current.name || "");
@@ -4674,27 +4684,43 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled 
             </div>
 
             <div className="mb-3 rounded-xl p-3" style={cardSty}>
-              <div className="mb-2"><Eyebrow>Territory · {unlockedRegions.current.size} region{unlockedRegions.current.size === 1 ? "" : "s"}</Eyebrow></div>
+              <div className="mb-2 flex items-center justify-between gap-2">
+                <Eyebrow>Territory · {unlockedRegions.current.size} region{unlockedRegions.current.size === 1 ? "" : "s"}</Eyebrow>
+                {unlockedRegions.current.size > REGION_PREVIEW_COUNT && (
+                  <button onClick={() => setRegionsExpanded((v) => !v)}
+                    className="pt11 shrink-0 font-bold focus-visible:outline focus-visible:outline-2" style={{ ...mono, color: C.amber, outlineColor: C.amber }}>
+                    {regionsExpanded ? "Show less" : `Show all ${unlockedRegions.current.size}`}
+                  </button>
+                )}
+              </div>
               {unlockedRegions.current.size === 0 ? (
                 <div className="text-xs" style={{ color: C.dim }}>Buy your first tile anywhere to set your home region — it's free.</div>
               ) : (
-                [...unlockedRegions.current]
-                  .sort((a, b) => (b === homeRegionRef.current ? 1 : 0) - (a === homeRegionRef.current ? 1 : 0))
-                  .map((region) => {
-                    const [wx, wy] = centerOfQk(region);
-                    const lat = wyToLat(wy), lon = wx * 360 - 180;
-                    const isHome = region === homeRegionRef.current;
-                    return (
-                      <button key={region} className="flex w-full items-center justify-between py-1.5 text-left focus-visible:outline focus-visible:outline-2" style={{ outlineColor: C.amber }}
-                        onClick={() => { setTab("map"); flyTo(lat, lon); }}>
-                        <span className="text-sm font-bold" style={display}>{regionLabel(region)}</span>
-                        {isHome && <Chip color={C.amber}>Home</Chip>}
-                      </button>
-                    );
-                  })
+                <div className="grid grid-cols-2 gap-1.5">
+                  {[...unlockedRegions.current]
+                    .sort((a, b) => (b === homeRegionRef.current ? 1 : 0) - (a === homeRegionRef.current ? 1 : 0))
+                    .slice(0, regionsExpanded ? undefined : REGION_PREVIEW_COUNT)
+                    .map((region) => {
+                      const [wx, wy] = centerOfQk(region);
+                      const lat = wyToLat(wy), lon = wx * 360 - 180;
+                      const isHome = region === homeRegionRef.current;
+                      return (
+                        <button key={region}
+                          className="flex items-center justify-between gap-1 rounded-lg px-2 py-1.5 text-left transition-colors hover:bg-white/5 active:bg-white/10 focus-visible:outline focus-visible:outline-2"
+                          style={{ outlineColor: C.amber }}
+                          onClick={() => { setTab("map"); flyTo(lat, lon); }}>
+                          <span className="min-w-0 truncate text-sm font-bold" style={display}>{regionLabel(region)}</span>
+                          <span className="flex shrink-0 items-center gap-1">
+                            {isHome && <Chip color={C.amber}>Home</Chip>}
+                            <span aria-hidden style={{ color: C.dim }}>›</span>
+                          </span>
+                        </button>
+                      );
+                    })}
+                </div>
               )}
               <div className="pt10 mt-2" style={{ ...display, color: C.dim }}>
-                The fine deed grid only shows/interacts within unlocked territory — next region costs ₲{fmt(nextUnlockCost())}, doubling each time.
+                The fine deed grid only shows/interacts within unlocked territory — next region costs ₲{fmt(nextUnlockCost())}, doubling each time. Tap a region to fly there.
               </div>
             </div>
 
@@ -4821,7 +4847,7 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled 
                       ? `+${lm.perkValue * mine} daily energy`
                       : `−${perkAmount.toFixed(0)}% ${lm.perkType.replace("_", " ")} in this region`;
                     return (
-                      <button key={lm.landmarkId} className="flex w-full items-center justify-between py-1.5 text-left focus-visible:outline focus-visible:outline-2" style={{ borderTop: idx ? `1px solid ${C.hair}` : "none", outlineColor: C.amber }}
+                      <button key={lm.landmarkId} className="flex w-full items-center justify-between rounded-lg px-2 py-1.5 text-left transition-colors hover:bg-white/5 active:bg-white/10 focus-visible:outline focus-visible:outline-2" style={{ borderTop: idx ? `1px solid ${C.hair}` : "none", outlineColor: C.amber }}
                         onClick={() => {
                           const qk = lm.qks[0];
                           setTab("map"); setSel(qk);
@@ -4838,7 +4864,7 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled 
                             <div className="pt10" style={{ ...mono, color: "#FFD700" }}>{perkDesc}</div>
                           </div>
                         </div>
-                        <span className="shrink-0 text-xs" style={{ ...mono, color: C.dim }}>{mine}/9</span>
+                        <span className="flex shrink-0 items-center gap-1.5 text-xs" style={{ ...mono, color: C.dim }}>{mine}/9<span aria-hidden>›</span></span>
                       </button>
                     );
                   })}
@@ -4861,7 +4887,8 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled 
                 <div className="pt11 py-2" style={{ ...mono, color: C.dim }}>Pulling records…</div>
               ) : log.rows && log.rows.length ? (
                 log.rows.map((e, idx) => (
-                  <button key={e.id} className="flex w-full items-center justify-between gap-2 py-1.5 text-left text-xs focus-visible:outline focus-visible:outline-2"
+                  <button key={e.id} disabled={!e.qk}
+                    className={`flex w-full items-center justify-between gap-2 rounded-lg px-2 py-1.5 text-left text-xs transition-colors focus-visible:outline focus-visible:outline-2 ${e.qk ? "hover:bg-white/5 active:bg-white/10" : "cursor-default"}`}
                     style={{ ...mono, borderTop: idx ? `1px solid ${C.hair}` : "none", color: e.tone === "bad" ? "#F08A8A" : e.tone === "good" ? C.amber : C.dim, outlineColor: C.amber }}
                     onClick={() => {
                       if (!e.qk) return;
@@ -4873,7 +4900,7 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled 
                       ensureRegion(regionOf(e.qk), true);
                     }}>
                     <span className="min-w-0 flex-1 truncate">{e.text}</span>
-                    <span className="shrink-0" style={{ color: C.dim }}>{timeAgo(e.ts)}</span>
+                    <span className="flex shrink-0 items-center gap-1.5" style={{ color: C.dim }}>{timeAgo(e.ts)}{e.qk && <span aria-hidden>›</span>}</span>
                   </button>
                 ))
               ) : (
