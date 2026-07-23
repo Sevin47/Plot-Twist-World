@@ -21,7 +21,7 @@ import VectorWorker from "./vectorWorker.js?worker&inline";
 // Bumped by hand alongside any fix worth confirming actually shipped —
 // shows in the debug panel so a stale cached bundle is immediately obvious
 // instead of looking like the bug is still unfixed.
-const BUILD_TAG = "2026-07-23.7-friend-stats-region-bounds";
+const BUILD_TAG = "2026-07-23.8-fix-ach-sync-catch";
 
 // APP_VERSION: player-facing semver, sourced from package.json (see
 // vite.config.js) — bump package.json's "version" by hand per release.
@@ -41,6 +41,13 @@ const VERSION_CHECK_MS = 5 * 60 * 1000;
 // player-visible change ships with a version bump + entry in the same
 // commit, not after the fact.
 const CHANGELOG = [
+  {
+    id: "1.14.8",
+    date: "Jul 23, 2026",
+    notes: [
+      "Fixed the app crashing right after boot due to a bad background sync call (same class of bug as the earlier Energy alerts fix — a Supabase call chained .catch() instead of using try/catch).",
+    ],
+  },
   {
     id: "1.14.7",
     date: "Jul 23, 2026",
@@ -1352,7 +1359,11 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled 
     const cur = JSON.stringify(g.ach);
     if (cur !== achSyncedRef.current) {
       achSyncedRef.current = cur;
-      supabase.rpc("sync_achievements", { p_ach: g.ach }).catch(() => {});
+      // supabase.rpc(...) returns a thenable builder, not a real Promise —
+      // it has no .catch to chain (see the Energy-alerts-toggle fix for the
+      // exact same trap). Best-effort background sync: an async IIFE with
+      // try/catch instead.
+      (async () => { try { await supabase.rpc("sync_achievements", { p_ach: g.ach }); } catch { /* best effort */ } })();
     }
   }, [g]);
 
