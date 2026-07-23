@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback, useReducer } from "react";
 import { supabase, MULTIPLAYER } from "./storage.js";
 import { signInWithGoogle, signOut, onAuthStateChange } from "./auth.js";
+import { pushSupported, pushIsSubscribed, enablePushAlerts, disablePushAlerts } from "./push.js";
 // Inlined rather than referenced by URL: Vite's separate-chunk worker
 // resolution (new Worker(new URL(...), import.meta.url)) has documented
 // failure modes specifically with a relative build base ("./", which this
@@ -20,7 +21,7 @@ import VectorWorker from "./vectorWorker.js?worker&inline";
 // Bumped by hand alongside any fix worth confirming actually shipped —
 // shows in the debug panel so a stale cached bundle is immediately obvious
 // instead of looking like the bug is still unfixed.
-const BUILD_TAG = "2026-07-21.4-reduce-motion-toggle";
+const BUILD_TAG = "2026-07-23.1-energy-alerts";
 
 // APP_VERSION: player-facing semver, sourced from package.json (see
 // vite.config.js) — bump package.json's "version" by hand per release.
@@ -40,6 +41,13 @@ const VERSION_CHECK_MS = 5 * 60 * 1000;
 // player-visible change ships with a version bump + entry in the same
 // commit, not after the fact.
 const CHANGELOG = [
+  {
+    id: "1.13.0",
+    date: "Jul 23, 2026",
+    notes: [
+      "Added opt-in energy alerts — a push notification once a day, right when your claim energy resets. Toggle it from the start menu.",
+    ],
+  },
   {
     id: "1.12.0",
     date: "Jul 21, 2026",
@@ -898,6 +906,36 @@ export default function PlotTwistWorld() {
     try { localStorage.setItem("ptw_reducedMotion", v ? "1" : "0"); } catch { /* ignore */ }
   };
 
+  // Energy-reset push alerts: source of truth is the browser's own
+  // PushManager subscription (see pushIsSubscribed), not a locally-cached
+  // flag — that way it can't drift from reality if the player revokes the
+  // OS/browser notification permission outside the game.
+  const [pushOn, setPushOn] = useState(false);
+  const [pushBusy, setPushBusy] = useState(false);
+  const [pushErr, setPushErr] = useState("");
+  useEffect(() => {
+    if (!pushSupported()) return;
+    pushIsSubscribed().then(setPushOn);
+  }, []);
+  const togglePushAlerts = async () => {
+    if (pushBusy) return;
+    setPushBusy(true);
+    setPushErr("");
+    try {
+      if (pushOn) {
+        await disablePushAlerts();
+        setPushOn(false);
+      } else {
+        await enablePushAlerts();
+        setPushOn(true);
+      }
+    } catch (e) {
+      setPushErr(e.message || "Couldn't update notification settings");
+    } finally {
+      setPushBusy(false);
+    }
+  };
+
   useEffect(() => {
     if (!MULTIPLAYER) return;
     let cancelled = false;
@@ -1023,10 +1061,17 @@ export default function PlotTwistWorld() {
           <Btn full tone="ghost" onClick={() => setReducedMotion(!reducedEffective)}>
             Reduce motion: {reducedEffective ? "On" : "Off"}
           </Btn>
+          {pushSupported() && (
+            <Btn full tone="ghost" onClick={togglePushAlerts} disabled={pushBusy}>
+              Energy alerts: {pushBusy ? "…" : pushOn ? "On" : "Off"}
+            </Btn>
+          )}
           <Btn full tone="ghost" onClick={() => signOut()}>Sign out</Btn>
         </div>
         <div className="pt9 mx-auto mt-3 max-w-xs text-center leading-relaxed" style={{ ...mono, color: C.dim }}>
           Reduce motion follows your device by default — this overrides it just for Plot Twist.
+          {pushSupported() && " Energy alerts send one push a day, right when your daily claim energy resets."}
+          {pushErr && <div style={{ color: "#F08A8A" }}>{pushErr}</div>}
         </div>
       </MenuShell>
     );
