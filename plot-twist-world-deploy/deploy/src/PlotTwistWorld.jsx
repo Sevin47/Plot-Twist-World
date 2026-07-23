@@ -21,7 +21,7 @@ import VectorWorker from "./vectorWorker.js?worker&inline";
 // Bumped by hand alongside any fix worth confirming actually shipped —
 // shows in the debug panel so a stale cached bundle is immediately obvious
 // instead of looking like the bug is still unfixed.
-const BUILD_TAG = "2026-07-23.6-hq-tap-affordance";
+const BUILD_TAG = "2026-07-23.7-friend-stats-region-bounds";
 
 // APP_VERSION: player-facing semver, sourced from package.json (see
 // vite.config.js) — bump package.json's "version" by hand per release.
@@ -41,6 +41,15 @@ const VERSION_CHECK_MS = 5 * 60 * 1000;
 // player-visible change ships with a version bump + entry in the same
 // commit, not after the fact.
 const CHANGELOG = [
+  {
+    id: "1.14.7",
+    date: "Jul 23, 2026",
+    notes: [
+      "Removing a friend now asks you to confirm first.",
+      "Tap a friend's name to see their stats — status, net worth, tiles and badges.",
+      "Visiting a region (from Territory or a friend's Visit button) now fits the camera to that region's real bounds instead of zooming to a fixed spot — its edges flash briefly so you can see exactly where it ends, and you can freely zoom in from there.",
+    ],
+  },
   {
     id: "1.14.6",
     date: "Jul 23, 2026",
@@ -1240,6 +1249,8 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled 
   const [chatMsgs, setChatMsgs] = useState({ loading: false, rows: null });
   const [chatDraft, setChatDraft] = useState("");
   const [unread, setUnread] = useState({}); // sender uuid -> unread count
+  const [friendStats, setFriendStats] = useState(null); // { name, loading, row } — row is a `leaderboard` view row (net_worth/tile_count/peak_net_worth/ach), see openFriendStats below
+  const [removeFriendTarget, setRemoveFriendTarget] = useState(null); // { uid, name } — pending confirmation, see the Friends list below
   const unreadPrevTotal = useRef(0);
   const chatListRef = useRef(null);
   // region chat (social phase 3) — its own tab, scoped to whichever
@@ -1299,6 +1310,10 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled 
   // preview grid, both of which stay fully visible everywhere regardless
   const unlockedRegions = useRef(new Set());
   const homeRegionRef = useRef(null);
+  // last region "visited" from Territory/Friends (own or a friend's, unlocked
+  // or not) — drawn as a fading highlight box in draw() below so its bounds
+  // are visible even when it's not one of unlockedRegions' permanent outlines
+  const spotlightRegion = useRef(null); // { qk, t0 } | null
   const rebuildOwn = useCallback(() => {
     ownMap.current = new Map(g.own.map((t) => [t.qk, t]));
     g.rps = g.own.reduce((s, t) => s + rentOf(t), 0);
@@ -1322,7 +1337,24 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled 
   // flag so existing "dirty.current = true; save();" call sites keep
   // working unchanged — every actual mutation already went through a
   // server-validated RPC by the time save() is called.
-  const save = useCallback(() => { dirty.current = false; }, []);
+  //
+  // g.ach is the one exception: it's still derived client-side (see
+  // checkAch/the boot hydration above), but is now ALSO mirrored to
+  // Postgres (sync_achievements, folded into the public `leaderboard`
+  // view — see supabase.sql) so a friend's stats card can show real
+  // badges instead of only ever your own. achSyncedRef dedupes so this
+  // fires only when g.ach actually changed since the last sync, not on
+  // every single save() call (which happens after nearly every tile
+  // action, almost none of which touch achievements).
+  const achSyncedRef = useRef("{}");
+  const save = useCallback(() => {
+    dirty.current = false;
+    const cur = JSON.stringify(g.ach);
+    if (cur !== achSyncedRef.current) {
+      achSyncedRef.current = cur;
+      supabase.rpc("sync_achievements", { p_ach: g.ach }).catch(() => {});
+    }
+  }, [g]);
 
   /* ── bank: surface "sold while away" notifications. The money itself was
      already credited straight to profiles.balance at sale time (see
@@ -1505,6 +1537,7 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled 
       if (everSold.data?.length) g.ach.trader = 1;
       if (everWon.data?.length) g.ach.conqueror = 1;
       if (everMessaged.data?.length) g.ach.dm1 = 1;
+      save(); // push any of the above to the server (see save()'s achSyncedRef diff-check) so a friend viewing this account's stats before it does anything else this session still sees badges it already earned in prior sessions
 
       setReady(true);
       if (pendings.current.length) setModal(pendings.current.shift());
@@ -2218,18 +2251,44 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled 
     if (error) { toast(error.message || "Couldn't unblock — try again."); return; }
     refreshSocial();
   };
-  // center of a friend's REGION_LEN-char home-region quadkey → fly there.
-  // flyTo's third arg is TILE PIXEL SIZE, not a zoom level — 0.8px/tile
-  // puts a whole ~150km region on screen (512 tiles ≈ 410px wide), the
-  // right altitude to see their territory dots rather than one street.
+  // Friend stats card — reads the same public `leaderboard` view the HQ
+  // leaderboard section already queries (net_worth/tile_count/
+  // peak_net_worth, plus ach now that sync_achievements mirrors badges
+  // there too — see supabase.sql), just scoped to one user_id instead of
+  // top-10. Nothing here is friends-only server-side (the view has no
+  // per-row privacy gate), so this would work for any uid, but it's only
+  // ever surfaced from the Friends list.
+  const openFriendStats = async (uid, name) => {
+    setModal({ kind: "friendStats", uid, name });
+    setFriendStats({ name, loading: true, row: null });
+    const { data, error } = await supabase.from("leaderboard").select("*").eq("user_id", uid).maybeSingle();
+    setFriendStats({ name, loading: false, row: error ? null : data });
+  };
+  // Jump to a region (own, from Territory, or a friend's home region from
+  // the Friends list) and fit the camera to its FULL bounds, not just its
+  // center point at a fixed zoom — a region is itself a plain quadkey
+  // rectangle (see the territory-outline draw code below, same tx/ty/n
+  // math as centerOfQk), so "fit the bounds" just means sizing the camera
+  // so that whole 1/n-of-world square fills most of the screen, however
+  // wide or tall the viewport happens to be, rather than always landing at
+  // the same absolute zoom regardless of screen shape. Also flags the
+  // region for the fading spotlight box drawn in draw() below, since a
+  // friend's (probably not locally-unlocked) home region wouldn't
+  // otherwise get any outline at all. From that landed view, normal
+  // pinch/scroll zoom still works to go in tighter within the region.
   const visitRegion = (regionQk) => {
     if (!regionQk) return;
-    let tx = 0, ty = 0;
-    for (const ch of regionQk) { const d = +ch; tx = tx * 2 + (d & 1); ty = ty * 2 + (d >> 1); }
-    const rn = 1 << regionQk.length;
-    const wx = (tx + 0.5) / rn, wy = (ty + 0.5) / rn;
+    const { w, h } = size.current;
+    if (!w || !h) return;
+    const n = 1 << regionQk.length;
+    const [wx, wy] = centerOfQk(regionQk);
+    const s = Math.min(w, h) * 0.92 * n;
+    spotlightRegion.current = { qk: regionQk, t0: Date.now() };
     setTab("map");
-    flyTo(wyToLat(wy), wx * 360 - 180, 0.8);
+    cam.current = { s, x: w / 2 - wx * s, y: h / 2 - wy * s, init: true };
+    setCities(false);
+    prefetchVectorTiles();
+    ensureRegion(regionOf(regionQk), true);
   };
 
   /* ── DMs (social phase 2) — friends-only, delivered by polling.
@@ -3365,6 +3424,36 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled 
       // rely on that — reset here regardless)
       ctx.shadowBlur = 0;
       ctx.lineWidth = 1;
+    }
+
+    /* region spotlight: a temporary, fading highlight box around whichever
+       region was just "visited" from Territory or a friend's Visit button
+       (see visitRegion above) — drawn separately from the permanent
+       unlockedRegions outlines just above since a friend's home region
+       isn't necessarily one you've unlocked yourself, so it wouldn't get
+       an outline otherwise. Self-clears once its fade duration elapses. */
+    if (spotlightRegion.current) {
+      const age = Date.now() - spotlightRegion.current.t0;
+      const dur = 5000;
+      if (age > dur) {
+        spotlightRegion.current = null;
+      } else {
+        const sRegion = spotlightRegion.current.qk;
+        const sn = 1 << sRegion.length;
+        const [stx, sty] = txyOf(sRegion);
+        const spx0 = ox + (stx / sn) * s, spy0 = oy + (sty / sn) * s;
+        const spx1 = ox + ((stx + 1) / sn) * s, spy1 = oy + ((sty + 1) / sn) * s;
+        if (!(spx1 < 0 || spy1 < 0 || spx0 > w || spy0 > h)) {
+          const alpha = 1 - age / dur;
+          ctx.lineWidth = 3;
+          ctx.strokeStyle = hexA(C.friend, alpha);
+          ctx.shadowColor = C.friend;
+          ctx.shadowBlur = 16 * alpha;
+          ctx.strokeRect(spx0, spy0, spx1 - spx0, spy1 - spy0);
+          ctx.shadowBlur = 0;
+          ctx.lineWidth = 1;
+        }
+      }
     }
 
     if (sel) {
@@ -4701,14 +4790,12 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled 
                     .sort((a, b) => (b === homeRegionRef.current ? 1 : 0) - (a === homeRegionRef.current ? 1 : 0))
                     .slice(0, regionsExpanded ? undefined : REGION_PREVIEW_COUNT)
                     .map((region) => {
-                      const [wx, wy] = centerOfQk(region);
-                      const lat = wyToLat(wy), lon = wx * 360 - 180;
                       const isHome = region === homeRegionRef.current;
                       return (
                         <button key={region}
                           className="flex items-center justify-between gap-1 rounded-lg px-2 py-1.5 text-left transition-colors hover:bg-white/5 active:bg-white/10 focus-visible:outline focus-visible:outline-2"
                           style={{ outlineColor: C.amber }}
-                          onClick={() => { setTab("map"); flyTo(lat, lon); }}>
+                          onClick={() => visitRegion(region)}>
                           <span className="min-w-0 truncate text-sm font-bold" style={display}>{regionLabel(region)}</span>
                           <span className="flex shrink-0 items-center gap-1">
                             {isHome && <Chip color={C.amber}>Home</Chip>}
@@ -4720,7 +4807,7 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled 
                 </div>
               )}
               <div className="pt10 mt-2" style={{ ...display, color: C.dim }}>
-                The fine deed grid only shows/interacts within unlocked territory — next region costs ₲{fmt(nextUnlockCost())}, doubling each time. Tap a region to fly there.
+                The fine deed grid only shows/interacts within unlocked territory — next region costs ₲{fmt(nextUnlockCost())}, doubling each time. Tap a region to see its bounds, then zoom in from there.
               </div>
             </div>
 
@@ -4792,16 +4879,17 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled 
                       <div className="pt11 py-2" style={{ ...mono, color: C.dim }}>No friends yet — add someone by their landlord name, exactly as it appears on their deeds.</div>
                     ) : friends.map((r) => (
                       <div key={r.other_user} className="flex items-center justify-between gap-2 py-1.5" style={rowSty}>
-                        <span className="flex min-w-0 items-center gap-1.5 text-sm" style={mono}>
+                        <button className="flex min-w-0 items-center gap-1.5 rounded-lg py-0.5 pr-2 text-left text-sm transition-colors hover:bg-white/5 active:bg-white/10 focus-visible:outline focus-visible:outline-2"
+                          style={{ ...mono, outlineColor: C.amber }} onClick={() => openFriendStats(r.other_user, r.username)}>
                           <span className="h-2 w-2 shrink-0 rounded-full" style={{ background: C.friend, boxShadow: `0 0 6px ${C.friend}99` }} />
                           <span className="truncate">{r.username}</span>
-                        </span>
+                        </button>
                         <span className="flex shrink-0 items-center gap-2.5">
                           <button className="pt11 font-bold focus-visible:outline focus-visible:outline-2" style={act} onClick={() => openChat(r.other_user, r.username)}>
                             Chat{unread[r.other_user] > 0 ? ` (${unread[r.other_user]})` : ""}
                           </button>
                           {r.home_region && <button className="pt11 font-bold focus-visible:outline focus-visible:outline-2" style={act} onClick={() => visitRegion(r.home_region)}>Visit</button>}
-                          <button className="pt11 focus-visible:outline focus-visible:outline-2" style={actDim} onClick={() => removeFriend(r.other_user)}>Remove</button>
+                          <button className="pt11 focus-visible:outline focus-visible:outline-2" style={actDim} onClick={() => setRemoveFriendTarget({ uid: r.other_user, name: r.username })}>Remove</button>
                         </span>
                       </div>
                     ))}
@@ -5113,6 +5201,60 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled 
               <Btn full onClick={closeModal}>Close</Btn>
             </>
           )}
+          {modal.kind === "friendStats" && (
+            <>
+              <Eyebrow>{modal.name}</Eyebrow>
+              {!friendStats || friendStats.loading ? (
+                <div className="pt11 py-6 text-center" style={{ ...mono, color: C.dim }}>Loading…</div>
+              ) : !friendStats.row ? (
+                <div className="pt11 py-4" style={{ ...mono, color: C.dim }}>Couldn't load their stats — try again.</div>
+              ) : (() => {
+                const row = friendStats.row;
+                const status = statusFor(row.peak_net_worth || 0);
+                const ach = row.ach || {};
+                return (
+                  <>
+                    <div className="mt-2 flex items-center justify-between gap-2">
+                      <Chip color={C.amber}>{status.name}</Chip>
+                      <span className="pt10" style={{ ...mono, color: C.dim }}>₲{fmt(row.peak_net_worth || 0)} peak</span>
+                    </div>
+                    <div className="my-2 text-3xl font-bold" style={{ ...mono, color: C.amber, textShadow: `0 0 26px ${C.glow}` }}>
+                      ₲{fmt(row.net_worth || 0)}
+                    </div>
+                    <div className="pt10 mb-2" style={{ ...mono, color: C.dim }}>net worth · {row.tile_count || 0} tile{row.tile_count === 1 ? "" : "s"}</div>
+                    <Eyebrow>Commendations</Eyebrow>
+                    <div className="mt-2 flex flex-wrap gap-1.5">
+                      {ACH.map((a) => (
+                        <span key={a.k} title={a.desc} className="pt10 rounded-full px-2.5 py-1 font-bold"
+                          style={{
+                            ...display,
+                            color: ach[a.k] ? C.ink : C.dim,
+                            background: ach[a.k] ? C.amber : C.panel,
+                            border: `1px solid ${ach[a.k] ? C.amber : C.hairLit}`,
+                          }}>
+                          {a.name}
+                        </span>
+                      ))}
+                    </div>
+                  </>
+                );
+              })()}
+              <Btn full tone="ghost" onClick={closeModal}>Close</Btn>
+            </>
+          )}
+        </Modal>
+      )}
+
+      {removeFriendTarget && (
+        <Modal onClose={() => setRemoveFriendTarget(null)}>
+          <Eyebrow>Remove {removeFriendTarget.name}?</Eyebrow>
+          <div className="mt-3 text-sm leading-relaxed" style={{ color: C.text }}>
+            They'll drop off your Friends list and their territory stops showing teal on the map. You can always send a new request later.
+          </div>
+          <div className="mt-4 flex gap-2">
+            <Btn full tone="ghost" onClick={() => setRemoveFriendTarget(null)}>Cancel</Btn>
+            <Btn full tone="danger" onClick={() => { removeFriend(removeFriendTarget.uid); setRemoveFriendTarget(null); }}>Remove</Btn>
+          </div>
         </Modal>
       )}
 
