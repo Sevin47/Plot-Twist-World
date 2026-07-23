@@ -5,7 +5,10 @@
 self.addEventListener("push", (event) => {
   // "." not "/" for url — resolves relative to this script's own location
   // (this project can be deployed at a GitHub Pages subpath, see push.js).
-  let data = { title: "Plot Twist World", body: "Your energy reset.", url: "." };
+  // qk (optional): a captured tile's quadkey, set by send-attack-alerts —
+  // lets notificationclick below zoom the map there. Absent for the
+  // energy-reset alert, which isn't about any one tile.
+  let data = { title: "Plot Twist World", body: "Your energy reset.", url: ".", qk: null };
   try {
     if (event.data) data = { ...data, ...event.data.json() };
   } catch {
@@ -18,20 +21,30 @@ self.addEventListener("push", (event) => {
   event.waitUntil(
     self.registration.showNotification(data.title, {
       body: data.body,
-      data: { url: data.url },
+      data: { url: data.url, qk: data.qk },
     })
   );
 });
 
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();
-  const url = event.notification.data?.url || "/";
+  const { url = ".", qk } = event.notification.data || {};
   event.waitUntil(
     (async () => {
       const clientsList = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
       const existing = clientsList.find((c) => c.url.includes(self.location.origin));
-      if (existing) return existing.focus();
-      return self.clients.openWindow(url);
+      if (existing) {
+        // Already open — message the live app rather than navigating it,
+        // so it can zoom the map in place without losing in-memory game
+        // state (a full reload would re-fetch everything from scratch).
+        if (qk) existing.postMessage({ type: "ptw:zoom-to-qk", qk });
+        return existing.focus();
+      }
+      // Cold start — no running app to message, so the qk rides along as
+      // a query param the app reads for itself once it's loaded (see
+      // PlotTwistWorld.jsx's jumpToQk state).
+      const target = qk ? `${url}${url.includes("?") ? "&" : "?"}qk=${encodeURIComponent(qk)}` : url;
+      return self.clients.openWindow(target);
     })()
   );
 });

@@ -89,12 +89,16 @@ Deno.serve(async (req) => {
         const sub = subByUser.get(cap.defender);
         if (!sub) return; // not opted in (or no subscription at all) — still counts as "processed" below
         const attackerName = usernameByAttacker.get(cap.attacker);
+        // qk rides along so sw.js/the client can zoom the map straight to
+        // this tile on notification click — see the "Zoom to the captured
+        // tile" plumbing in PlotTwistWorld.jsx and public/sw.js.
         const payload = JSON.stringify({
           title: "Tile captured ⚔️",
           body: attackerName
             ? `${attackerName} just captured one of your tiles — go check the damage.`
             : "One of your tiles was just taken in a raid — go check the damage.",
           url: ".",
+          qk: cap.qk,
         });
         try {
           await webpush.sendNotification(
