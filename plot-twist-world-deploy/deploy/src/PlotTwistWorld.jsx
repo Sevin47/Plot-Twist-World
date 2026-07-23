@@ -21,7 +21,7 @@ import VectorWorker from "./vectorWorker.js?worker&inline";
 // Bumped by hand alongside any fix worth confirming actually shipped —
 // shows in the debug panel so a stale cached bundle is immediately obvious
 // instead of looking like the bug is still unfixed.
-const BUILD_TAG = "2026-07-23.4-badge-repeat-fix";
+const BUILD_TAG = "2026-07-23.5-attack-alert-zoom";
 
 // APP_VERSION: player-facing semver, sourced from package.json (see
 // vite.config.js) — bump package.json's "version" by hand per release.
@@ -41,6 +41,13 @@ const VERSION_CHECK_MS = 5 * 60 * 1000;
 // player-visible change ships with a version bump + entry in the same
 // commit, not after the fact.
 const CHANGELOG = [
+  {
+    id: "1.14.5",
+    date: "Jul 23, 2026",
+    notes: [
+      "Tapping an attack alert now zooms the map straight to the captured tile.",
+    ],
+  },
   {
     id: "1.14.4",
     date: "Jul 23, 2026",
@@ -953,6 +960,39 @@ export default function PlotTwistWorld() {
     try { localStorage.setItem("ptw_reducedMotion", v ? "1" : "0"); } catch { /* ignore */ }
   };
 
+  // Deep-link target for "zoom to this tile" — set from either a cold
+  // start (the notification's click handler had no running app to message,
+  // so it appended ?qk=... to the URL instead, see public/sw.js) or a
+  // postMessage from the service worker (the app was already open in this
+  // tab). Lives here rather than inside Game because a notification can be
+  // clicked before Game even mounts (still signing in, or paused at this
+  // start menu) — Game consumes it via onJumpHandled once it's actually
+  // able to move the camera.
+  const [jumpToQk, setJumpToQk] = useState(null);
+  useEffect(() => {
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const qk = params.get("qk");
+      if (qk) {
+        setJumpToQk(qk);
+        params.delete("qk");
+        const qs = params.toString();
+        window.history.replaceState(null, "", window.location.pathname + (qs ? `?${qs}` : "") + window.location.hash);
+      }
+    } catch { /* ignore */ }
+    if (!("serviceWorker" in navigator)) return;
+    const onMessage = (event) => {
+      if (event.data?.type === "ptw:zoom-to-qk" && event.data.qk) setJumpToQk(event.data.qk);
+    };
+    navigator.serviceWorker.addEventListener("message", onMessage);
+    return () => navigator.serviceWorker.removeEventListener("message", onMessage);
+  }, []);
+  // A notification click should land the player on the map, not leave them
+  // sitting at this pause screen.
+  useEffect(() => {
+    if (jumpToQk) setInGame(true);
+  }, [jumpToQk]);
+
   // Push alerts: two independent toggles (energy reset, tile captured)
   // sharing one browser subscription. Source of truth is getPushPrefs,
   // which cross-checks the stored preference against the browser's own
@@ -1127,7 +1167,8 @@ export default function PlotTwistWorld() {
     );
   }
 
-  return <Game key={session.user.id} G={G} onExit={() => setInGame(false)} startFresh={freshAccount} reducedOverride={reducedOverride} />;
+  return <Game key={session.user.id} G={G} onExit={() => setInGame(false)} startFresh={freshAccount} reducedOverride={reducedOverride}
+    jumpToQk={jumpToQk} onJumpHandled={() => setJumpToQk(null)} />;
 }
 
 function Modal({ children, onClose }) {
@@ -1145,7 +1186,7 @@ function Modal({ children, onClose }) {
    GAME
    ═════════════════════════════════════════════════════════════ */
 
-function Game({ G, onExit, startFresh, reducedOverride }) {
+function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled }) {
   const [, force] = useReducer((x) => x + 1, 0);
   // Brand-new accounts (startFresh, seeded once from the mount-time prop —
   // see claimName in PlotTwistWorld) start on a basemap-only "pick your
@@ -2877,6 +2918,40 @@ function Game({ G, onExit, startFresh, reducedOverride }) {
     // clipped/mis-proportioned render a player reported after confirming
     // a start location.
   }, [fitWorld, ready, pickingHome]);
+
+  // Zoom the map to a specific tile — same camera-math pattern as the
+  // Assets-list/Landmarks "jump to this tile" click handlers elsewhere in
+  // this file, factored out here since it's also driven by an external
+  // trigger (jumpToQk below), not just a click.
+  const jumpToTile = useCallback((qk) => {
+    setTab("map");
+    setSel(qk);
+    const [wx, wy] = centerOfQk(qk);
+    const { w, h } = size.current;
+    const s = N * 16;
+    cam.current = { s, x: w / 2 - wx * s, y: h / 2 - wy * s, init: true };
+    ensureRegion(regionOf(qk), true);
+  }, [ensureRegion]);
+
+  // Deep-link from a push notification (see jumpToQk in PlotTwistWorld
+  // above). Gated on ready/pickingHome the same way the canvas-measuring
+  // effect above is — can't fire against the loading screen or the
+  // brand-new-account start-location picker's placeholder canvas — and
+  // retries a frame if size.current isn't measured yet (it's set
+  // synchronously inside that same earlier effect, so this almost never
+  // loops more than once in practice).
+  useEffect(() => {
+    if (!jumpToQk || !ready || pickingHome) return;
+    let cancelled = false;
+    const apply = () => {
+      if (cancelled) return;
+      if (!size.current.w) { requestAnimationFrame(apply); return; }
+      jumpToTile(jumpToQk);
+      onJumpHandled?.();
+    };
+    apply();
+    return () => { cancelled = true; };
+  }, [jumpToQk, ready, pickingHome, jumpToTile, onJumpHandled]);
 
   const hexA = (hex, a) => {
     const n = parseInt(hex.slice(1), 16);
