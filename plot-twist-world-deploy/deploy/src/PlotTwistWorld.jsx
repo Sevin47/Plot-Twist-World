@@ -42,6 +42,17 @@ const VERSION_CHECK_MS = 5 * 60 * 1000;
 // commit, not after the fact.
 const CHANGELOG = [
   {
+    id: "1.15.0",
+    date: "Jul 23, 2026",
+    notes: [
+      "HQ is now three tabs — Profile, World and Social — instead of one long scroll.",
+      "The World register (top landlords) moved to the pause menu, same as most games put their leaderboard on the title screen.",
+      "Removed Local chat to make room for the new tabs.",
+      "The pause menu's Reduce motion, alert toggles and Delete account & data are now grouped under a Settings card.",
+      "The bottom tab bar is taller for easier tapping on mobile.",
+    ],
+  },
+  {
     id: "1.14.13",
     date: "Jul 23, 2026",
     notes: [
@@ -874,12 +885,6 @@ const IconLayers = (p) => (
     <path d="m3 12.5 9 4.5 9-4.5M3 16.5l9 4.5 9-4.5" />
   </Icon>
 );
-const IconChat = (p) => (
-  <Icon {...p}>
-    <path d="M4 5.5h16v10.5H9.5L5.5 20v-4H4Z" />
-    <path d="M8 9.5h8M8 12.5h5" />
-  </Icon>
-);
 const IconChevronLeft = (p) => (
   <Icon {...p}>
     <path d="M14.5 5 8 12l6.5 7" />
@@ -1028,6 +1033,30 @@ export default function PlotTwistWorld() {
       setDeleteBusy(false);
       setConfirmDelete(false);
     }
+  };
+
+  // World register (top landlords) — lives on the pause menu now, same as
+  // most games put their leaderboard on the title/pause screen rather than
+  // buried in a stats tab. Independent of Game (which may not even be
+  // mounted here), so it re-fetches straight from Supabase.
+  const [lb, setLb] = useState({ loading: false, rows: null });
+  const refreshLB = useCallback(async () => {
+    setLb({ loading: true, rows: null });
+    const { data, error } = await supabase
+      .from("leaderboard").select("*").order("net_worth", { ascending: false }).limit(10);
+    if (error) { setLb({ loading: false, rows: [] }); return; }
+    setLb({ loading: false, rows: (data || []).map((r) => ({ id: r.user_id, n: r.username, nw: r.net_worth, pc: r.tile_count, pnw: r.peak_net_worth || 0 })) });
+  }, []);
+  useEffect(() => { if (authState === "ready" && !inGame) refreshLB(); }, [authState, inGame, refreshLB]);
+
+  // Tapping a name on the pause-menu leaderboard opens the same read-only
+  // stats card Game shows for the World register / Friends list, just
+  // backed by its own state since Game may not be mounted right now.
+  const [pmStats, setPmStats] = useState(null); // { name, loading, row } or null when closed
+  const openPmPlayerStats = async (uid, name) => {
+    setPmStats({ name, loading: true, row: null });
+    const { data, error } = await supabase.from("leaderboard").select("*").eq("user_id", uid).maybeSingle();
+    setPmStats({ name, loading: false, row: error ? null : data });
   };
 
   // Reduce-motion: null = no explicit choice, follow the device's own
@@ -1228,45 +1257,134 @@ export default function PlotTwistWorld() {
   if (!inGame) {
     return (
       <MenuShell
-        overlay={confirmDelete && (
-          <Modal onClose={() => !deleteBusy && setConfirmDelete(false)}>
-            <Eyebrow>Delete account &amp; data?</Eyebrow>
-            <div className="mt-3 text-sm leading-relaxed" style={{ color: C.text }}>
-              This permanently deletes your account, wallet, username and every tile you own. There is no undo, and this Google account can never be recovered back into this save.
-            </div>
-            <div className="mt-4 flex gap-2">
-              <Btn full tone="ghost" onClick={() => setConfirmDelete(false)} disabled={deleteBusy}>Cancel</Btn>
-              <Btn full tone="danger" onClick={deleteAccount} disabled={deleteBusy}>{deleteBusy ? "Deleting…" : "Delete everything"}</Btn>
-            </div>
-          </Modal>
-        )}
+        overlay={<>
+          {confirmDelete && (
+            <Modal onClose={() => !deleteBusy && setConfirmDelete(false)}>
+              <Eyebrow>Delete account &amp; data?</Eyebrow>
+              <div className="mt-3 text-sm leading-relaxed" style={{ color: C.text }}>
+                This permanently deletes your account, wallet, username and every tile you own. There is no undo, and this Google account can never be recovered back into this save.
+              </div>
+              <div className="mt-4 flex gap-2">
+                <Btn full tone="ghost" onClick={() => setConfirmDelete(false)} disabled={deleteBusy}>Cancel</Btn>
+                <Btn full tone="danger" onClick={deleteAccount} disabled={deleteBusy}>{deleteBusy ? "Deleting…" : "Delete everything"}</Btn>
+              </div>
+            </Modal>
+          )}
+          {pmStats && (
+            <Modal onClose={() => setPmStats(null)}>
+              <Eyebrow>{pmStats.name}</Eyebrow>
+              {pmStats.loading ? (
+                <div className="pt11 py-6 text-center" style={{ ...mono, color: C.dim }}>Loading…</div>
+              ) : !pmStats.row ? (
+                <div className="pt11 py-4" style={{ ...mono, color: C.dim }}>Couldn't load their stats — try again.</div>
+              ) : (() => {
+                const row = pmStats.row;
+                const status = statusFor(row.peak_net_worth || 0);
+                const ach = row.ach || {};
+                return (
+                  <>
+                    <div className="mt-2 flex items-center justify-between gap-2">
+                      <Chip color={C.amber}>{status.name}</Chip>
+                      <span className="pt10" style={{ ...mono, color: C.dim }}>₲{fmt(row.peak_net_worth || 0)} peak</span>
+                    </div>
+                    <div className="my-2 text-3xl font-bold" style={{ ...mono, color: C.amber, textShadow: `0 0 26px ${C.glow}` }}>
+                      ₲{fmt(row.net_worth || 0)}
+                    </div>
+                    <div className="pt10 mb-2" style={{ ...mono, color: C.dim }}>net worth · {row.tile_count || 0} tile{row.tile_count === 1 ? "" : "s"}</div>
+                    <Eyebrow>Commendations</Eyebrow>
+                    <div className="mt-2 flex flex-wrap gap-1.5">
+                      {ACH.map((a) => (
+                        <span key={a.k} title={a.desc} className="pt10 rounded-full px-2.5 py-1 font-bold"
+                          style={{
+                            ...display,
+                            color: ach[a.k] ? C.ink : C.dim,
+                            background: ach[a.k] ? C.amber : C.panel,
+                            border: `1px solid ${ach[a.k] ? C.amber : C.hairLit}`,
+                          }}>
+                          {a.name}
+                        </span>
+                      ))}
+                    </div>
+                  </>
+                );
+              })()}
+              <Btn full tone="ghost" onClick={() => setPmStats(null)}>Close</Btn>
+            </Modal>
+          )}
+        </>}
       >
-        <div className="mx-auto flex w-64 flex-col gap-2.5">
+        <div className="mx-auto flex w-72 flex-col gap-2.5">
           <Btn full onClick={() => setInGame(true)}>Continue</Btn>
           <Btn full tone="ghost" onClick={() => window.open(`${import.meta.env.BASE_URL}guide.html`, "_blank", "noopener,noreferrer")}>Wiki</Btn>
           <Btn full tone="ghost" onClick={() => { setStartTutorial(true); setInGame(true); }}>Replay tutorial</Btn>
-          <Btn full tone="ghost" onClick={() => setReducedMotion(!reducedEffective)}>
-            Reduce motion: {reducedEffective ? "On" : "Off"}
-          </Btn>
-          {pushSupported() && (
-            <>
-              <Btn full tone="ghost" onClick={() => togglePushAlert("energyAlerts")} disabled={pushBusy}>
-                Energy alerts: {pushBusy ? "…" : pushPrefs.energyAlerts ? "On" : "Off"}
+
+          <div className="rounded-xl p-3 text-left" style={cardSty}>
+            <div className="mb-2 flex items-center justify-between">
+              <Eyebrow>World register · top landlords</Eyebrow>
+              <button onClick={refreshLB} className="pt11 focus-visible:outline focus-visible:outline-2" style={{ ...mono, color: C.amber, outlineColor: C.amber }}>Refresh</button>
+            </div>
+            <div className="max-h-56 overflow-y-auto">
+              {lb.loading ? (
+                <div className="pt11 py-2" style={{ ...mono, color: C.dim }}>Pulling records…</div>
+              ) : lb.rows && lb.rows.length ? (
+                lb.rows.map((r, idx) => {
+                  const clickable = r.id !== G.current?.uid;
+                  const nameRow = (
+                    <div className="flex min-w-0 items-center gap-2" style={mono}>
+                      <span className="w-5 shrink-0 text-right text-xs" style={{ color: C.dim }}>{idx + 1}</span>
+                      <span className={`truncate ${clickable ? "" : "font-bold"}`} style={clickable ? {} : { color: C.amber }}>
+                        {r.n}{clickable ? "" : " (you)"}
+                      </span>
+                      <Chip color={C.amber}>{statusFor(r.pnw).name}</Chip>
+                      {clickable && <span aria-hidden className="pt10" style={{ color: C.dim }}>›</span>}
+                    </div>
+                  );
+                  return (
+                    <div key={r.id} className="flex items-center justify-between py-1.5 text-sm" style={{ borderTop: idx ? `1px solid ${C.hair}` : "none" }}>
+                      {clickable ? (
+                        <button className="min-w-0 rounded-lg -my-1 py-1 transition-colors hover:bg-white/5 active:bg-white/10 focus-visible:outline focus-visible:outline-2"
+                          style={{ outlineColor: C.amber }} onClick={() => openPmPlayerStats(r.id, r.n)}>
+                          {nameRow}
+                        </button>
+                      ) : nameRow}
+                      <span className="shrink-0 text-xs" style={{ ...mono, color: C.dim }}>₲{fmt(r.nw || 0)} · {r.pc || 0} tiles</span>
+                    </div>
+                  );
+                })
+              ) : (
+                <div className="pt11 py-2" style={{ ...mono, color: C.dim }}>No landlords on record yet.</div>
+              )}
+            </div>
+          </div>
+
+          <div className="rounded-xl p-3 text-left" style={cardSty}>
+            <div className="mb-2"><Eyebrow>Settings</Eyebrow></div>
+            <div className="flex flex-col gap-2">
+              <Btn full tone="ghost" onClick={() => setReducedMotion(!reducedEffective)}>
+                Reduce motion: {reducedEffective ? "On" : "Off"}
               </Btn>
-              <Btn full tone="ghost" onClick={() => togglePushAlert("attackAlerts")} disabled={pushBusy}>
-                Attack alerts: {pushBusy ? "…" : pushPrefs.attackAlerts ? "On" : "Off"}
-              </Btn>
-            </>
-          )}
+              {pushSupported() && (
+                <>
+                  <Btn full tone="ghost" onClick={() => togglePushAlert("energyAlerts")} disabled={pushBusy}>
+                    Energy alerts: {pushBusy ? "…" : pushPrefs.energyAlerts ? "On" : "Off"}
+                  </Btn>
+                  <Btn full tone="ghost" onClick={() => togglePushAlert("attackAlerts")} disabled={pushBusy}>
+                    Attack alerts: {pushBusy ? "…" : pushPrefs.attackAlerts ? "On" : "Off"}
+                  </Btn>
+                </>
+              )}
+              <Btn full tone="danger" onClick={() => setConfirmDelete(true)}>Delete account &amp; data</Btn>
+            </div>
+            <div className="pt10 mt-2" style={{ ...mono, color: C.dim }}>
+              Reduce motion follows your device by default — this overrides it just for Plot Twist.
+              {pushSupported() && " Energy alerts send one push a day, right when your daily claim energy resets. Attack alerts send one push whenever someone captures one of your tiles."}
+              {" "}Deleting your account removes your wallet, tiles and username permanently — this can't be undone.
+              {pushErr && <div style={{ color: "#F08A8A" }}>{pushErr}</div>}
+              {deleteErr && <div style={{ color: "#F08A8A" }}>{deleteErr}</div>}
+            </div>
+          </div>
+
           <Btn full tone="ghost" onClick={() => signOut()}>Sign out</Btn>
-          <Btn full tone="danger" onClick={() => setConfirmDelete(true)}>Delete account &amp; data</Btn>
-        </div>
-        <div className="pt9 mx-auto mt-3 max-w-xs text-center leading-relaxed" style={{ ...mono, color: C.dim }}>
-          Reduce motion follows your device by default — this overrides it just for Plot Twist.
-          {pushSupported() && " Energy alerts send one push a day, right when your daily claim energy resets. Attack alerts send one push whenever someone captures one of your tiles."}
-          {" "}Deleting your account removes your wallet, tiles and username permanently — this can't be undone.
-          {pushErr && <div style={{ color: "#F08A8A" }}>{pushErr}</div>}
-          {deleteErr && <div style={{ color: "#F08A8A" }}>{deleteErr}</div>}
         </div>
       </MenuShell>
     );
@@ -1320,7 +1438,6 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
   const [legendOpen, setLegendOpen] = useState(true);
   const [dbg, setDbg] = useState(() => typeof location !== "undefined" && location.hash.includes("debug"));
   const [market, setMarket] = useState({ loading: false, rows: null });
-  const [lb, setLb] = useState({ loading: false, rows: null });
   const [log, setLog] = useState({ loading: false, rows: null });
   const [social, setSocial] = useState({ loading: false, rows: null, err: false });
   const [friendDraft, setFriendDraft] = useState("");
@@ -1342,15 +1459,6 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
   const [removeFriendTarget, setRemoveFriendTarget] = useState(null); // { uid, name } — pending confirmation, see the Friends list below
   const unreadPrevTotal = useRef(0);
   const chatListRef = useRef(null);
-  // region chat (social phase 3) — its own tab, scoped to whichever
-  // unlocked region the camera is centered on while browsing the map
-  const [rchatRegion, setRchatRegion] = useState(null); // live — the region the camera is over right now
-  const [rchat, setRchat] = useState({ loading: false, rows: null, region: null, locked: false });
-  const [rchatDraft, setRchatDraft] = useState("");
-  const [rchatSel, setRchatSel] = useState(null); // message id with its Report/Block row expanded
-  const [rchatUnread, setRchatUnread] = useState(false); // new messages in the tracked region since we last viewed the Local tab
-  const rchatSeenRef = useRef({}); // region -> highest message id already shown as read (session-only, not persisted)
-  const rchatListRef = useRef(null);
   const [assetQuery, setAssetQuery] = useState("");
   const [assetClsFilter, setAssetClsFilter] = useState("all");
   const [assetRarityFilter, setAssetRarityFilter] = useState(-1);
@@ -2237,16 +2345,6 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
 
   useEffect(() => { if (tab === "market") refreshMarket(); }, [tab, refreshMarket]);
 
-  /* ── leaderboard: real joined data (see the `leaderboard` view) ── */
-  const refreshLB = useCallback(async () => {
-    setLb({ loading: true, rows: null });
-    const { data, error } = await supabase
-      .from("leaderboard").select("*").order("net_worth", { ascending: false }).limit(10);
-    if (error) { setLb({ loading: false, rows: [] }); return; }
-    setLb({ loading: false, rows: (data || []).map((r) => ({ id: r.user_id, n: r.username, nw: r.net_worth, pc: r.tile_count, pnw: r.peak_net_worth || 0 })) });
-  }, []);
-  useEffect(() => { if (tab === "hq") refreshLB(); }, [tab, refreshLB]);
-
   /* ── activity log: reads bank_ledger + battle_log directly (both already
      RLS-permitted for your own rows — no new RPC needed) and merges them
      into one human-readable feed. battle_log references auth.users, not
@@ -2285,7 +2383,7 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
     const merged = [...bankEvents, ...battleEvents].sort((a, b) => new Date(b.ts) - new Date(a.ts)).slice(0, 30);
     setLog({ loading: false, rows: merged });
   }, [g]);
-  useEffect(() => { if (tab === "hq") { refreshLog(); g.hasUnseenLoss = false; } }, [tab, refreshLog, g]);
+  useEffect(() => { if (tab === "world") { refreshLog(); g.hasUnseenLoss = false; } }, [tab, refreshLog, g]);
 
   /* ── friends (social phase 1) — one RPC returns the whole graph slice:
      accepted friends, pending requests both directions, and players
@@ -2307,7 +2405,7 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
     setSocial({ loading: false, rows, err: false });
   }, [g, toast]);
   useEffect(() => { if (ready) refreshSocial(); }, [ready, refreshSocial]);
-  useEffect(() => { if (tab === "hq") refreshSocial(); }, [tab, refreshSocial]);
+  useEffect(() => { if (tab === "social") refreshSocial(); }, [tab, refreshSocial]);
 
   const sendFriendRequest = async () => {
     const name = friendDraft.trim();
@@ -2444,129 +2542,6 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
     setChatDraft("");
     if (data) setChatMsgs((m) => ({ ...m, rows: [...(m.rows || []), data] }));
     if (!g.ach.dm1) { g.ach.dm1 = 1; toast("Unlocked — Pen pal"); dirty.current = true; }
-  };
-
-  /* ── region chat (social phase 3), redesigned for live room-follow.
-     The old version conflated two different concerns into one 5s-polled
-     effect: "which region is the camera over" and "fetch messages for
-     it" — so the displayed room, the send target, and the actual camera
-     position could all disagree for up to 5 seconds after panning,
-     which read as "you have to close and reopen the chat to switch
-     rooms." Split apart:
-       1. rchatRegion — LIVE, recomputed after every render while the
-          drawer is open (piggybacking the ambient re-render cascade the
-          250ms economy tick already drives, same no-dep-array pattern
-          as the tutorial's zoom-step detection). Always matches the
-          camera instantly; drives the header label and the locked/
-          unlocked decision with zero lag.
-       2. message fetching — a separate effect that takes rchatRegion as
-          a real dependency, so a region change triggers an IMMEDIATE
-          refetch (React tears down the old interval and reruns the
-          effect the instant the dependency changes) instead of waiting
-          for the next 5s tick. The 5s interval still runs *within* a
-          room, to pick up new messages from other players.
-     Sends always target rchatRegion (live), never a stale fetch result —
-     what you type always goes where you're actually standing, matching
-     the header. A toast fires when the room actually changes (not on
-     first open) so switching feels intentional instead of silent. ── */
-  const centerRegionQk = () => {
-    const { s, x, y } = cam.current;
-    const { w, h } = size.current;
-    const wx = Math.min(1 - 1e-9, Math.max(0, (w / 2 - x) / s));
-    const wy = Math.min(1 - 1e-9, Math.max(0, (h / 2 - y) / s));
-    const rn = 1 << REGION_LEN;
-    const rx = Math.floor(wx * rn), ry = Math.floor(wy * rn);
-    let q = "";
-    for (let i = REGION_LEN; i > 0; i--) {
-      const m = 1 << (i - 1);
-      q += (rx & m ? 1 : 0) + (ry & m ? 2 : 0);
-    }
-    return q;
-  };
-
-  // Used to toast "Now chatting in X" on every region change, which made
-  // sense while this lived in a drawer pinned open over the map — the
-  // visible panel's room was changing in front of you. Now that chat is
-  // its own tab, panning the Map tab (the primary, most-of-the-time
-  // activity) fired that toast on every region-boundary crossing with no
-  // chat panel even in view, reported as spam. The Local tab's header
-  // already shows the live region name whenever you actually check it, so
-  // no proactive notification is needed here.
-  const rchatRegionPrev = useRef(null);
-  useEffect(() => {
-    if (tab !== "map") return;
-    const r = centerRegionQk();
-    if (r === rchatRegionPrev.current) return;
-    rchatRegionPrev.current = r;
-    setRchatRegion(r);
-  });
-
-  // markSeen: true while the player is actually looking at the Local tab
-  // (fast poll, always counts as "read"); false for the slow background
-  // watch that only exists to light up the nav badge (see below) — it
-  // must NOT silently mark things read, or the badge would never fire.
-  const fetchRegionMessages = useCallback(async (region, markSeen) => {
-    if (!unlockedRegions.current.has(region)) {
-      setRchat({ loading: false, rows: null, region, locked: true });
-      return;
-    }
-    const { data, error } = await supabase.rpc("list_region_messages", { p_region: region });
-    if (error) { setRchat({ loading: false, rows: [], region, locked: false }); return; }
-    // RPC returns newest-first; the tab renders oldest-at-top
-    setRchat({ loading: false, rows: (data || []).reverse(), region, locked: false });
-    const latestId = data && data.length ? (data[0].id || 0) : 0;
-    if (markSeen) {
-      rchatSeenRef.current[region] = Math.max(rchatSeenRef.current[region] || 0, latestId);
-      setRchatUnread(false);
-    } else if (rchatSeenRef.current[region] === undefined) {
-      // first sight of this region this session — baseline only, not a notification
-      rchatSeenRef.current[region] = latestId;
-    } else if (latestId > rchatSeenRef.current[region]) {
-      setRchatUnread(true);
-    }
-  }, []);
-
-  // foreground: fast poll while the Local tab is actually open
-  useEffect(() => {
-    if (!ready || tab !== "local" || !rchatRegion) return;
-    fetchRegionMessages(rchatRegion, true);
-    const iv = setInterval(() => fetchRegionMessages(rchatRegion, true), 5000);
-    return () => clearInterval(iv);
-  }, [ready, tab, rchatRegion, fetchRegionMessages]);
-
-  // background: slow watch so the nav badge can light up with new local
-  // activity even while the player is elsewhere — same cadence as the DM
-  // unread poll (refreshUnread) above
-  useEffect(() => {
-    if (!ready || tab === "local" || !rchatRegion) return;
-    fetchRegionMessages(rchatRegion, false);
-    const iv = setInterval(() => fetchRegionMessages(rchatRegion, false), 25000);
-    return () => clearInterval(iv);
-  }, [ready, tab, rchatRegion, fetchRegionMessages]);
-
-  // stepping into the tab clears the badge right away, instead of waiting
-  // on the next poll tick to resolve
-  useEffect(() => { if (tab === "local") setRchatUnread(false); }, [tab]);
-
-  useEffect(() => {
-    const el = rchatListRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
-  }, [rchat]);
-
-  const sendRegionChat = async () => {
-    const body = rchatDraft.trim();
-    if (!body || !rchatRegion) return;
-    const { data, error } = await supabase.rpc("send_region_message", { p_region: rchatRegion, p_body: body });
-    if (error) { toast(error.message || "Couldn't send that."); return; }
-    setRchatDraft("");
-    if (data) setRchat((s) => ({ ...s, rows: [...(s.rows || []), { ...data, username: g.name }] }));
-  };
-
-  const reportPlayer = async (uid, context, body) => {
-    const { error } = await supabase.rpc("report_player", { p_user: uid, p_context: context, p_body: body });
-    if (error) { toast(error.message || "Couldn't report — try again."); return; }
-    toast("Reported — thanks for flagging it");
-    setRchatSel(null);
   };
 
   // ── landmarks: small, near-static reference data — fetched once at
@@ -4236,7 +4211,6 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
               [IconMinus, () => { zoomAt(size.current.w / 2, size.current.h / 2, cam.current.s * 0.62); prefetchVectorTiles(); }, "Zoom out"],
               [IconGlobe, fitWorld, "Fit whole world"],
               [IconPlane, () => setCities((c) => !c), "Search cities"],
-              [IconChat, () => setTab("local"), "Local chat"],
               [IconBug, () => setDbg((v) => !v), "Debug overlay"],
             ].map(([IconC, fn, label], i) => (
               <button key={label} onClick={fn} title={label} aria-label={label}
@@ -4604,66 +4578,6 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
           )}
         </div>
 
-        {/* LOCAL CHAT — its own tab. Used to be a drawer pinned over the
-            map, but that shared the bottom edge with the tile sheet, so
-            selecting a tile hid the chat entirely. Room = whichever
-            unlocked region the camera was last centered on (rchatRegion,
-            live-tracked while the Map tab is active — see the effect
-            above), so panning the map still picks your room even though
-            you now read/send from here instead of an overlay. */}
-        {tab === "local" && (
-          <div className="absolute inset-0 flex flex-col">
-            <div className="shrink-0 flex items-center justify-between px-4 pt-4 pb-2">
-              <Eyebrow>Local chat{rchatRegion ? ` · ${regionLabel(rchatRegion)}` : ""}</Eyebrow>
-              <button onClick={() => setTab("map")} className="pt11 font-bold focus-visible:outline focus-visible:outline-2" style={{ ...mono, color: C.amber, outlineColor: C.amber }}>
-                Change region
-              </button>
-            </div>
-            {!rchatRegion ? (
-              <div className="px-4 text-sm" style={{ ...mono, color: C.dim }}>Loading your region…</div>
-            ) : !unlockedRegions.current.has(rchatRegion) ? (
-              <div className="px-4 text-sm" style={{ ...mono, color: C.dim }}>This region isn't yours yet — unlock it to join its local chat.</div>
-            ) : (
-              <>
-                <div ref={rchatListRef} className="flex flex-1 flex-col gap-1 overflow-y-auto px-4 py-1">
-                  {rchat.region !== rchatRegion || rchat.rows === null ? (
-                    // rchat.region !== rchatRegion: the fetch for the room we just
-                    // switched into hasn't landed yet — show Loading rather than
-                    // flashing the previous room's messages under the new name
-                    <div className="pt11 py-1" style={{ ...mono, color: C.dim }}>Loading…</div>
-                  ) : rchat.rows.length === 0 ? (
-                    <div className="pt11 py-1" style={{ ...mono, color: C.dim }}>Quiet out here — say something. Everyone who's unlocked this region can read it.</div>
-                  ) : rchat.rows.map((m) => (
-                    <div key={m.id}>
-                      <button onClick={() => { if (m.sender !== g.uid) setRchatSel(rchatSel === m.id ? null : m.id); }}
-                        className="w-full text-left text-sm leading-snug focus-visible:outline focus-visible:outline-2"
-                        style={{ overflowWrap: "anywhere", outlineColor: C.amber }}>
-                        <span className="font-bold" style={{ ...mono, color: m.sender === g.uid ? C.amber : friendIds.current.has(m.sender) ? C.friend : C.dim }}>{m.username}</span>
-                        <span style={{ color: C.text }}> {m.body}</span>
-                      </button>
-                      {rchatSel === m.id && (
-                        <div className="flex gap-3 pb-0.5 pl-2 pt-0.5">
-                          <button className="pt10 focus-visible:outline focus-visible:outline-2" style={{ ...mono, color: "#F08A8A", outlineColor: C.amber }}
-                            onClick={() => reportPlayer(m.sender, "region_chat", `${m.username}: ${m.body}`)}>Report</button>
-                          <button className="pt10 focus-visible:outline focus-visible:outline-2" style={{ ...mono, color: C.dim, outlineColor: C.amber }}
-                            onClick={() => { blockPlayer(m.sender); setRchatSel(null); }}>Block</button>
-                        </div>
-                      )}
-                    </div>
-                  ))}
-                </div>
-                <div className="shrink-0 flex gap-2 p-3" style={{ borderTop: `1px solid ${C.hair}` }}>
-                  <input value={rchatDraft} onChange={(e) => setRchatDraft(e.target.value)} maxLength={300} placeholder="Say something to the neighbors…"
-                    onKeyDown={(e) => { if (e.key === "Enter") sendRegionChat(); }}
-                    className="min-w-0 flex-1 rounded-xl px-3 py-2 text-sm focus-visible:outline focus-visible:outline-2"
-                    style={{ ...display, ...inputSty }} />
-                  <Btn small onClick={sendRegionChat} disabled={!rchatDraft.trim()}>Send</Btn>
-                </div>
-              </>
-            )}
-          </div>
-        )}
-
         {/* PORTFOLIO */}
         {tab === "assets" && (
           <div className="absolute inset-0 flex flex-col">
@@ -4798,14 +4712,8 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
         )}
 
         {/* HQ */}
-        {tab === "hq" && (
+        {tab === "profile" && (
           <div className="absolute inset-0 overflow-y-auto p-4">
-            {/* zone: you — identity comes first, then the numbers, then what you've earned */}
-            <div className="mb-2 flex items-center gap-2">
-              <span className="text-xs font-bold uppercase tracking-wide" style={{ ...display, color: C.text }}>You</span>
-              <div className="h-px flex-1" style={{ background: C.hair }} />
-            </div>
-
             <div className="mb-3 rounded-xl p-3" style={cardSty}>
               <div className="mb-2 flex items-center justify-between gap-2">
                 {g.name ? (
@@ -4874,12 +4782,15 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
               </div>
             </div>
 
-            {/* zone: world — territory + who else is out there */}
-            <div className="mb-2 mt-1 flex items-center gap-2">
-              <span className="text-xs font-bold uppercase tracking-wide" style={{ ...display, color: C.text }}>World</span>
-              <div className="h-px flex-1" style={{ background: C.hair }} />
+            <div className="pt10 pb-2 text-center leading-relaxed" style={{ ...mono, color: C.dim }}>
+              Parody idle game. ₲ Geobux are virtual and worth nothing.<br />
+              Coastlines are real (Natural Earth data) but simplified — your beach house may be approximate.
             </div>
+          </div>
+        )}
 
+        {tab === "world" && (
+          <div className="absolute inset-0 overflow-y-auto p-4">
             <div className="mb-3 rounded-xl p-3" style={cardSty}>
               <div className="mb-2 flex items-center justify-between gap-2">
                 <Eyebrow>Territory · {unlockedRegions.current.size} region{unlockedRegions.current.size === 1 ? "" : "s"}</Eyebrow>
@@ -4919,49 +4830,88 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
               </div>
             </div>
 
-            <div className="mb-3 rounded-xl p-3" style={cardSty}>
-              <div className="mb-2 flex items-center justify-between">
-                <Eyebrow>World register · top landlords</Eyebrow>
-                <button onClick={refreshLB} className="pt11 focus-visible:outline focus-visible:outline-2" style={{ ...mono, color: C.amber, outlineColor: C.amber }}>Refresh</button>
-              </div>
-              {lb.loading ? (
-                <div className="pt11 py-2" style={{ ...mono, color: C.dim }}>Pulling records…</div>
-              ) : lb.rows && lb.rows.length ? (
-                lb.rows.map((r, idx) => {
-                  // Every other row in the top 10 is tappable for a stats
-                  // card — the `leaderboard` view has no per-row privacy
-                  // gate (see supabase.sql), so this works for anyone on
-                  // it, not just friends. Your own row is excluded since
-                  // the "You" section above already covers it in more
-                  // depth (streak, energy, etc. that this card doesn't have).
-                  const clickable = r.id !== g.uid;
-                  const nameRow = (
-                    <div className="flex min-w-0 items-center gap-2" style={mono}>
-                      <span className="w-5 shrink-0 text-right text-xs" style={{ color: C.dim }}>{idx + 1}</span>
-                      <span className={`truncate ${r.id === g.uid ? "font-bold" : ""}`} style={r.id === g.uid ? { color: C.amber } : {}}>
-                        {r.n}{r.id === g.uid ? " (you)" : ""}
-                      </span>
-                      <Chip color={C.amber}>{statusFor(r.pnw).name}</Chip>
-                      {clickable && <span aria-hidden className="pt10" style={{ color: C.dim }}>›</span>}
-                    </div>
-                  );
-                  return (
-                    <div key={r.id} className="flex items-center justify-between py-1.5 text-sm" style={{ borderTop: idx ? `1px solid ${C.hair}` : "none" }}>
-                      {clickable ? (
-                        <button className="min-w-0 rounded-lg -my-1 py-1 transition-colors hover:bg-white/5 active:bg-white/10 focus-visible:outline focus-visible:outline-2"
-                          style={{ outlineColor: C.amber }} onClick={() => openPlayerStats(r.id, r.n)}>
-                          {nameRow}
-                        </button>
-                      ) : nameRow}
-                      <span className="shrink-0 text-xs" style={{ ...mono, color: C.dim }}>₲{fmt(r.nw || 0)} · {r.pc || 0} tiles</span>
-                    </div>
-                  );
-                })
-              ) : (
-                <div className="pt11 py-2" style={{ ...mono, color: C.dim }}>{g.name ? "No landlords on record yet." : "Set a name to appear here."}</div>
-              )}
+            {/* zone: landmarks — only shows landmarks you actually own at
+                least one piece of; browsing unowned ones happens by just
+                finding their gold marker on the map. */}
+            {landmarksList.current.some((lm) => myLandmarkPieces(lm.landmarkId) > 0) && (
+              <>
+                <div className="mb-2 mt-1 flex items-center gap-2">
+                  <span className="text-xs font-bold uppercase tracking-wide" style={{ ...display, color: C.text }}>Landmarks</span>
+                  <div className="h-px flex-1" style={{ background: C.hair }} />
+                </div>
+                <div className="mb-3 rounded-xl p-3" style={cardSty}>
+                  {landmarksList.current.filter((lm) => myLandmarkPieces(lm.landmarkId) > 0).map((lm, idx) => {
+                    const mine = myLandmarkPieces(lm.landmarkId);
+                    const perkAmount = Math.min(lm.perkValue * mine, lm.perkCap);
+                    const perkDesc = lm.perkType === "energy_boost"
+                      ? `+${lm.perkValue * mine} daily energy`
+                      : `−${perkAmount.toFixed(0)}% ${lm.perkType.replace("_", " ")} in this region`;
+                    return (
+                      <button key={lm.landmarkId} className="flex w-full items-center justify-between rounded-lg px-2 py-1.5 text-left transition-colors hover:bg-white/5 active:bg-white/10 focus-visible:outline focus-visible:outline-2" style={{ borderTop: idx ? `1px solid ${C.hair}` : "none", outlineColor: C.amber }}
+                        onClick={() => {
+                          const qk = lm.qks[0];
+                          setTab("map"); setSel(qk);
+                          const [wx, wy] = centerOfQk(qk);
+                          const { w, h } = size.current;
+                          const s = N * 24;
+                          cam.current = { s, x: w / 2 - wx * s, y: h / 2 - wy * s, init: true };
+                          ensureRegion(regionOf(qk), true);
+                        }}>
+                        <div className="flex min-w-0 items-center gap-2">
+                          <span style={{ fontSize: "1.1rem" }}>{lm.emoji}</span>
+                          <div className="min-w-0">
+                            <div className="truncate text-sm font-bold" style={mono}>{lm.name}</div>
+                            <div className="pt10" style={{ ...mono, color: "#FFD700" }}>{perkDesc}</div>
+                          </div>
+                        </div>
+                        <span className="flex shrink-0 items-center gap-1.5 text-xs" style={{ ...mono, color: C.dim }}>{mine}/9<span aria-hidden>›</span></span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </>
+            )}
+
+            {/* zone: activity — sales, repossessions, battle results */}
+            <div className="mb-2 mt-1 flex items-center gap-2">
+              <span className="text-xs font-bold uppercase tracking-wide" style={{ ...display, color: C.text }}>Activity</span>
+              <div className="h-px flex-1" style={{ background: C.hair }} />
             </div>
 
+            <div className="mb-3 rounded-xl p-3" style={cardSty}>
+              <div className="mb-2 flex items-center justify-between">
+                <Eyebrow>Recent activity</Eyebrow>
+                <button onClick={refreshLog} className="pt11 focus-visible:outline focus-visible:outline-2" style={{ ...mono, color: C.amber, outlineColor: C.amber }}>Refresh</button>
+              </div>
+              {log.loading ? (
+                <div className="pt11 py-2" style={{ ...mono, color: C.dim }}>Pulling records…</div>
+              ) : log.rows && log.rows.length ? (
+                log.rows.map((e, idx) => (
+                  <button key={e.id} disabled={!e.qk}
+                    className={`flex w-full items-center justify-between gap-2 rounded-lg px-2 py-1.5 text-left text-xs transition-colors focus-visible:outline focus-visible:outline-2 ${e.qk ? "hover:bg-white/5 active:bg-white/10" : "cursor-default"}`}
+                    style={{ ...mono, borderTop: idx ? `1px solid ${C.hair}` : "none", color: e.tone === "bad" ? "#F08A8A" : e.tone === "good" ? C.amber : C.dim, outlineColor: C.amber }}
+                    onClick={() => {
+                      if (!e.qk) return;
+                      setTab("map"); setSel(e.qk);
+                      const [wx, wy] = centerOfQk(e.qk);
+                      const { w, h } = size.current;
+                      const s = N * 16;
+                      cam.current = { s, x: w / 2 - wx * s, y: h / 2 - wy * s, init: true };
+                      ensureRegion(regionOf(e.qk), true);
+                    }}>
+                    <span className="min-w-0 flex-1 truncate">{e.text}</span>
+                    <span className="flex shrink-0 items-center gap-1.5" style={{ color: C.dim }}>{timeAgo(e.ts)}{e.qk && <span aria-hidden>›</span>}</span>
+                  </button>
+                ))
+              ) : (
+                <div className="pt11 py-2" style={{ ...mono, color: C.dim }}>Nothing yet — sales, repossessions, and battle results will show up here.</div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {tab === "social" && (
+          <div className="absolute inset-0 overflow-y-auto p-4">
             {/* friends — social phase 1. Teal dot ties list entries to the
                 same C.friend color their territory renders in on the map. */}
             <div className="mb-3 rounded-xl p-3" style={cardSty}>
@@ -5043,89 +4993,6 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
                 );
               })()}
             </div>
-
-            {/* zone: landmarks — only shows landmarks you actually own at
-                least one piece of; browsing unowned ones happens by just
-                finding their gold marker on the map. */}
-            {landmarksList.current.some((lm) => myLandmarkPieces(lm.landmarkId) > 0) && (
-              <>
-                <div className="mb-2 mt-1 flex items-center gap-2">
-                  <span className="text-xs font-bold uppercase tracking-wide" style={{ ...display, color: C.text }}>Landmarks</span>
-                  <div className="h-px flex-1" style={{ background: C.hair }} />
-                </div>
-                <div className="mb-3 rounded-xl p-3" style={cardSty}>
-                  {landmarksList.current.filter((lm) => myLandmarkPieces(lm.landmarkId) > 0).map((lm, idx) => {
-                    const mine = myLandmarkPieces(lm.landmarkId);
-                    const perkAmount = Math.min(lm.perkValue * mine, lm.perkCap);
-                    const perkDesc = lm.perkType === "energy_boost"
-                      ? `+${lm.perkValue * mine} daily energy`
-                      : `−${perkAmount.toFixed(0)}% ${lm.perkType.replace("_", " ")} in this region`;
-                    return (
-                      <button key={lm.landmarkId} className="flex w-full items-center justify-between rounded-lg px-2 py-1.5 text-left transition-colors hover:bg-white/5 active:bg-white/10 focus-visible:outline focus-visible:outline-2" style={{ borderTop: idx ? `1px solid ${C.hair}` : "none", outlineColor: C.amber }}
-                        onClick={() => {
-                          const qk = lm.qks[0];
-                          setTab("map"); setSel(qk);
-                          const [wx, wy] = centerOfQk(qk);
-                          const { w, h } = size.current;
-                          const s = N * 24;
-                          cam.current = { s, x: w / 2 - wx * s, y: h / 2 - wy * s, init: true };
-                          ensureRegion(regionOf(qk), true);
-                        }}>
-                        <div className="flex min-w-0 items-center gap-2">
-                          <span style={{ fontSize: "1.1rem" }}>{lm.emoji}</span>
-                          <div className="min-w-0">
-                            <div className="truncate text-sm font-bold" style={mono}>{lm.name}</div>
-                            <div className="pt10" style={{ ...mono, color: "#FFD700" }}>{perkDesc}</div>
-                          </div>
-                        </div>
-                        <span className="flex shrink-0 items-center gap-1.5 text-xs" style={{ ...mono, color: C.dim }}>{mine}/9<span aria-hidden>›</span></span>
-                      </button>
-                    );
-                  })}
-                </div>
-              </>
-            )}
-
-            {/* zone: activity — sales, repossessions, battle results */}
-            <div className="mb-2 mt-1 flex items-center gap-2">
-              <span className="text-xs font-bold uppercase tracking-wide" style={{ ...display, color: C.text }}>Activity</span>
-              <div className="h-px flex-1" style={{ background: C.hair }} />
-            </div>
-
-            <div className="mb-3 rounded-xl p-3" style={cardSty}>
-              <div className="mb-2 flex items-center justify-between">
-                <Eyebrow>Recent activity</Eyebrow>
-                <button onClick={refreshLog} className="pt11 focus-visible:outline focus-visible:outline-2" style={{ ...mono, color: C.amber, outlineColor: C.amber }}>Refresh</button>
-              </div>
-              {log.loading ? (
-                <div className="pt11 py-2" style={{ ...mono, color: C.dim }}>Pulling records…</div>
-              ) : log.rows && log.rows.length ? (
-                log.rows.map((e, idx) => (
-                  <button key={e.id} disabled={!e.qk}
-                    className={`flex w-full items-center justify-between gap-2 rounded-lg px-2 py-1.5 text-left text-xs transition-colors focus-visible:outline focus-visible:outline-2 ${e.qk ? "hover:bg-white/5 active:bg-white/10" : "cursor-default"}`}
-                    style={{ ...mono, borderTop: idx ? `1px solid ${C.hair}` : "none", color: e.tone === "bad" ? "#F08A8A" : e.tone === "good" ? C.amber : C.dim, outlineColor: C.amber }}
-                    onClick={() => {
-                      if (!e.qk) return;
-                      setTab("map"); setSel(e.qk);
-                      const [wx, wy] = centerOfQk(e.qk);
-                      const { w, h } = size.current;
-                      const s = N * 16;
-                      cam.current = { s, x: w / 2 - wx * s, y: h / 2 - wy * s, init: true };
-                      ensureRegion(regionOf(e.qk), true);
-                    }}>
-                    <span className="min-w-0 flex-1 truncate">{e.text}</span>
-                    <span className="flex shrink-0 items-center gap-1.5" style={{ color: C.dim }}>{timeAgo(e.ts)}{e.qk && <span aria-hidden>›</span>}</span>
-                  </button>
-                ))
-              ) : (
-                <div className="pt11 py-2" style={{ ...mono, color: C.dim }}>Nothing yet — sales, repossessions, and battle results will show up here.</div>
-              )}
-            </div>
-
-            <div className="pt10 pb-2 text-center leading-relaxed" style={{ ...mono, color: C.dim }}>
-              Parody idle game. ₲ Geobux are virtual and worth nothing.<br />
-              Coastlines are real (Natural Earth data) but simplified — your beach house may be approximate.
-            </div>
           </div>
         )}
       </div>
@@ -5176,8 +5043,8 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
 
       {/* nav */}
       <div className="flex gap-1 p-1.5" style={{ background: C.panel, borderTop: `1px solid ${C.hair}` }}>
-        {[["map", "Map"], ["local", "Local"], ["assets", "Assets"], ["market", "Market"], ["hq", "HQ"]].map(([k, label]) => (
-          <button key={k} onClick={() => setTab(k)} className="relative pt11 trk flex-1 rounded-xl py-2.5 font-bold uppercase transition-all duration-150 focus-visible:outline focus-visible:outline-2"
+        {[["map", "Map"], ["assets", "Assets"], ["market", "Market"], ["profile", "Profile"], ["world", "World"], ["social", "Social"]].map(([k, label]) => (
+          <button key={k} onClick={() => setTab(k)} className="relative pt11 trk flex-1 rounded-xl py-3.5 font-bold uppercase transition-all duration-150 focus-visible:outline focus-visible:outline-2"
             style={{
               ...display,
               color: tab === k ? C.ink : C.dim,
@@ -5186,17 +5053,15 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
               outlineColor: C.amber,
             }}>
             {label}
-            {k === "local" && rchatUnread && (
+            {k === "world" && g.hasUnseenLoss && (
+              <span className="absolute right-2.5 top-1.5 h-2 w-2 rounded-full"
+                style={{ background: "#F08A8A", boxShadow: "0 0 6px #F08A8A99" }}
+                title="Territory lost while you were away" />
+            )}
+            {k === "social" && unreadTotal > 0 && (
               <span className="absolute right-2.5 top-1.5 h-2 w-2 rounded-full"
                 style={{ background: C.amber, boxShadow: `0 0 6px ${C.amber}99` }}
-                title="New messages in this region" />
-            )}
-            {k === "hq" && (g.hasUnseenLoss || unreadTotal > 0) && (
-              <span className="absolute right-2.5 top-1.5 h-2 w-2 rounded-full"
-                style={g.hasUnseenLoss
-                  ? { background: "#F08A8A", boxShadow: "0 0 6px #F08A8A99" }
-                  : { background: C.amber, boxShadow: `0 0 6px ${C.amber}99` }}
-                title={g.hasUnseenLoss ? "Territory lost while you were away" : "New messages"} />
+                title="New messages" />
             )}
           </button>
         ))}
