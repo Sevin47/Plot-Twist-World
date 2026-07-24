@@ -2630,13 +2630,45 @@ create index if not exists idx_battle_log_unnotified on battle_log(id) where att
 --    instead deployed with `--no-verify-jwt` and check the x-cron-secret
 --    header themselves against the CRON_SECRET function secret (`supabase
 --    secrets set CRON_SECRET=...`, a random value, not the service-role
---    key). Replace <CRON_SECRET> below with that same value before
---    running — it's still a secret: never commit this block with the
---    real value filled in, paste it directly in the SQL Editor instead.
---    (project ref below matches VITE_SUPABASE_URL in .env — that part
---    isn't sensitive.)
+--    key).
+--
+--    The header value below is looked up from Supabase Vault at call time
+--    (`vault.decrypted_secrets`), NOT inlined as literal SQL text. This
+--    file is meant to be re-pasted into the SQL Editor whenever the schema
+--    changes, and cron.schedule() unconditionally overwrites the job on
+--    every run — an earlier version put the secret directly in the header
+--    string here, which meant every single re-paste silently reset auth to
+--    whatever placeholder text happened to be sitting in this file at that
+--    moment (this is exactly what broke energy-reset-push in production —
+--    see the vault.create_secret block immediately below for the one-time
+--    fix). Routing through vault.decrypted_secrets makes cron.schedule()
+--    itself secret-agnostic, so it's safe to re-run indefinitely: the
+--    vault entry, once created, is never touched by this file again.
 create extension if not exists pg_cron;
 create extension if not exists pg_net;
+create extension if not exists supabase_vault;
+
+-- One-time bootstrap: creates the 'cron_secret' vault entry if it doesn't
+-- already exist (guarded — safe to leave in this idempotent file, unlike
+-- the old inline header). Must match the CRON_SECRET value set via
+-- `supabase secrets set` above, or the functions will 401 forever. Replace
+-- <CRON_SECRET> below with the real value ONLY when running this for the
+-- first time (or after rotating the secret) — paste directly in the SQL
+-- Editor, never commit this block with the real value filled in. Once the
+-- row exists, this is a permanent no-op regardless of what the placeholder
+-- text says, so there's no more "forgot to edit it" failure mode on later
+-- re-runs. Goes through vault.create_secret() rather than a raw `insert
+-- into vault.secrets` — the raw insert calls pgsodium's encryption
+-- trigger directly with the connecting role's own privileges, which the
+-- Management API connection (`supabase db query --linked`) doesn't have;
+-- vault.create_secret() is a security-definer wrapper that already holds
+-- the grants it needs.
+do $$
+begin
+  if not exists (select 1 from vault.secrets where name = 'cron_secret') then
+    perform vault.create_secret('<CRON_SECRET>', 'cron_secret');
+  end if;
+end $$;
 
 select cron.unschedule('energy-reset-push') where exists (select 1 from cron.job where jobname = 'energy-reset-push');
 select cron.schedule(
@@ -2645,7 +2677,10 @@ select cron.schedule(
   $$
   select net.http_post(
     url := 'https://trjrbqkwxmsfxlqermam.supabase.co/functions/v1/send-energy-alerts',
-    headers := jsonb_build_object('x-cron-secret', '<CRON_SECRET>', 'Content-Type', 'application/json'),
+    headers := jsonb_build_object(
+      'x-cron-secret', (select decrypted_secret from vault.decrypted_secrets where name = 'cron_secret'),
+      'Content-Type', 'application/json'
+    ),
     body := '{}'::jsonb
   );
   $$
@@ -2656,7 +2691,8 @@ select cron.schedule(
 --    happens, so this is a short poll of battle_log's not-yet-notified
 --    rows rather than a once-a-day fire. 2 minutes keeps it feeling close
 --    to real-time without invoking the function 1440 times/day for what's
---    usually a near-empty query. Same x-cron-secret auth as above. ──
+--    usually a near-empty query. Same vault-backed x-cron-secret auth as
+--    above. ──
 select cron.unschedule('attack-alert-push') where exists (select 1 from cron.job where jobname = 'attack-alert-push');
 select cron.schedule(
   'attack-alert-push',
@@ -2664,7 +2700,10 @@ select cron.schedule(
   $$
   select net.http_post(
     url := 'https://trjrbqkwxmsfxlqermam.supabase.co/functions/v1/send-attack-alerts',
-    headers := jsonb_build_object('x-cron-secret', '<CRON_SECRET>', 'Content-Type', 'application/json'),
+    headers := jsonb_build_object(
+      'x-cron-secret', (select decrypted_secret from vault.decrypted_secrets where name = 'cron_secret'),
+      'Content-Type', 'application/json'
+    ),
     body := '{}'::jsonb
   );
   $$
