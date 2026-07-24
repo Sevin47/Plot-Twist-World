@@ -1,9 +1,10 @@
-// Fires the opt-in "your energy reset" push to every registered device.
-// Invoked once a day at 00:00 UTC by the pg_cron job in supabase.sql —
-// never called from the client. Not a per-user computation: energy resets
-// for everyone at the same UTC instant (see reset_daily_energy in
-// supabase.sql), so there's nothing to check per-row here beyond "does a
-// subscription exist" — no need to look at energy_date/energy at all.
+// Fires the opt-in "your energy reset" push to every registered device
+// that has energy_alerts on. Invoked once a day at 00:00 UTC by the
+// pg_cron job in supabase.sql — never called from the client. Not a
+// per-user computation: energy resets for everyone at the same UTC
+// instant (see reset_daily_energy in supabase.sql), so there's nothing to
+// check per-row here beyond the opt-in flag — no need to look at
+// energy_date/energy at all.
 //
 // Deploy: `supabase functions deploy send-energy-alerts --no-verify-jwt`
 // (same one-time `supabase login` / `supabase link` as delete-account).
@@ -40,7 +41,8 @@ Deno.serve(async (req) => {
     const admin = createClient(supabaseUrl, serviceRoleKey);
     const { data: subs, error } = await admin
       .from("push_subscriptions")
-      .select("user_id, endpoint, p256dh, auth_key");
+      .select("user_id, endpoint, p256dh, auth_key")
+      .eq("energy_alerts", true);
     if (error) throw error;
 
     // "." not "/" — sw.js resolves this relative to its own script URL,

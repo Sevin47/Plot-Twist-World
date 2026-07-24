@@ -21,7 +21,7 @@ import VectorWorker from "./vectorWorker.js?worker&inline";
 // Bumped by hand alongside any fix worth confirming actually shipped —
 // shows in the debug panel so a stale cached bundle is immediately obvious
 // instead of looking like the bug is still unfixed.
-const BUILD_TAG = "2026-07-23.11-changelog-version-numbers";
+const BUILD_TAG = "2026-07-23.12-market-buy-sync-collapsible-legend";
 
 // APP_VERSION: player-facing semver, sourced from package.json (see
 // vite.config.js) — bump package.json's "version" by hand per release.
@@ -41,6 +41,14 @@ const VERSION_CHECK_MS = 5 * 60 * 1000;
 // player-visible change ships with a version bump + entry in the same
 // commit, not after the fact.
 const CHANGELOG = [
+  {
+    id: "1.14.12",
+    date: "Jul 23, 2026",
+    notes: [
+      "Buying a tile from the Market now removes it from your listings view right away, instead of leaving it showing (and clickable) until you refreshed.",
+      "The map legend can now be collapsed — tap \"Legend\" to hide or show it.",
+    ],
+  },
   {
     id: "1.14.11",
     date: "Jul 23, 2026",
@@ -1257,6 +1265,7 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled 
   const [cities, setCities] = useState(false);
   const [citySearch, setCitySearch] = useState("");
   const [showBasemap, setShowBasemap] = useState(true);
+  const [legendOpen, setLegendOpen] = useState(true);
   const [dbg, setDbg] = useState(() => typeof location !== "undefined" && location.hash.includes("debug"));
   const [market, setMarket] = useState({ loading: false, rows: null });
   const [lb, setLb] = useState({ loading: false, rows: null });
@@ -2676,6 +2685,21 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled 
     if (error || !data) { toast(error?.message || "Listing changed — trade cancelled."); return; }
     g.bal -= price;
     g.own.push({ qk, l: data.level, r: data.rarity, pr: data.prestige || 0, cls: data.cls, pd: data.paid });
+    // patch the shared region cache immediately — same reasoning as
+    // attack_tile's patch below: without this, recOf(qk) keeps returning
+    // the stale seller/price until the next natural region resync (up to
+    // 8s, or whenever the player leaves/reopens this region), which let a
+    // second "Buy" click on the still-listed market row look like the
+    // first click did nothing.
+    const r = regions.current.get(regionOf(qk));
+    if (r && r.t[qk]) {
+      r.t[qk] = { ...r.t[qk], o: g.uid, n: g.name, pnw: g.peakNetWorth, r: data.rarity, l: data.level, pr: data.prestige || 0, pd: data.paid };
+      delete r.t[qk].p;
+    }
+    // drop the row from the Market tab's own list so it can't be bought
+    // twice from there either — refreshMarket() will naturally repopulate
+    // from the server on the next visit/refresh.
+    setMarket((m) => (m.rows ? { ...m, rows: m.rows.filter((row) => row.qk !== qk) } : m));
     rebuildOwn(); checkAch(); dirty.current = true; save();
     toast(`Deed acquired from ${rec.n || "a player"}`);
   };
@@ -4220,17 +4244,32 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled 
             </div>
           )}
           <div className="absolute left-3 top-3 rounded-2xl px-2.5 py-2" style={{ background: `${C.panel}d9`, border: `1px solid ${C.hairLit}`, boxShadow: C.shadowSm, ...blur(14) }}>
-            {LEGEND.map((k) => (
-              <div key={k} className="pt9 flex items-center gap-1.5 py-0.5 font-medium" style={{ ...display, color: C.dim }}>
-                <span className="h-2 w-2 rounded-full" style={{ background: CLS[k].color, boxShadow: `0 0 6px ${CLS[k].color}99` }} />
-                {CLS[k].name}
-              </div>
-            ))}
-            {worldTilesOwned != null && (
-              <div className="pt9 mt-1 flex items-center gap-1 pt-1 font-medium" style={{ ...mono, color: C.dim, borderTop: `1px solid ${C.hair}` }}
-                title="Tiles claimed worldwide vs. an estimate of purchasable (non-water) land on the whole grid">
-                🌍 {fmt(worldTilesOwned)} / ~{fmt(WORLD_LAND_TILES_ESTIMATE)} claimed
-              </div>
+            <button
+              onClick={() => setLegendOpen((v) => !v)}
+              aria-expanded={legendOpen}
+              className="pt9 flex w-full items-center gap-1.5 font-medium focus-visible:outline focus-visible:outline-2"
+              style={{ ...display, color: C.dim, outlineColor: C.amber, padding: legendOpen ? "0 0 2px" : 0 }}
+            >
+              <span className="transition-transform" style={{ display: "inline-flex", transform: legendOpen ? "rotate(-90deg)" : "rotate(90deg)" }}>
+                <IconChevronLeft size={10} />
+              </span>
+              Legend
+            </button>
+            {legendOpen && (
+              <>
+                {LEGEND.map((k) => (
+                  <div key={k} className="pt9 flex items-center gap-1.5 py-0.5 font-medium" style={{ ...display, color: C.dim }}>
+                    <span className="h-2 w-2 rounded-full" style={{ background: CLS[k].color, boxShadow: `0 0 6px ${CLS[k].color}99` }} />
+                    {CLS[k].name}
+                  </div>
+                ))}
+                {worldTilesOwned != null && (
+                  <div className="pt9 mt-1 flex items-center gap-1 pt-1 font-medium" style={{ ...mono, color: C.dim, borderTop: `1px solid ${C.hair}` }}
+                    title="Tiles claimed worldwide vs. an estimate of purchasable (non-water) land on the whole grid">
+                    🌍 {fmt(worldTilesOwned)} / ~{fmt(WORLD_LAND_TILES_ESTIMATE)} claimed
+                  </div>
+                )}
+              </>
             )}
           </div>
 
