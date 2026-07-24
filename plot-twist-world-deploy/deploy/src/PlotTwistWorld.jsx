@@ -42,6 +42,14 @@ const VERSION_CHECK_MS = 5 * 60 * 1000;
 // commit, not after the fact.
 const CHANGELOG = [
   {
+    id: "1.15.2",
+    date: "Jul 23, 2026",
+    notes: [
+      "World register entries now give each landlord's name its own line instead of squeezing it next to a status badge and stats — no more truncated names.",
+      "The World register and Settings pages are wider, using more of the available screen instead of a narrow fixed column.",
+    ],
+  },
+  {
     id: "1.15.1",
     date: "Jul 23, 2026",
     notes: [
@@ -1358,7 +1366,7 @@ export default function PlotTwistWorld() {
     if (menuView === "leaderboard") {
       return (
         <MenuShell compact overlay={overlay}>
-          <div className="mx-auto flex w-72 flex-col gap-2.5 text-left">
+          <div className="mx-auto flex w-full max-w-sm flex-col gap-2.5 text-left">
             <MenuBackBtn onClick={() => setMenuView("main")} />
             <div className="rounded-xl p-3" style={cardSty}>
               <div className="mb-2 flex items-center justify-between">
@@ -1370,26 +1378,32 @@ export default function PlotTwistWorld() {
               ) : lb.rows && lb.rows.length ? (
                 lb.rows.map((r, idx) => {
                   const clickable = r.id !== G.current?.uid;
-                  const nameRow = (
-                    <div className="flex min-w-0 items-center gap-2" style={mono}>
-                      <span className="w-5 shrink-0 text-right text-xs" style={{ color: C.dim }}>{idx + 1}</span>
-                      <span className={`truncate ${clickable ? "" : "font-bold"}`} style={clickable ? {} : { color: C.amber }}>
-                        {r.n}{clickable ? "" : " (you)"}
-                      </span>
-                      <Chip color={C.amber}>{statusFor(r.pnw).name}</Chip>
-                      {clickable && <span aria-hidden className="pt10" style={{ color: C.dim }}>›</span>}
+                  // Two lines per row (name gets the full width to itself,
+                  // status/stats sit underneath) instead of cramming rank +
+                  // name + status chip + stats onto one line — that squeeze
+                  // was what forced long usernames to truncate.
+                  const rowInner = (
+                    <div className="w-full py-1.5" style={{ borderTop: idx ? `1px solid ${C.hair}` : "none" }}>
+                      <div className="flex items-center gap-2">
+                        <span className="w-5 shrink-0 text-right text-xs" style={{ ...mono, color: C.dim }}>{idx + 1}</span>
+                        <span className="min-w-0 flex-1 truncate text-sm" style={clickable ? mono : { ...mono, fontWeight: 700, color: C.amber }}>
+                          {r.n}{clickable ? "" : " (you)"}
+                        </span>
+                        {clickable && <span aria-hidden className="pt10 shrink-0" style={{ color: C.dim }}>›</span>}
+                      </div>
+                      <div className="mt-1 flex items-center justify-between gap-2 pl-7">
+                        <Chip color={C.amber}>{statusFor(r.pnw).name}</Chip>
+                        <span className="shrink-0 text-xs" style={{ ...mono, color: C.dim }}>₲{fmt(r.nw || 0)} · {r.pc || 0} tiles</span>
+                      </div>
                     </div>
                   );
-                  return (
-                    <div key={r.id} className="flex items-center justify-between py-1.5 text-sm" style={{ borderTop: idx ? `1px solid ${C.hair}` : "none" }}>
-                      {clickable ? (
-                        <button className="min-w-0 rounded-lg -my-1 py-1 transition-colors hover:bg-white/5 active:bg-white/10 focus-visible:outline focus-visible:outline-2"
-                          style={{ outlineColor: C.amber }} onClick={() => openPmPlayerStats(r.id, r.n)}>
-                          {nameRow}
-                        </button>
-                      ) : nameRow}
-                      <span className="shrink-0 text-xs" style={{ ...mono, color: C.dim }}>₲{fmt(r.nw || 0)} · {r.pc || 0} tiles</span>
-                    </div>
+                  return clickable ? (
+                    <button key={r.id} className="block w-full rounded-lg text-left transition-colors hover:bg-white/5 active:bg-white/10 focus-visible:outline focus-visible:outline-2"
+                      style={{ outlineColor: C.amber }} onClick={() => openPmPlayerStats(r.id, r.n)}>
+                      {rowInner}
+                    </button>
+                  ) : (
+                    <div key={r.id}>{rowInner}</div>
                   );
                 })
               ) : (
@@ -1404,7 +1418,7 @@ export default function PlotTwistWorld() {
     if (menuView === "settings") {
       return (
         <MenuShell compact overlay={overlay}>
-          <div className="mx-auto flex w-72 flex-col gap-2.5 text-left">
+          <div className="mx-auto flex w-full max-w-sm flex-col gap-2.5 text-left">
             <MenuBackBtn onClick={() => setMenuView("main")} />
             <div className="rounded-xl p-3" style={cardSty}>
               <div className="mb-2"><Eyebrow>Settings</Eyebrow></div>
