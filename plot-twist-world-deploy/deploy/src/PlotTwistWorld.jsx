@@ -21,7 +21,7 @@ import VectorWorker from "./vectorWorker.js?worker&inline";
 // Bumped by hand alongside any fix worth confirming actually shipped —
 // shows in the debug panel so a stale cached bundle is immediately obvious
 // instead of looking like the bug is still unfixed.
-const BUILD_TAG = "2026-07-23.12-market-buy-sync-collapsible-legend";
+const BUILD_TAG = "2026-07-23.13-wording-pass-collapsible-activity";
 
 // APP_VERSION: player-facing semver, sourced from package.json (see
 // vite.config.js) — bump package.json's "version" by hand per release.
@@ -41,6 +41,16 @@ const VERSION_CHECK_MS = 5 * 60 * 1000;
 // player-visible change ships with a version bump + entry in the same
 // commit, not after the fact.
 const CHANGELOG = [
+  {
+    id: "1.15.3",
+    date: "Jul 23, 2026",
+    notes: [
+      "Title screen now shows the real tile count (~6.59 billion) instead of an old placeholder estimate, and dropped \"Edition\" from the subtitle.",
+      "Standardized on \"region\" everywhere instead of switching between \"region\" and \"territory\" for the same thing.",
+      "Dropped the \"parody idle game\" framing from the sign-in and HQ screens as the game moves toward a real release — the Geobux-are-virtual disclaimer stays.",
+      "Recent activity on the World tab now shows 8 entries with a \"Show all\" toggle instead of one long list.",
+    ],
+  },
   {
     id: "1.15.2",
     date: "Jul 23, 2026",
@@ -352,7 +362,7 @@ const TUT_STEPS = [
   },
   {
     title: "Zoom way out",
-    text: "Pinch or tap − until you can see the whole world. Your territory glows blue from up there; rival players' tiles show red.",
+    text: "Pinch or tap − until you can see the whole world. Your region glows blue from up there; rival players' tiles show red.",
   },
   {
     title: "Claim energy",
@@ -463,6 +473,7 @@ function distToSegSq(px, py, ax, ay, bx, by) {
 }
 const REGION_LEN = 8;         // shared-storage shard prefix (~150km regions)
 const REGION_PREVIEW_COUNT = 6; // HQ territory grid rows shown before "Show all" — keeps the tab from growing unbounded as players unlock more regions
+const ACTIVITY_PREVIEW_COUNT = 8; // Recent activity rows shown before "Show all" — same collapse pattern as regions above
 
 const C = {
   ink: "#0A1622", panel: "#111C2B", hair: "#243146",
@@ -1000,11 +1011,11 @@ function MenuShell({ children, overlay, compact }) {
       <div className="pt-anim-slideUp relative my-auto w-full py-4 text-center">
         {!compact && (
           <>
-            <Eyebrow>One shared Earth · ~300 m tiles</Eyebrow>
+            <Eyebrow>One shared Earth · ~{(WORLD_LAND_TILES_ESTIMATE / 1e9).toFixed(2)} billion tiles</Eyebrow>
             <h1 className="mb-1 mt-2 text-5xl font-bold" style={{ ...display, letterSpacing: ".01em",
               backgroundImage: C.amberGrad, WebkitBackgroundClip: "text", backgroundClip: "text", color: "transparent",
               filter: `drop-shadow(0 4px 28px ${C.glow})` }}>PLOT TWIST</h1>
-            <div className="pt11 trk mb-8 uppercase font-semibold" style={{ ...display, color: C.dim }}>World Deed Edition</div>
+            <div className="pt11 trk mb-8 uppercase font-semibold" style={{ ...display, color: C.dim }}>World Deed</div>
           </>
         )}
         {children}
@@ -1280,7 +1291,7 @@ export default function PlotTwistWorld() {
           <Btn full tone="ghost" onClick={() => window.open(`${import.meta.env.BASE_URL}guide.html`, "_blank", "noopener,noreferrer")}>Wiki</Btn>
         </div>
         <div className="pt9 mx-auto mt-10 max-w-xs leading-relaxed" style={{ ...mono, color: C.dim }}>
-          One account per player, tied to your Google sign-in — no separate "new game," ever. Parody idle game. ₲ Geobux are virtual and worth nothing.
+          One account per player, tied to your Google sign-in — no separate "new game," ever. ₲ Geobux are virtual and worth nothing.
         </div>
       </MenuShell>
     );
@@ -1538,6 +1549,7 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
   const [assetClsFilter, setAssetClsFilter] = useState("all");
   const [assetRarityFilter, setAssetRarityFilter] = useState(-1);
   const [regionsExpanded, setRegionsExpanded] = useState(false); // HQ territory list starts collapsed once it outgrows the grid preview
+  const [activityExpanded, setActivityExpanded] = useState(false); // Recent activity list starts collapsed once it outgrows the preview
   const [assetSort, setAssetSort] = useState("rent");
   const [batchBusy, setBatchBusy] = useState(null);
   const [nameDraft, setNameDraft] = useState(G.current.name || "");
@@ -1696,7 +1708,7 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
     dirty.current = true;
   }, [g, rebuildOwn]);
 
-  /* ── PvP: surface "N of your attacks resolved" / "your territory was
+  /* ── PvP: surface "N of your attacks resolved" / "your region was
      raided N times" — same lazy claim-and-mark-seen pattern as collectBank
      above, backed by battle_log/claim_battle_log() instead of
      bank_ledger/claim_bank_ledger(). Money/ownership already moved
@@ -1716,8 +1728,8 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
       // the player actually opens HQ (see the refreshLog effect above).
       if (received_lost_count) { refreshOwnedTiles(); g.hasUnseenLoss = true; }
       toast(received_lost_count
-        ? `Your territory was raided — ${received_lost_count} of ${received_count} attack${received_count === 1 ? "" : "s"} took a tile`
-        : `Your territory was raided ${received_count} time${received_count === 1 ? "" : "s"} — you held every tile`);
+        ? `Your region was raided — ${received_lost_count} of ${received_count} attack${received_count === 1 ? "" : "s"} took a tile`
+        : `Your region was raided ${received_count} time${received_count === 1 ? "" : "s"} — you held every tile`);
     }
   }, [g, toast, refreshOwnedTiles]);
 
@@ -2738,7 +2750,7 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
     g.bal -= cost;
     unlockedRegions.current.add(region);
     dirty.current = true; save();
-    toast("New territory unlocked");
+    toast("New region unlocked");
   };
 
   // PvP: true if the player owns at least one orthogonal neighbor of qk —
@@ -4759,7 +4771,7 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
             {market.loading && <div className="pt11 py-2" style={{ ...mono, color: C.dim }}>Checking the register…</div>}
             {market.rows && market.rows.length === 0 && (
               <div className="rounded-xl p-6 text-center text-sm" style={{ background: C.panel, color: C.dim }}>
-                Nothing listed in your unlocked territory right now. List one of your tiles, or unlock a new region to trade there too.
+                Nothing listed in your unlocked regions right now. List one of your tiles, or unlock a new region to trade there too.
               </div>
             )}
             {market.rows && market.rows.map((e) => (
@@ -4781,7 +4793,7 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
               </div>
             ))}
             <div className="pt10 mt-2 mb-4 text-center" style={{ ...mono, color: C.dim }}>
-              Only shows listings in territory you've unlocked. Sales pay the seller even while they're offline.
+              Only shows listings in regions you've unlocked. Sales pay the seller even while they're offline.
             </div>
           </div>
         )}
@@ -4858,7 +4870,7 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
             </div>
 
             <div className="pt10 pb-2 text-center leading-relaxed" style={{ ...mono, color: C.dim }}>
-              Parody idle game. ₲ Geobux are virtual and worth nothing.<br />
+              ₲ Geobux are virtual and worth nothing.<br />
               Coastlines are real (Natural Earth data) but simplified — your beach house may be approximate.
             </div>
           </div>
@@ -4868,7 +4880,7 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
           <div className="absolute inset-0 overflow-y-auto p-4">
             <div className="mb-3 rounded-xl p-3" style={cardSty}>
               <div className="mb-2 flex items-center justify-between gap-2">
-                <Eyebrow>Territory · {unlockedRegions.current.size} region{unlockedRegions.current.size === 1 ? "" : "s"}</Eyebrow>
+                <Eyebrow>Regions · {unlockedRegions.current.size}</Eyebrow>
                 {unlockedRegions.current.size > REGION_PREVIEW_COUNT && (
                   <button onClick={() => setRegionsExpanded((v) => !v)}
                     className="pt11 shrink-0 font-bold focus-visible:outline focus-visible:outline-2" style={{ ...mono, color: C.amber, outlineColor: C.amber }}>
@@ -4901,7 +4913,7 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
                 </div>
               )}
               <div className="pt10 mt-2" style={{ ...display, color: C.dim }}>
-                The fine deed grid only shows/interacts within unlocked territory — next region costs ₲{fmt(nextUnlockCost())}, doubling each time. Tap a region to see its bounds, then zoom in from there.
+                The fine deed grid only shows/interacts within unlocked regions — next region costs ₲{fmt(nextUnlockCost())}, doubling each time. Tap a region to see its bounds, then zoom in from there.
               </div>
             </div>
 
@@ -4961,23 +4973,31 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
               {log.loading ? (
                 <div className="pt11 py-2" style={{ ...mono, color: C.dim }}>Pulling records…</div>
               ) : log.rows && log.rows.length ? (
-                log.rows.map((e, idx) => (
-                  <button key={e.id} disabled={!e.qk}
-                    className={`flex w-full items-center justify-between gap-2 rounded-lg px-2 py-1.5 text-left text-xs transition-colors focus-visible:outline focus-visible:outline-2 ${e.qk ? "hover:bg-white/5 active:bg-white/10" : "cursor-default"}`}
-                    style={{ ...mono, borderTop: idx ? `1px solid ${C.hair}` : "none", color: e.tone === "bad" ? "#F08A8A" : e.tone === "good" ? C.amber : C.dim, outlineColor: C.amber }}
-                    onClick={() => {
-                      if (!e.qk) return;
-                      setTab("map"); setSel(e.qk);
-                      const [wx, wy] = centerOfQk(e.qk);
-                      const { w, h } = size.current;
-                      const s = N * 16;
-                      cam.current = { s, x: w / 2 - wx * s, y: h / 2 - wy * s, init: true };
-                      ensureRegion(regionOf(e.qk), true);
-                    }}>
-                    <span className="min-w-0 flex-1 truncate">{e.text}</span>
-                    <span className="flex shrink-0 items-center gap-1.5" style={{ color: C.dim }}>{timeAgo(e.ts)}{e.qk && <span aria-hidden>›</span>}</span>
-                  </button>
-                ))
+                <>
+                  {log.rows.slice(0, activityExpanded ? undefined : ACTIVITY_PREVIEW_COUNT).map((e, idx) => (
+                    <button key={e.id} disabled={!e.qk}
+                      className={`flex w-full items-center justify-between gap-2 rounded-lg px-2 py-1.5 text-left text-xs transition-colors focus-visible:outline focus-visible:outline-2 ${e.qk ? "hover:bg-white/5 active:bg-white/10" : "cursor-default"}`}
+                      style={{ ...mono, borderTop: idx ? `1px solid ${C.hair}` : "none", color: e.tone === "bad" ? "#F08A8A" : e.tone === "good" ? C.amber : C.dim, outlineColor: C.amber }}
+                      onClick={() => {
+                        if (!e.qk) return;
+                        setTab("map"); setSel(e.qk);
+                        const [wx, wy] = centerOfQk(e.qk);
+                        const { w, h } = size.current;
+                        const s = N * 16;
+                        cam.current = { s, x: w / 2 - wx * s, y: h / 2 - wy * s, init: true };
+                        ensureRegion(regionOf(e.qk), true);
+                      }}>
+                      <span className="min-w-0 flex-1 truncate">{e.text}</span>
+                      <span className="flex shrink-0 items-center gap-1.5" style={{ color: C.dim }}>{timeAgo(e.ts)}{e.qk && <span aria-hidden>›</span>}</span>
+                    </button>
+                  ))}
+                  {log.rows.length > ACTIVITY_PREVIEW_COUNT && (
+                    <button onClick={() => setActivityExpanded((v) => !v)}
+                      className="pt11 mt-1 w-full text-center font-bold focus-visible:outline focus-visible:outline-2" style={{ ...mono, color: C.amber, outlineColor: C.amber }}>
+                      {activityExpanded ? "Show less" : `Show all ${log.rows.length}`}
+                    </button>
+                  )}
+                </>
               ) : (
                 <div className="pt11 py-2" style={{ ...mono, color: C.dim }}>Nothing yet — sales, repossessions, and battle results will show up here.</div>
               )}
@@ -5062,7 +5082,7 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
                       </>
                     )}
                     <div className="pt10 mt-2" style={{ ...display, color: C.dim }}>
-                      Friends' territory shows teal on the map. Blocking someone stops their requests for good.
+                      Friends' regions show teal on the map. Blocking someone stops their requests for good.
                     </div>
                   </>
                 );
@@ -5298,7 +5318,7 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
         <Modal onClose={() => setRemoveFriendTarget(null)}>
           <Eyebrow>Remove {removeFriendTarget.name}?</Eyebrow>
           <div className="mt-3 text-sm leading-relaxed" style={{ color: C.text }}>
-            They'll drop off your Friends list and their territory stops showing teal on the map. You can always send a new request later.
+            They'll drop off your Friends list and their region stops showing teal on the map. You can always send a new request later.
           </div>
           <div className="mt-4 flex gap-2">
             <Btn full tone="ghost" onClick={() => setRemoveFriendTarget(null)}>Cancel</Btn>
