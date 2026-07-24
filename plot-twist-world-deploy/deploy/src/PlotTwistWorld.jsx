@@ -42,6 +42,13 @@ const VERSION_CHECK_MS = 5 * 60 * 1000;
 // commit, not after the fact.
 const CHANGELOG = [
   {
+    id: "1.14.13",
+    date: "Jul 23, 2026",
+    notes: [
+      "HQ's Account section is gone — Wiki, Replay tutorial, Sign out and Delete account & data now live on the pause menu (tap Menu at top-left), decluttering HQ down to Territory, Register, Friends, Landmarks and Activity.",
+    ],
+  },
+  {
     id: "1.14.12",
     date: "Jul 23, 2026",
     notes: [
@@ -951,7 +958,7 @@ function WorldMap() {
   );
 }
 
-function MenuShell({ children }) {
+function MenuShell({ children, overlay }) {
   return (
     <div className="relative flex h-screen w-full flex-col items-center justify-center overflow-hidden p-6" style={{ color: C.text,
       background: `radial-gradient(60% 46% at 50% 20%, #1C2E46 0%, ${C.ink} 62%), radial-gradient(90% 60% at 50% 100%, #0E1A2A 0%, ${C.ink} 55%), ${C.ink}` }}>
@@ -972,6 +979,7 @@ function MenuShell({ children }) {
       <div className="pt9 absolute bottom-2 left-0 right-0 text-center" style={{ ...mono, color: C.dim, opacity: 0.55 }}>
         v{APP_VERSION}
       </div>
+      {overlay}
     </div>
   );
 }
@@ -995,6 +1003,32 @@ export default function PlotTwistWorld() {
   // internal pickingHome state on mount; Game owns the rest of that flow.
   const [freshAccount, setFreshAccount] = useState(false);
   const G = useRef(null);
+
+  // One-shot flag: set by the "Replay tutorial" button on the pause menu,
+  // consumed (and cleared) by Game once it's mounted and actually starts
+  // the tour — see onTutorialStarted below.
+  const [startTutorial, setStartTutorial] = useState(false);
+
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [deleteBusy, setDeleteBusy] = useState(false);
+  const [deleteErr, setDeleteErr] = useState("");
+  // Deleting an auth user needs the service-role key, which must never ship
+  // to the client — this calls the delete-account edge function instead
+  // (see supabase/functions/delete-account), which runs with that key
+  // server-side, then signs the browser out locally.
+  const deleteAccount = async () => {
+    setDeleteBusy(true);
+    setDeleteErr("");
+    try {
+      const { error } = await supabase.functions.invoke("delete-account");
+      if (error) throw error;
+      await signOut();
+    } catch (e) {
+      setDeleteErr(e.message || "Couldn't delete account — try again");
+      setDeleteBusy(false);
+      setConfirmDelete(false);
+    }
+  };
 
   // Reduce-motion: null = no explicit choice, follow the device's own
   // prefers-reduced-motion setting (osReducedMotion, checked live); true/
@@ -1193,10 +1227,24 @@ export default function PlotTwistWorld() {
   // authState === "ready"
   if (!inGame) {
     return (
-      <MenuShell>
+      <MenuShell
+        overlay={confirmDelete && (
+          <Modal onClose={() => !deleteBusy && setConfirmDelete(false)}>
+            <Eyebrow>Delete account &amp; data?</Eyebrow>
+            <div className="mt-3 text-sm leading-relaxed" style={{ color: C.text }}>
+              This permanently deletes your account, wallet, username and every tile you own. There is no undo, and this Google account can never be recovered back into this save.
+            </div>
+            <div className="mt-4 flex gap-2">
+              <Btn full tone="ghost" onClick={() => setConfirmDelete(false)} disabled={deleteBusy}>Cancel</Btn>
+              <Btn full tone="danger" onClick={deleteAccount} disabled={deleteBusy}>{deleteBusy ? "Deleting…" : "Delete everything"}</Btn>
+            </div>
+          </Modal>
+        )}
+      >
         <div className="mx-auto flex w-64 flex-col gap-2.5">
           <Btn full onClick={() => setInGame(true)}>Continue</Btn>
           <Btn full tone="ghost" onClick={() => window.open(`${import.meta.env.BASE_URL}guide.html`, "_blank", "noopener,noreferrer")}>Wiki</Btn>
+          <Btn full tone="ghost" onClick={() => { setStartTutorial(true); setInGame(true); }}>Replay tutorial</Btn>
           <Btn full tone="ghost" onClick={() => setReducedMotion(!reducedEffective)}>
             Reduce motion: {reducedEffective ? "On" : "Off"}
           </Btn>
@@ -1211,18 +1259,22 @@ export default function PlotTwistWorld() {
             </>
           )}
           <Btn full tone="ghost" onClick={() => signOut()}>Sign out</Btn>
+          <Btn full tone="danger" onClick={() => setConfirmDelete(true)}>Delete account &amp; data</Btn>
         </div>
         <div className="pt9 mx-auto mt-3 max-w-xs text-center leading-relaxed" style={{ ...mono, color: C.dim }}>
           Reduce motion follows your device by default — this overrides it just for Plot Twist.
           {pushSupported() && " Energy alerts send one push a day, right when your daily claim energy resets. Attack alerts send one push whenever someone captures one of your tiles."}
+          {" "}Deleting your account removes your wallet, tiles and username permanently — this can't be undone.
           {pushErr && <div style={{ color: "#F08A8A" }}>{pushErr}</div>}
+          {deleteErr && <div style={{ color: "#F08A8A" }}>{deleteErr}</div>}
         </div>
       </MenuShell>
     );
   }
 
   return <Game key={session.user.id} G={G} onExit={() => setInGame(false)} startFresh={freshAccount} reducedOverride={reducedOverride}
-    jumpToQk={jumpToQk} onJumpHandled={() => setJumpToQk(null)} />;
+    jumpToQk={jumpToQk} onJumpHandled={() => setJumpToQk(null)}
+    startTutorial={startTutorial} onTutorialStarted={() => setStartTutorial(false)} />;
 }
 
 function Modal({ children, onClose }) {
@@ -1240,7 +1292,7 @@ function Modal({ children, onClose }) {
    GAME
    ═════════════════════════════════════════════════════════════ */
 
-function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled }) {
+function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled, startTutorial, onTutorialStarted }) {
   const [, force] = useReducer((x) => x + 1, 0);
   // Brand-new accounts (startFresh, seeded once from the mount-time prop —
   // see claimName in PlotTwistWorld) start on a basemap-only "pick your
@@ -1308,8 +1360,6 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled 
   const [nameDraft, setNameDraft] = useState(G.current.name || "");
   const [priceDraft, setPriceDraft] = useState("");
   const [nickDraft, setNickDraft] = useState("");
-  const [confirmDelete, setConfirmDelete] = useState(false);
-  const [deleteBusy, setDeleteBusy] = useState(false);
   const pendings = useRef([]);
   const dirty = useRef(false);
   const regions = useRef(new Map()); // prefix -> {t:{qk:rec}, at}
@@ -2962,23 +3012,6 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled 
     toast(n ? `Renamed to "${n}"` : "Nickname cleared");
   };
 
-  // Deleting an auth user needs the service-role key, which must never ship
-  // to the client — this calls the delete-account edge function instead
-  // (see supabase/functions/delete-account), which runs with that key
-  // server-side, then signs the browser out locally.
-  const deleteAccount = async () => {
-    setDeleteBusy(true);
-    try {
-      const { error } = await supabase.functions.invoke("delete-account");
-      if (error) throw error;
-      await signOut();
-    } catch (e) {
-      toast("Couldn't delete account — " + (e.message || "try again"));
-      setDeleteBusy(false);
-      setConfirmDelete(false);
-    }
-  };
-
   /* ── camera & canvas ── */
   const wrapRef = useRef(null);
   const canvasRef = useRef(null);
@@ -3687,9 +3720,13 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled 
     const viaHash = typeof location !== "undefined" && location.hash.includes("tutorial") && !tutHashUsed.current;
     let pending = false;
     try { pending = localStorage.getItem(`ptw_tutorial:${g.uid}`) === "pending"; } catch { /* ignore */ }
-    if (viaHash || pending) { tutHashUsed.current = true; setTut(1); }
+    if (viaHash || pending || startTutorial) {
+      tutHashUsed.current = true;
+      setTut(1);
+      if (startTutorial) onTutorialStarted?.();
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ready, pickingHome, modal, roll, tut]);
+  }, [ready, pickingHome, modal, roll, tut, startTutorial]);
 
   // Auto-advance steps that teach a real action, off the action itself.
   // Deliberately no dep array: game state lives in mutable refs (g.own,
@@ -5085,23 +5122,6 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled 
               )}
             </div>
 
-            {/* zone: account */}
-            <div className="mb-2 mt-1 flex items-center gap-2">
-              <span className="text-xs font-bold uppercase tracking-wide" style={{ ...display, color: C.text }}>Account</span>
-              <div className="h-px flex-1" style={{ background: C.hair }} />
-            </div>
-
-            <div className="mb-3 rounded-xl p-3" style={cardSty}>
-              <div className="flex flex-wrap gap-2">
-                <Btn small tone="ghost" onClick={() => window.open(`${import.meta.env.BASE_URL}guide.html`, "_blank", "noopener,noreferrer")}>Wiki</Btn>
-                <Btn small tone="ghost" onClick={() => { setTab("map"); setTut(1); }}>Replay tutorial</Btn>
-                <Btn small tone="ghost" onClick={() => { save(); onExit(); signOut(); }}>Sign out</Btn>
-                <Btn small tone="danger" onClick={() => setConfirmDelete(true)}>Delete account &amp; data</Btn>
-              </div>
-              <div className="pt10 mt-2" style={{ ...mono, color: C.dim }}>
-                Deleting removes your wallet, tiles and username permanently. This can't be undone.
-              </div>
-            </div>
             <div className="pt10 pb-2 text-center leading-relaxed" style={{ ...mono, color: C.dim }}>
               Parody idle game. ₲ Geobux are virtual and worth nothing.<br />
               Coastlines are real (Natural Earth data) but simplified — your beach house may be approximate.
@@ -5347,18 +5367,6 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled 
         </Modal>
       )}
 
-      {confirmDelete && (
-        <Modal onClose={() => !deleteBusy && setConfirmDelete(false)}>
-          <Eyebrow>Delete account &amp; data?</Eyebrow>
-          <div className="mt-3 text-sm leading-relaxed" style={{ color: C.text }}>
-            This permanently deletes your account, wallet, username and every tile you own. There is no undo, and this Google account can never be recovered back into this save.
-          </div>
-          <div className="mt-4 flex gap-2">
-            <Btn full tone="ghost" onClick={() => setConfirmDelete(false)} disabled={deleteBusy}>Cancel</Btn>
-            <Btn full tone="danger" onClick={deleteAccount} disabled={deleteBusy}>{deleteBusy ? "Deleting…" : "Delete everything"}</Btn>
-          </div>
-        </Modal>
-      )}
     </div>
   );
 }
