@@ -42,6 +42,14 @@ const VERSION_CHECK_MS = 5 * 60 * 1000;
 // commit, not after the fact.
 const CHANGELOG = [
   {
+    id: "1.15.1",
+    date: "Jul 23, 2026",
+    notes: [
+      "World register and Settings are now their own pause-menu screens instead of two long cards stacked on the main menu.",
+      "Fixed the pause menu clipping off-screen (title and Sign out were unreachable) once it had enough content to overflow the screen.",
+    ],
+  },
+  {
     id: "1.15.0",
     date: "Jul 23, 2026",
     notes: [
@@ -950,7 +958,7 @@ const WORLD_LAND_PATH = "M797.1,36.2L808.5,36.9L814.8,38.3L806.0,43.1L813.9,44.5
 function WorldMap() {
   return (
     <svg viewBox="0 0 1000 500" preserveAspectRatio="xMidYMid meet" aria-hidden="true"
-      className="pt-anim-worldDrift pointer-events-none absolute inset-0 h-full w-full" style={{ opacity: 0.16 }}>
+      className="pt-anim-worldDrift pointer-events-none fixed inset-0 h-full w-full" style={{ opacity: 0.16 }}>
       <defs>
         <linearGradient id="wmGrad" x1="0" y1="0" x2="0" y2="1">
           <stop offset="0%" stopColor={C.amberSoft} />
@@ -963,29 +971,56 @@ function WorldMap() {
   );
 }
 
-function MenuShell({ children, overlay }) {
+// compact: drops the "PLOT TWIST" hero header for menu sub-pages (World
+// register, Settings) so a short back button + card is what greets you,
+// not the full title screen again — and leaves more room before scrolling
+// kicks in.
+function MenuShell({ children, overlay, compact }) {
   return (
-    <div className="relative flex h-screen w-full flex-col items-center justify-center overflow-hidden p-6" style={{ color: C.text,
+    <div className="relative flex h-screen w-full flex-col items-center overflow-y-auto p-6" style={{ color: C.text,
       background: `radial-gradient(60% 46% at 50% 20%, #1C2E46 0%, ${C.ink} 62%), radial-gradient(90% 60% at 50% 100%, #0E1A2A 0%, ${C.ink} 55%), ${C.ink}` }}>
       <style>{`.pt9{font-size:9px}.pt10{font-size:10px}.pt11{font-size:11px}.trk{letter-spacing:.22em}
         @media (min-width: 1600px) { .pt9{font-size:10px}.pt10{font-size:11px}.pt11{font-size:12.5px} }
         @media (min-width: 2200px) { .pt9{font-size:11.5px}.pt10{font-size:13px}.pt11{font-size:14.5px} }`}</style>
       <WorldMap />
-      <div aria-hidden className="pt-anim-glowPulse pointer-events-none absolute rounded-full"
-        style={{ width: 440, height: 440, top: "10%", background: `radial-gradient(circle, ${C.glow} 0%, transparent 72%)`, filter: "blur(18px)" }} />
-      <div className="pt-anim-slideUp relative text-center">
-        <Eyebrow>One shared Earth · ~300 m tiles</Eyebrow>
-        <h1 className="mb-1 mt-2 text-5xl font-bold" style={{ ...display, letterSpacing: ".01em",
-          backgroundImage: C.amberGrad, WebkitBackgroundClip: "text", backgroundClip: "text", color: "transparent",
-          filter: `drop-shadow(0 4px 28px ${C.glow})` }}>PLOT TWIST</h1>
-        <div className="pt11 trk mb-8 uppercase font-semibold" style={{ ...display, color: C.dim }}>World Deed Edition</div>
+      <div aria-hidden className="pt-anim-glowPulse pointer-events-none fixed rounded-full"
+        style={{ width: 440, height: 440, top: "10%", left: "50%", transform: "translateX(-50%)", background: `radial-gradient(circle, ${C.glow} 0%, transparent 72%)`, filter: "blur(18px)" }} />
+      {/* my-auto (not justify-center on the scroll parent) centers this when
+          short without clipping its top when it's tall enough to scroll —
+          justify-content:center on an overflow:auto flex container clips
+          the overflowing start instead of scrolling to it. */}
+      <div className="pt-anim-slideUp relative my-auto w-full py-4 text-center">
+        {!compact && (
+          <>
+            <Eyebrow>One shared Earth · ~300 m tiles</Eyebrow>
+            <h1 className="mb-1 mt-2 text-5xl font-bold" style={{ ...display, letterSpacing: ".01em",
+              backgroundImage: C.amberGrad, WebkitBackgroundClip: "text", backgroundClip: "text", color: "transparent",
+              filter: `drop-shadow(0 4px 28px ${C.glow})` }}>PLOT TWIST</h1>
+            <div className="pt11 trk mb-8 uppercase font-semibold" style={{ ...display, color: C.dim }}>World Deed Edition</div>
+          </>
+        )}
         {children}
       </div>
-      <div className="pt9 absolute bottom-2 left-0 right-0 text-center" style={{ ...mono, color: C.dim, opacity: 0.55 }}>
+      <div className="pt9 fixed bottom-2 left-0 right-0 text-center" style={{ ...mono, color: C.dim, opacity: 0.55 }}>
         v{APP_VERSION}
       </div>
       {overlay}
     </div>
+  );
+}
+
+// Back-to-main-menu pill for pause-menu sub-pages (World register,
+// Settings) — same pill-with-chevron shape as Game's own "Menu" button.
+function MenuBackBtn({ onClick }) {
+  return (
+    <button onClick={onClick}
+      className="mb-1 flex items-center gap-1.5 self-start rounded-full py-1 pl-1.5 pr-2.5 transition-colors hover:bg-white/[0.08] active:scale-95 focus-visible:outline focus-visible:outline-2"
+      style={{ border: `1px solid ${C.hairLit}`, background: `${C.panel}b3`, outlineColor: C.amber, ...blur(8) }}>
+      <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full" style={{ background: `${C.amber}22`, color: C.amber }}>
+        <IconChevronLeft size={13} />
+      </span>
+      <span className="pt9 trk uppercase font-semibold" style={{ ...display, color: C.text }}>Menu</span>
+    </button>
   );
 }
 
@@ -1008,6 +1043,13 @@ export default function PlotTwistWorld() {
   // internal pickingHome state on mount; Game owns the rest of that flow.
   const [freshAccount, setFreshAccount] = useState(false);
   const G = useRef(null);
+
+  // Which pause-menu screen is showing: "main" | "leaderboard" | "settings".
+  // Lives here (not inside the pause-menu render) because the component
+  // never unmounts between menu visits — reset to "main" whenever the
+  // player heads back into the game, so reopening the menu later doesn't
+  // strand them on a sub-page they left days ago.
+  const [menuView, setMenuView] = useState("main");
 
   // One-shot flag: set by the "Replay tutorial" button on the pause menu,
   // consumed (and cleared) by Game once it's mounted and actually starts
@@ -1255,75 +1297,74 @@ export default function PlotTwistWorld() {
 
   // authState === "ready"
   if (!inGame) {
-    return (
-      <MenuShell
-        overlay={<>
-          {confirmDelete && (
-            <Modal onClose={() => !deleteBusy && setConfirmDelete(false)}>
-              <Eyebrow>Delete account &amp; data?</Eyebrow>
-              <div className="mt-3 text-sm leading-relaxed" style={{ color: C.text }}>
-                This permanently deletes your account, wallet, username and every tile you own. There is no undo, and this Google account can never be recovered back into this save.
-              </div>
-              <div className="mt-4 flex gap-2">
-                <Btn full tone="ghost" onClick={() => setConfirmDelete(false)} disabled={deleteBusy}>Cancel</Btn>
-                <Btn full tone="danger" onClick={deleteAccount} disabled={deleteBusy}>{deleteBusy ? "Deleting…" : "Delete everything"}</Btn>
-              </div>
-            </Modal>
-          )}
-          {pmStats && (
-            <Modal onClose={() => setPmStats(null)}>
-              <Eyebrow>{pmStats.name}</Eyebrow>
-              {pmStats.loading ? (
-                <div className="pt11 py-6 text-center" style={{ ...mono, color: C.dim }}>Loading…</div>
-              ) : !pmStats.row ? (
-                <div className="pt11 py-4" style={{ ...mono, color: C.dim }}>Couldn't load their stats — try again.</div>
-              ) : (() => {
-                const row = pmStats.row;
-                const status = statusFor(row.peak_net_worth || 0);
-                const ach = row.ach || {};
-                return (
-                  <>
-                    <div className="mt-2 flex items-center justify-between gap-2">
-                      <Chip color={C.amber}>{status.name}</Chip>
-                      <span className="pt10" style={{ ...mono, color: C.dim }}>₲{fmt(row.peak_net_worth || 0)} peak</span>
-                    </div>
-                    <div className="my-2 text-3xl font-bold" style={{ ...mono, color: C.amber, textShadow: `0 0 26px ${C.glow}` }}>
-                      ₲{fmt(row.net_worth || 0)}
-                    </div>
-                    <div className="pt10 mb-2" style={{ ...mono, color: C.dim }}>net worth · {row.tile_count || 0} tile{row.tile_count === 1 ? "" : "s"}</div>
-                    <Eyebrow>Commendations</Eyebrow>
-                    <div className="mt-2 flex flex-wrap gap-1.5">
-                      {ACH.map((a) => (
-                        <span key={a.k} title={a.desc} className="pt10 rounded-full px-2.5 py-1 font-bold"
-                          style={{
-                            ...display,
-                            color: ach[a.k] ? C.ink : C.dim,
-                            background: ach[a.k] ? C.amber : C.panel,
-                            border: `1px solid ${ach[a.k] ? C.amber : C.hairLit}`,
-                          }}>
-                          {a.name}
-                        </span>
-                      ))}
-                    </div>
-                  </>
-                );
-              })()}
-              <Btn full tone="ghost" onClick={() => setPmStats(null)}>Close</Btn>
-            </Modal>
-          )}
-        </>}
-      >
-        <div className="mx-auto flex w-72 flex-col gap-2.5">
-          <Btn full onClick={() => setInGame(true)}>Continue</Btn>
-          <Btn full tone="ghost" onClick={() => window.open(`${import.meta.env.BASE_URL}guide.html`, "_blank", "noopener,noreferrer")}>Wiki</Btn>
-          <Btn full tone="ghost" onClick={() => { setStartTutorial(true); setInGame(true); }}>Replay tutorial</Btn>
+    // Shared across all three pause-menu screens (main/leaderboard/settings)
+    // since either modal can be triggered from whichever one is showing.
+    const overlay = <>
+      {confirmDelete && (
+        <Modal onClose={() => !deleteBusy && setConfirmDelete(false)}>
+          <Eyebrow>Delete account &amp; data?</Eyebrow>
+          <div className="mt-3 text-sm leading-relaxed" style={{ color: C.text }}>
+            This permanently deletes your account, wallet, username and every tile you own. There is no undo, and this Google account can never be recovered back into this save.
+          </div>
+          <div className="mt-4 flex gap-2">
+            <Btn full tone="ghost" onClick={() => setConfirmDelete(false)} disabled={deleteBusy}>Cancel</Btn>
+            <Btn full tone="danger" onClick={deleteAccount} disabled={deleteBusy}>{deleteBusy ? "Deleting…" : "Delete everything"}</Btn>
+          </div>
+        </Modal>
+      )}
+      {pmStats && (
+        <Modal onClose={() => setPmStats(null)}>
+          <Eyebrow>{pmStats.name}</Eyebrow>
+          {pmStats.loading ? (
+            <div className="pt11 py-6 text-center" style={{ ...mono, color: C.dim }}>Loading…</div>
+          ) : !pmStats.row ? (
+            <div className="pt11 py-4" style={{ ...mono, color: C.dim }}>Couldn't load their stats — try again.</div>
+          ) : (() => {
+            const row = pmStats.row;
+            const status = statusFor(row.peak_net_worth || 0);
+            const ach = row.ach || {};
+            return (
+              <>
+                <div className="mt-2 flex items-center justify-between gap-2">
+                  <Chip color={C.amber}>{status.name}</Chip>
+                  <span className="pt10" style={{ ...mono, color: C.dim }}>₲{fmt(row.peak_net_worth || 0)} peak</span>
+                </div>
+                <div className="my-2 text-3xl font-bold" style={{ ...mono, color: C.amber, textShadow: `0 0 26px ${C.glow}` }}>
+                  ₲{fmt(row.net_worth || 0)}
+                </div>
+                <div className="pt10 mb-2" style={{ ...mono, color: C.dim }}>net worth · {row.tile_count || 0} tile{row.tile_count === 1 ? "" : "s"}</div>
+                <Eyebrow>Commendations</Eyebrow>
+                <div className="mt-2 flex flex-wrap gap-1.5">
+                  {ACH.map((a) => (
+                    <span key={a.k} title={a.desc} className="pt10 rounded-full px-2.5 py-1 font-bold"
+                      style={{
+                        ...display,
+                        color: ach[a.k] ? C.ink : C.dim,
+                        background: ach[a.k] ? C.amber : C.panel,
+                        border: `1px solid ${ach[a.k] ? C.amber : C.hairLit}`,
+                      }}>
+                      {a.name}
+                    </span>
+                  ))}
+                </div>
+              </>
+            );
+          })()}
+          <Btn full tone="ghost" onClick={() => setPmStats(null)}>Close</Btn>
+        </Modal>
+      )}
+    </>;
 
-          <div className="rounded-xl p-3 text-left" style={cardSty}>
-            <div className="mb-2 flex items-center justify-between">
-              <Eyebrow>World register · top landlords</Eyebrow>
-              <button onClick={refreshLB} className="pt11 focus-visible:outline focus-visible:outline-2" style={{ ...mono, color: C.amber, outlineColor: C.amber }}>Refresh</button>
-            </div>
-            <div className="max-h-56 overflow-y-auto">
+    if (menuView === "leaderboard") {
+      return (
+        <MenuShell compact overlay={overlay}>
+          <div className="mx-auto flex w-72 flex-col gap-2.5 text-left">
+            <MenuBackBtn onClick={() => setMenuView("main")} />
+            <div className="rounded-xl p-3" style={cardSty}>
+              <div className="mb-2 flex items-center justify-between">
+                <Eyebrow>World register · top landlords</Eyebrow>
+                <button onClick={refreshLB} className="pt11 focus-visible:outline focus-visible:outline-2" style={{ ...mono, color: C.amber, outlineColor: C.amber }}>Refresh</button>
+              </div>
               {lb.loading ? (
                 <div className="pt11 py-2" style={{ ...mono, color: C.dim }}>Pulling records…</div>
               ) : lb.rows && lb.rows.length ? (
@@ -1356,34 +1397,54 @@ export default function PlotTwistWorld() {
               )}
             </div>
           </div>
+        </MenuShell>
+      );
+    }
 
-          <div className="rounded-xl p-3 text-left" style={cardSty}>
-            <div className="mb-2"><Eyebrow>Settings</Eyebrow></div>
-            <div className="flex flex-col gap-2">
-              <Btn full tone="ghost" onClick={() => setReducedMotion(!reducedEffective)}>
-                Reduce motion: {reducedEffective ? "On" : "Off"}
-              </Btn>
-              {pushSupported() && (
-                <>
-                  <Btn full tone="ghost" onClick={() => togglePushAlert("energyAlerts")} disabled={pushBusy}>
-                    Energy alerts: {pushBusy ? "…" : pushPrefs.energyAlerts ? "On" : "Off"}
-                  </Btn>
-                  <Btn full tone="ghost" onClick={() => togglePushAlert("attackAlerts")} disabled={pushBusy}>
-                    Attack alerts: {pushBusy ? "…" : pushPrefs.attackAlerts ? "On" : "Off"}
-                  </Btn>
-                </>
-              )}
-              <Btn full tone="danger" onClick={() => setConfirmDelete(true)}>Delete account &amp; data</Btn>
-            </div>
-            <div className="pt10 mt-2" style={{ ...mono, color: C.dim }}>
-              Reduce motion follows your device by default — this overrides it just for Plot Twist.
-              {pushSupported() && " Energy alerts send one push a day, right when your daily claim energy resets. Attack alerts send one push whenever someone captures one of your tiles."}
-              {" "}Deleting your account removes your wallet, tiles and username permanently — this can't be undone.
-              {pushErr && <div style={{ color: "#F08A8A" }}>{pushErr}</div>}
-              {deleteErr && <div style={{ color: "#F08A8A" }}>{deleteErr}</div>}
+    if (menuView === "settings") {
+      return (
+        <MenuShell compact overlay={overlay}>
+          <div className="mx-auto flex w-72 flex-col gap-2.5 text-left">
+            <MenuBackBtn onClick={() => setMenuView("main")} />
+            <div className="rounded-xl p-3" style={cardSty}>
+              <div className="mb-2"><Eyebrow>Settings</Eyebrow></div>
+              <div className="flex flex-col gap-2">
+                <Btn full tone="ghost" onClick={() => setReducedMotion(!reducedEffective)}>
+                  Reduce motion: {reducedEffective ? "On" : "Off"}
+                </Btn>
+                {pushSupported() && (
+                  <>
+                    <Btn full tone="ghost" onClick={() => togglePushAlert("energyAlerts")} disabled={pushBusy}>
+                      Energy alerts: {pushBusy ? "…" : pushPrefs.energyAlerts ? "On" : "Off"}
+                    </Btn>
+                    <Btn full tone="ghost" onClick={() => togglePushAlert("attackAlerts")} disabled={pushBusy}>
+                      Attack alerts: {pushBusy ? "…" : pushPrefs.attackAlerts ? "On" : "Off"}
+                    </Btn>
+                  </>
+                )}
+                <Btn full tone="danger" onClick={() => setConfirmDelete(true)}>Delete account &amp; data</Btn>
+              </div>
+              <div className="pt10 mt-2" style={{ ...mono, color: C.dim }}>
+                Reduce motion follows your device by default — this overrides it just for Plot Twist.
+                {pushSupported() && " Energy alerts send one push a day, right when your daily claim energy resets. Attack alerts send one push whenever someone captures one of your tiles."}
+                {" "}Deleting your account removes your wallet, tiles and username permanently — this can't be undone.
+                {pushErr && <div style={{ color: "#F08A8A" }}>{pushErr}</div>}
+                {deleteErr && <div style={{ color: "#F08A8A" }}>{deleteErr}</div>}
+              </div>
             </div>
           </div>
+        </MenuShell>
+      );
+    }
 
+    return (
+      <MenuShell overlay={overlay}>
+        <div className="mx-auto flex w-64 flex-col gap-2.5">
+          <Btn full onClick={() => { setMenuView("main"); setInGame(true); }}>Continue</Btn>
+          <Btn full tone="ghost" onClick={() => window.open(`${import.meta.env.BASE_URL}guide.html`, "_blank", "noopener,noreferrer")}>Wiki</Btn>
+          <Btn full tone="ghost" onClick={() => { setStartTutorial(true); setInGame(true); }}>Replay tutorial</Btn>
+          <Btn full tone="ghost" onClick={() => setMenuView("leaderboard")}>World register</Btn>
+          <Btn full tone="ghost" onClick={() => setMenuView("settings")}>Settings</Btn>
           <Btn full tone="ghost" onClick={() => signOut()}>Sign out</Btn>
         </div>
       </MenuShell>
