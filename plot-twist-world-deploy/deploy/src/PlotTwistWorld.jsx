@@ -42,6 +42,19 @@ const VERSION_CHECK_MS = 5 * 60 * 1000;
 // commit, not after the fact.
 const CHANGELOG = [
   {
+    id: "1.22.0",
+    date: "Jul 27, 2026",
+    notes: [
+      "The tutorial now points at things. Every step dims the screen around the actual button, counter or tile it's talking about — including your own land on the map, which stays lit while you pan and zoom.",
+      "Steps that teach you an action now wait for you to do it instead of offering a Next button. Sit on one for 20 seconds and it'll offer to skip itself; \"Skip tour\" is always there.",
+      "Eight shorter steps instead of five long ones, and the tour ends on your portfolio rather than the map.",
+      "New: tips that show up the first time something matters — rent collecting itself, unlocking territory, running out of energy, rewards waiting to be claimed, your first raid, and what redeveloping does (one level before you can do it).",
+      "Any tile you can still build on now says what happens at Tower, so redeveloping stops being something you find by accident.",
+      "Finishing the tutorial on one device now counts on all of them.",
+      "New accounts start with a free rush credit — your first build timer is on the house.",
+    ],
+  },
+  {
     id: "1.20.0",
     date: "Jul 27, 2026",
     notes: [
@@ -407,33 +420,180 @@ const CHANGELOG = [
   },
 ];
 
-// Interactive first-run tutorial, shown once to brand-new accounts right
-// after they claim their first tile (and replayable from HQ, or via a
-// #tutorial URL hash — same pattern as #debug). Steps 2 and 3 also
-// auto-advance off the real action they teach (starting a build / zooming
-// to world view); every step is skippable so no game state can ever
-// strand it. Per-account progress lives in localStorage under
-// `ptw_tutorial:<uid>` ("pending" → "done").
+/* ── onboarding: the guided tour + just-in-time tips ──────────────────
+   Both tables are consumed by the same generic effect in Game (see the
+   "onboarding" section there) and rendered by the same <Coach> overlay,
+   which dims the screen around a cutout on the step's real target.
+
+   Anchors come in two kinds:
+     { dom: "energy" }  — queried via a data-tut attribute
+     { qk: ctx => ... } — a quadkey, projected through the live camera so
+                          the spotlight lands on an actual tile ON the map
+                          and tracks it while the player pans.
+
+   Step kinds:
+     "beat"   — explanation. Has Next, soft (non-blocking) dim.
+     "action" — teaches a verb. NO Next; advances only when advanceOn()
+                fires, and everything outside the cutout is click-blocked.
+
+   Two rules keep action steps from ever stranding a player:
+     1. onEnter() normalizes state so the instruction is always true-to-do
+        (fly to an off-screen tile, close a sheet that's already open, zoom
+        back in if a replaying veteran is already at world view). This is
+        why most steps need no baseline diffing — the state is *made* to
+        match the step rather than compared against entry.
+     2. After TUT_ESCAPE_MS with no progress, a "Skip this step" link
+        appears. "Skip tour" is always there.
+
+   Per-account progress lives on profiles.tutorial (see mark_tutorial in
+   supabase.sql), NOT localStorage — a player who switches device would
+   otherwise replay the whole thing. localStorage is kept as an offline
+   mirror so a failed round-trip can't re-run the tour. */
+
+const TUT_ESCAPE_MS = 20000;
+
 const TUT_STEPS = [
   {
+    id: "deed",
+    kind: "beat",
+    anchor: { qk: (ctx) => ctx.homeQk },
     title: "Your first deed",
-    text: "This ~300 m square of real Earth is yours — the sheet below shows its property classification (the kind of land it sits on) and rent. It earns ₲ every second, even while you're offline.",
+    // Only brags about the roll when there's something to brag about —
+    // "a permanent ×1 on its rent" is not a thing to celebrate, and most
+    // first tiles roll Common.
+    text: (ctx) =>
+      `This ~300 m square of real Earth is yours${ctx.homeRarity?.m > 1 ? ` — and it rolled ${ctx.homeRarity.name}, a permanent ×${ctx.homeRarity.m} on its rent` : ""}.`,
   },
   {
-    title: "Build it up",
-    text: "Tap your tile on the map to open it, then hit Upgrade in the sheet that pops up. Building takes real time — as little as 5 minutes for a Cottage — and each level pays noticeably more rent.",
+    id: "income",
+    kind: "beat",
+    anchor: { dom: "balance" },
+    title: "It's already earning",
+    text: "That number climbs every second — including while the app is shut.",
   },
   {
+    id: "select",
+    kind: "action",
+    anchor: { qk: (ctx) => ctx.homeQk },
+    title: "Open your tile",
+    text: "Tap it on the map.",
+    // Close the sheet if it's already open on this tile, so the thing we're
+    // asking for is actually available to do (replay case, mostly).
+    onEnter: (ctx) => { if (ctx.sel) ctx.setSel(null); ctx.showTile(ctx.homeQk); },
+    advanceOn: (ctx) => ctx.sel === ctx.homeQk,
+  },
+  {
+    id: "build",
+    kind: "action",
+    anchor: { dom: "build-btn" },
+    side: "above-sheet",
+    title: "Build on it",
+    text: "Each level pays noticeably more rent.",
+    baseline: (ctx) => ctx.buildingCount,
+    advanceOn: (ctx, base) => ctx.buildingCount > base,
+  },
+  {
+    id: "timer",
+    kind: "beat",
+    anchor: { dom: "build-progress" },
+    side: "above-sheet",
+    title: "Building takes real time",
+    text: (ctx) => `Five minutes for a Cottage, and it runs while you're away. You can have ${ctx.slots} going at once.`,
+  },
+  {
+    id: "zoomout",
+    kind: "action",
+    anchor: { dom: "zoom-out" },
+    // The one action step that must NOT block: the natural way to zoom out
+    // is a pinch on the map, and the map is exactly what the dim would be
+    // covering. Spotlight the − button as the discoverable route, but leave
+    // pinch and the globe button working.
+    block: false,
     title: "Zoom way out",
-    text: "Pinch or tap − until you can see the whole world. Your region glows blue from up there; rival players' tiles show red.",
+    text: "Your land glows blue from up there. Rivals show red.",
+    // A veteran replaying the tour may already be at world view — put them
+    // back over their own tile so there's something to zoom out FROM.
+    onEnter: (ctx) => { if (ctx.worldView) ctx.showTile(ctx.homeQk); },
+    advanceOn: (ctx) => ctx.worldView,
   },
   {
+    id: "energy",
+    kind: "beat",
+    anchor: { dom: "energy" },
     title: "Claim energy",
-    text: "The ⚡ counter at the top is today's claim energy — buying any new unowned tile spends one. It refills daily, and your cap grows with status.",
+    text: (ctx) => `Claiming unowned land spends one. You get ${ctx.energyCap} a day, in two refills at 00:00 and 12:00 UTC.`,
   },
   {
-    title: "You're set",
-    text: "That's the loop: claim, build, collect, expand. Trading, attacks and landmarks are out there too — you'll meet them as you go. Good luck, landlord.",
+    id: "assets",
+    kind: "action",
+    anchor: { dom: "nav-assets" },
+    title: "Everything you own",
+    text: "Your whole portfolio lives here.",
+    onEnter: (ctx) => { if (ctx.tab === "assets") ctx.setTab("map"); },
+    advanceOn: (ctx) => ctx.tab === "assets",
+  },
+];
+
+/* One-shot coach marks, fired the first time each mechanic actually
+   becomes relevant. This is where the game's depth gets taught — the tour
+   deliberately covers none of it, because a new player 90 seconds in has
+   no frame for contracts, prestige or PvP.
+
+   A tip fires when when() is true AND its anchor resolves; if the anchor
+   isn't on screen yet it simply waits, which is why every `when` below is
+   written to imply its own anchor's presence. Suppressed entirely while
+   the tour is running, and only ever one at a time.
+
+   Deliberately NOT tipped: market, friends/DMs, listing, landmarks — all
+   discoverable by browsing, none punishing to miss. Six good tips beat
+   twelve that turn the game into a popup gallery. */
+const TIPS = [
+  {
+    id: "build_done",
+    when: (ctx) => ctx.g.own.some((t) => (t.l || 0) > 0 && !t.bu),
+    anchor: { dom: "balance" },
+    title: "Rent collects itself",
+    text: "Nothing to tap, ever. Finished buildings pay into your balance around the clock.",
+  },
+  {
+    id: "region_locked",
+    when: (ctx) => ctx.selLocked,
+    anchor: { dom: "unlock-btn" },
+    side: "above-sheet",
+    title: "New ground costs",
+    text: "Land outside your territory has to be scouted first. Each region you unlock costs more than the last.",
+  },
+  {
+    id: "energy_zero",
+    when: (ctx) => energyNow(ctx.g) === 0,
+    anchor: { dom: "energy" },
+    title: "Out of energy",
+    text: "You're done claiming new land today. It refills in two halves, at 00:00 and 12:00 UTC — and the cap grows with your status.",
+  },
+  {
+    id: "contract_ready",
+    when: (ctx) => ctx.claimable > 0,
+    anchor: { dom: "nav-profile" },
+    title: "Something's waiting",
+    text: "Contracts and collections pay out on the Profile tab. Collections never expire.",
+  },
+  {
+    id: "attacked",
+    when: (ctx) => ctx.g.hasUnseenLoss,
+    anchor: { dom: "nav-world" },
+    title: "You were raided",
+    text: "Other players can take your tiles. The World tab has the details of what happened.",
+  },
+  {
+    // Level 3, not 4, and deliberately: at Tower you'd be explaining a thing
+    // they already have, whereas here they're one build away and it's a
+    // reason to finish.
+    id: "tower_next",
+    when: (ctx) => ctx.selMine && ctx.selMine.l === MAX_LVL - 1 && !ctx.selMine.bu,
+    anchor: { dom: "build-btn" },
+    side: "above-sheet",
+    title: "One from the top",
+    text: "Finish this and you can redevelop: back to Vacant, but +25% rent on this tile forever, and repeatable.",
   },
 ];
 
@@ -954,6 +1114,11 @@ const gameFromProfile = (uid, profile) => ({
   // before it charges ₲ (see supabase.sql's Contracts section)
   rushCredits: profile.rush_credits || 0,
   attacksSent: profile.attacks_sent_count || 0,
+  // onboarding progress — see mark_tutorial in supabase.sql. Flat keys:
+  // { tour: "pending"|"done", step: n, tip_<id>: 1 }. On the profile rather
+  // than localStorage so a player who switches device doesn't replay the
+  // tour or re-see every tip.
+  tutorial: profile.tutorial || {},
   devMode: profile.dev_mode || false,
   hasUnseenLoss: false, // pure client-side cosmetic flag, never persisted server-side — see collectBattles
   rps: 0,
@@ -1015,7 +1180,8 @@ const IconChevronLeft = (p) => (
   </Icon>
 );
 
-function Btn({ children, onClick, disabled, tone = "amber", full, small }) {
+// `tut` tags the button as an onboarding anchor target — see resolveAnchor.
+function Btn({ children, onClick, disabled, tone = "amber", full, small, tut }) {
   const tones = {
     amber: {
       backgroundImage: C.amberGrad,
@@ -1030,6 +1196,7 @@ function Btn({ children, onClick, disabled, tone = "amber", full, small }) {
     <button
       onClick={onClick}
       disabled={disabled}
+      data-tut={tut}
       className={`rounded-xl font-semibold tracking-wide transition-all duration-150 ease-out focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 ${
         small ? "px-3 py-1.5 text-xs" : "px-4 py-2.5 text-sm"
       } ${full ? "w-full" : ""} ${disabled ? "opacity-35" : "hover:brightness-110 active:scale-[0.97] active:brightness-95"}`}
@@ -1584,6 +1751,158 @@ function Modal({ children, onClose }) {
       <div className="w-full max-w-sm rounded-2xl p-5 pt-anim-popIn" onClick={(e) => e.stopPropagation()}
         style={{ background: `${C.panel}f5`, backgroundImage: C.panelGrad, border: `1px solid ${C.hairLit}`, boxShadow: C.shadowLg }}>
         {children}
+      </div>
+    </div>
+  );
+}
+
+/* ── onboarding overlay ──────────────────────────────────────────────
+   Shared by the guided tour and the one-shot tips (see TUT_STEPS / TIPS
+   above). Dims the screen around a cutout on the step's real target and
+   parks a bubble next to it.
+
+   Viewport coordinates throughout, and the overlay is position:fixed — the
+   game root is a full-screen flex column with no transformed ancestor, so
+   getBoundingClientRect values drop straight in with no offset math. */
+
+// Resolves an anchor spec to a viewport rect, or null if its target isn't
+// on screen (a caller that gets null renders the bubble centered with no
+// spotlight, or waits — see the tip gate in Game).
+function resolveAnchor(anchor, ctx) {
+  if (!anchor) return null;
+  if (anchor.dom) {
+    const el = typeof document !== "undefined" && document.querySelector(`[data-tut="${anchor.dom}"]`);
+    if (!el) return null;
+    const r = el.getBoundingClientRect();
+    if (!r.width || !r.height) return null;
+    return { x: r.left, y: r.top, w: r.width, h: r.height };
+  }
+  if (anchor.qk) {
+    const qk = typeof anchor.qk === "function" ? anchor.qk(ctx) : anchor.qk;
+    const cv = ctx.canvasEl, cam = ctx.cam;
+    if (!qk || !cv || !cam || !cam.s) return null;
+    // cam.s is the whole world's width in px and screen = world * s + cam
+    // offset (same transform draw() uses), so a tile's box is just its
+    // fractional position in world space scaled up. Recomputed by the
+    // caller every render, which is what keeps it stuck to the map.
+    const [tx, ty] = txyOf(qk);
+    const n = 1 << qk.length;
+    const cr = cv.getBoundingClientRect();
+    const px = (tx / n) * cam.s + cam.x, py = (ty / n) * cam.s + cam.y;
+    const sz = cam.s / n;
+    // Tiny at low zoom — floor the highlight so there's something to see.
+    const pad = Math.max(0, (44 - sz) / 2);
+    const rect = { x: cr.left + px - pad, y: cr.top + py - pad, w: sz + pad * 2, h: sz + pad * 2 };
+    // Off-screen (or mostly): treat as unresolved rather than pointing at
+    // the edge of the viewport.
+    if (rect.x + rect.w < cr.left || rect.x > cr.right || rect.y + rect.h < cr.top || rect.y > cr.bottom) return null;
+    return rect;
+  }
+  return null;
+}
+
+function Coach({
+  rect, label, title, text,
+  onNext, nextLabel = "Next",
+  onDismiss, dismissLabel,
+  onSkipStep,          // escape hatch; only rendered once non-null
+  blocking,            // action steps swallow clicks outside the cutout
+  side = "auto",
+}) {
+  const vw = typeof window === "undefined" ? 0 : window.innerWidth;
+  const vh = typeof window === "undefined" ? 0 : window.innerHeight;
+  // BUBBLE_H is a conservative estimate, not a measurement — it only ever
+  // decides between two placements, so being a little generous costs
+  // nothing while measuring would cost a second render pass.
+  const PAD = 6, GAP = 12, BW = 320, BUBBLE_H = 150;
+
+  const hole = rect
+    ? { x: rect.x - PAD, y: rect.y - PAD, w: rect.w + PAD * 2, h: rect.h + PAD * 2 }
+    : null;
+
+  // Bubble placement. "above-sheet" pins it above the tile sheet's top edge
+  // rather than the cutout — for a target INSIDE the sheet (the Build
+  // button), hugging the button would put the bubble on top of the sheet's
+  // own content, and pinning it to the top of a phone screen while talking
+  // about a button at the bottom is the exact failure this replaces.
+  let place;
+  if (!hole) {
+    place = { left: Math.max(12, (vw - BW) / 2), top: Math.max(12, vh * 0.28), width: Math.min(BW, vw - 24) };
+  } else {
+    const sheet = typeof document !== "undefined" && document.querySelector('[data-tut="tile-sheet"]');
+    const sheetTop = side === "above-sheet" && sheet ? sheet.getBoundingClientRect().top : null;
+    const width = Math.min(BW, vw - 24);
+    const left = Math.max(12, Math.min(vw - width - 12, hole.x + hole.w / 2 - width / 2));
+    // A tall sheet (a developed tile carries several chip rows) can leave
+    // too little headroom above it to park a bubble — fall back to the top
+    // of the screen rather than pushing it off the edge.
+    if (sheetTop != null && sheetTop > BUBBLE_H + 24) {
+      place = { left, width, bottom: Math.max(12, vh - sheetTop + GAP) };
+    } else if (sheetTop != null) {
+      place = { left, width, top: 12 };
+    } else if (side === "above" || (side === "auto" && hole.y > vh * 0.55)) {
+      place = { left, width, bottom: Math.max(12, vh - hole.y + GAP) };
+    } else {
+      place = { left, width, top: Math.min(vh - 140, hole.y + hole.h + GAP) };
+    }
+  }
+
+  // Four rects around the cutout rather than an SVG mask: simpler, and it
+  // leaves the hole genuinely empty so clicks land on the real element
+  // underneath with no pointer-events trickery.
+  const dim = "rgba(4,9,16,0.66)";
+  const shades = hole
+    ? [
+        { left: 0, top: 0, width: vw, height: Math.max(0, hole.y) },
+        { left: 0, top: hole.y + hole.h, width: vw, height: Math.max(0, vh - hole.y - hole.h) },
+        { left: 0, top: hole.y, width: Math.max(0, hole.x), height: hole.h },
+        { left: hole.x + hole.w, top: hole.y, width: Math.max(0, vw - hole.x - hole.w), height: hole.h },
+      ]
+    : [{ left: 0, top: 0, width: vw, height: vh }];
+
+  return (
+    <div className="fixed inset-0 z-50" style={{ pointerEvents: "none" }}>
+      {shades.map((s, i) => (
+        <div key={i} className="absolute pt-anim-fadeIn"
+          // Blocking is conditional on there BEING a cutout. Without that
+          // guard, a step whose anchor briefly fails to resolve would cover
+          // the screen in an opaque dim with no hole and nothing clickable
+          // — a genuine trap rather than a nudge.
+          style={{ ...s, background: dim, pointerEvents: blocking && hole ? "auto" : "none" }} />
+      ))}
+      {hole && (
+        <div className="absolute rounded-xl pt-anim-popIn" style={{
+          left: hole.x, top: hole.y, width: hole.w, height: hole.h,
+          border: `2px solid ${C.amber}`, boxShadow: `0 0 0 3px ${C.amber}33, 0 0 22px ${C.amber}66`,
+          pointerEvents: "none",
+        }} />
+      )}
+      <div className="absolute pt-anim-popIn rounded-2xl p-3.5" style={{
+        ...place, pointerEvents: "auto",
+        background: `${C.panel}f7`, border: `1px solid ${C.amber}55`, boxShadow: C.shadowLg, ...blur(14),
+      }}>
+        {label && <div className="pt9 trk uppercase font-semibold" style={{ ...display, color: C.amber }}>{label}</div>}
+        <div className="mt-1 text-sm font-bold" style={{ ...display, color: C.text }}>{title}</div>
+        <div className="pt11 mt-1 leading-relaxed" style={{ color: C.dim }}>{text}</div>
+        <div className="mt-3 flex items-center justify-between gap-2">
+          <div className="flex flex-col items-start gap-1">
+            {onDismiss && (
+              <button onClick={onDismiss}
+                className="pt10 underline decoration-dotted underline-offset-2 focus-visible:outline focus-visible:outline-2"
+                style={{ ...mono, color: C.dim, outlineColor: C.amber }}>
+                {dismissLabel}
+              </button>
+            )}
+            {onSkipStep && (
+              <button onClick={onSkipStep}
+                className="pt10 underline decoration-dotted underline-offset-2 focus-visible:outline focus-visible:outline-2"
+                style={{ ...mono, color: C.dim, outlineColor: C.amber }}>
+                Skip this step
+              </button>
+            )}
+          </div>
+          {onNext && <Btn small onClick={onNext}>{nextLabel}</Btn>}
+        </div>
       </div>
     </div>
   );
@@ -4120,20 +4439,106 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
     };
   }, [ready, pickingHome, mergeFeed]);
 
-  /* ── first-run tutorial ── */
-  // Mark the tour pending the moment a brand-new account exists, NOT when
-  // it first renders — startFresh is only true on the mount right after
-  // claim_username, so without this flag a refresh at step 2 would lose
-  // the tutorial forever (startFresh false on reload, done flag never
-  // written). Keyed by uid because localStorage is per-device, not
-  // per-account, and two accounts can share one browser.
+  /* ── onboarding: guided tour + just-in-time tips ──────────────────
+     Driven entirely from the TUT_STEPS / TIPS tables at the top of this
+     file and rendered by <Coach>. The step contract is documented there;
+     this is the machinery that runs it. */
+
+  // Centers the camera on a tile WITHOUT selecting it — unlike jumpToTile,
+  // which also sets sel. Step 3's whole job is getting the player to tap
+  // their own tile, so it must not tap it for them.
+  const tutFocusTile = useCallback((qk) => {
+    if (!qk) return;
+    setTab("map");
+    const [wx, wy] = centerOfQk(qk);
+    const { w, h } = size.current;
+    const s = N * 16;
+    cam.current = { s, x: w / 2 - wx * s, y: h / 2 - wy * s, init: true };
+    ensureRegion(regionOf(qk), true);
+    prefetchVectorTiles();
+  }, [ensureRegion, prefetchVectorTiles]);
+
+  // The tile the tour points at. A fresh account owns exactly one; on a
+  // replay, prefer one that's actually buildable, or step 4 would anchor to
+  // a Build button that isn't rendered (landmarks can't be developed at
+  // all, and a tile mid-build or already at Tower shows different controls).
+  const tutHomeQk = (() => {
+    const buildable = g.own.find((t) => !t.bu && (t.l || 0) < MAX_LVL && !landmarksByQk.current.has(t.qk));
+    return (buildable || g.own[0])?.qk || null;
+  })();
+
+  // Everything the predicates, onEnter hooks and copy functions read.
+  // Rebuilt on call rather than memoized — it's all cheap reads off refs,
+  // and the 250ms economy tick re-renders constantly regardless. Lives up
+  // here rather than in the render body because the effects below need it
+  // and hooks can't sit after the `if (!ready)` early return, which is also
+  // why the three sel* values are recomputed instead of shared.
+  const tutCtx = () => {
+    const status = statusFor(g.peakNetWorth);
+    return {
+      g, sel, tab, setSel, setTab,
+      homeQk: tutHomeQk,
+      cam: cam.current,
+      canvasEl: canvasRef.current,
+      worldView: cam.current.s / N < 8,
+      buildingCount: g.own.filter((t) => t.bu).length,
+      slots: status.slots + collectionSlotBonus(),
+      energyCap: status.cap + landmarkEnergyBonus() + collectionEnergyBonus(),
+      homeRarity: RAR[g.own.find((t) => t.qk === tutHomeQk)?.r || 0],
+      selMine: sel ? ownMap.current.get(sel) : undefined,
+      selLocked: sel && g.own.length > 0 ? !unlockedRegions.current.has(regionOf(sel)) : false,
+      claimable: claimableContracts + claimableCollections,
+      showTile: tutFocusTile,
+    };
+  };
+
+  // Patches profiles.tutorial. Local mutation is synchronous so a dismissed
+  // tip can't re-fire on the very next render while the RPC is in flight;
+  // the round-trip is fire-and-forget because losing one is worth at most
+  // seeing a tip twice, never a broken game state. localStorage is kept as
+  // an offline mirror so a failed write can't re-run the whole tour.
+  const markTutorial = useCallback((patch) => {
+    g.tutorial = { ...(g.tutorial || {}), ...patch };
+    try { localStorage.setItem(`ptw_tutorial:${g.uid}`, JSON.stringify(g.tutorial)); } catch { /* private mode */ }
+    if (MULTIPLAYER && supabase) {
+      supabase.rpc("mark_tutorial", { p_patch: patch }).then(({ error }) => {
+        if (error) console.warn("mark_tutorial failed", error);
+      });
+    }
+  }, [g]);
+
+  // One-time reconciliation of where onboarding state lives. Three cases:
+  //   brand-new account         → tour pending, no tips seen
+  //   pre-existing player       → tour done AND every tip pre-marked seen,
+  //                               or all six would fire at once on their
+  //                               first load after this ships
+  //   mid-tour on this device   → adopt the legacy localStorage flag so the
+  //                               deploy doesn't lose their place
+  const tutMigrated = useRef(false);
   useEffect(() => {
-    if (!startFresh) return;
-    try {
-      if (localStorage.getItem(`ptw_tutorial:${g.uid}`) !== "done") localStorage.setItem(`ptw_tutorial:${g.uid}`, "pending");
-    } catch { /* private mode etc. — tour just won't persist across reloads */ }
+    if (!ready || tutMigrated.current) return;
+    tutMigrated.current = true;
+    if (g.tutorial && Object.keys(g.tutorial).length > 0) return; // server already has it
+
+    let raw = null;
+    try { raw = localStorage.getItem(`ptw_tutorial:${g.uid}`); } catch { /* ignore */ }
+
+    // The mirror holds one of two formats: the current JSON blob, or the
+    // legacy "pending"/"done" string. Parsing the blob back matters beyond
+    // the one-time upgrade — if the mark_tutorial round-trip ever fails,
+    // the profile stays empty and this is the only record that the player
+    // was mid-tour, so a plain string check would quietly skip them past it.
+    let mirrored = null;
+    if (raw && raw.startsWith("{")) {
+      try { const p = JSON.parse(raw); if (p && typeof p === "object" && p.tour) mirrored = p; } catch { /* corrupt — ignore */ }
+    }
+    if (mirrored) { markTutorial(mirrored); return; }
+
+    const seenAllTips = Object.fromEntries(TIPS.map((t) => [`tip_${t.id}`, 1]));
+    if (startFresh || raw === "pending") markTutorial({ tour: "pending", step: 1 });
+    else markTutorial({ tour: "done", ...seenAllTips });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [ready]);
 
   // Start (or resume) the tour only once the opening moment is actually
   // quiet: a fresh account's first seconds are contested — fly-to, the
@@ -4142,42 +4547,96 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
   // !roll (deps below re-fire this when they clear) means the tour begins
   // after that dust settles instead of stacking a bubble on top of it.
   useEffect(() => {
-    if (!ready || pickingHome || tut != null || modal || roll) return;
+    if (!ready || pickingHome || tut != null || modal || roll || !tutMigrated.current) return;
     const viaHash = typeof location !== "undefined" && location.hash.includes("tutorial") && !tutHashUsed.current;
-    let pending = false;
-    try { pending = localStorage.getItem(`ptw_tutorial:${g.uid}`) === "pending"; } catch { /* ignore */ }
+    const pending = (g.tutorial || {}).tour === "pending";
     if (viaHash || pending || startTutorial) {
       tutHashUsed.current = true;
-      setTut(1);
+      // Resume where they left off, but never past the end.
+      const at = Math.min(Math.max(1, (g.tutorial || {}).step || 1), TUT_STEPS.length);
+      setTut(viaHash || startTutorial ? 1 : at);
       if (startTutorial) onTutorialStarted?.();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ready, pickingHome, modal, roll, tut, startTutorial]);
 
-  // Auto-advance steps that teach a real action, off the action itself.
-  // Deliberately no dep array: game state lives in mutable refs (g.own,
-  // cam.current) that never trigger renders on their own — but the 250ms
-  // economy tick force()es a render anyway, so checking after every
-  // render is both cheap and the only reliable signal. Step 2 compares
-  // against a baseline captured when the step is entered — a veteran
-  // replaying the tour already owns built-up tiles, and an absolute
-  // "any tile has a build/level" check would skip their step 2 instantly.
-  const tutBuiltBase = useRef(null);
+  // Step entry: run onEnter, snapshot the baseline, reset the escape-hatch
+  // clock. onEnter is what keeps action steps honest — it normalizes state
+  // so the instruction is always something the player can actually do (fly
+  // to an off-screen tile, close an already-open sheet, zoom back in on a
+  // veteran who's already at world view).
+  const tutBase = useRef(null);
+  // Stamped with the step it belongs to, not just a bare timestamp: the
+  // entry effect runs *after* the first render of a new step, so a bare
+  // timestamp would still hold the previous step's value for one frame and
+  // flash "Skip this step" the instant a slow step was followed by another.
+  const tutEnteredAt = useRef(null);
+  // Renders elapsed since the current step was entered — see the advance
+  // effect below for why one has to pass before its predicate is trusted.
+  const tutSettled = useRef(0);
   useEffect(() => {
-    if (tut === 2) {
-      const built = g.own.filter((t) => t.bu || t.l > 0).length;
-      if (tutBuiltBase.current == null) tutBuiltBase.current = built;
-      else if (built > tutBuiltBase.current) setTut(3);
-    } else {
-      tutBuiltBase.current = null;
-      if (tut === 3 && cam.current.s / N < 8) setTut(4);
+    if (tut == null) { tutBase.current = null; return; }
+    const step = TUT_STEPS[tut - 1];
+    if (!step) return;
+    const ctx = tutCtx();
+    tutEnteredAt.current = { step: tut, at: Date.now() };
+    step.onEnter?.(ctx);
+    tutBase.current = step.baseline ? step.baseline(ctx) : null;
+    tutSettled.current = 0;
+    markTutorial({ step: tut });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tut]);
+
+  // Advance action steps off the real action. Deliberately no dep array:
+  // the state these predicates read lives in mutable refs (g.own,
+  // cam.current) that never trigger renders on their own, but the 250ms
+  // economy tick force()es one anyway — so checking after every render is
+  // both cheap and the only reliable signal.
+  //
+  // Skips the first render after a step change. onEnter normalizes state
+  // through setSel/setTab, but those are queued — on the entry commit this
+  // effect would still read the PRE-update values from the render closure
+  // and see the very condition onEnter just cleared. Steps 3 and 8 would
+  // then auto-skip for any player who arrived already holding their tile
+  // selected or already sitting on the Assets tab, which is exactly the
+  // replay case the whole baseline mechanism exists to protect.
+  useEffect(() => {
+    if (tut == null) return;
+    const step = TUT_STEPS[tut - 1];
+    if (!step?.advanceOn) return;
+    if (tutSettled.current < 1) { tutSettled.current++; return; }
+    if (step.advanceOn(tutCtx(), tutBase.current)) {
+      if (tut < TUT_STEPS.length) setTut(tut + 1); else endTutorial(true);
     }
   });
 
   const endTutorial = (completed) => {
-    try { localStorage.setItem(`ptw_tutorial:${g.uid}`, "done"); } catch { /* ignore */ }
+    markTutorial({ tour: "done", step: TUT_STEPS.length });
     setTut(null);
     if (completed && !g.ach.tutorial) { g.ach.tutorial = 1; toast("Unlocked — Oriented"); dirty.current = true; }
+  };
+
+  // First unseen tip whose condition holds AND whose anchor is currently on
+  // screen. The anchor check is the gate: a tip with nothing to point at
+  // just waits rather than firing as a naked popup. Never during the tour,
+  // and only ever one at a time.
+  const pickTip = () => {
+    if (tut != null || modal || roll || pickingHome || !tutMigrated.current) return null;
+    // Cheapest possible exit for the case that's permanent for every
+    // established player: all six seen, so this runs 4x/sec forever and
+    // must not build a ctx or touch the DOM to find that out. The order
+    // inside the loop matters for the same reason — the seen check and
+    // when() are both free, resolveAnchor forces layout.
+    const seen = g.tutorial || {};
+    const unseen = TIPS.filter((t) => !seen[`tip_${t.id}`]);
+    if (!unseen.length) return null;
+    const ctx = tutCtx();
+    for (const t of unseen) {
+      if (!t.when(ctx)) continue;
+      const rect = resolveAnchor(t.anchor, ctx);
+      if (rect) return { tip: t, rect, ctx };
+    }
+    return null;
   };
 
   /* keep vector tiles ahead of the camera during continuous pan/zoom —
@@ -4607,14 +5066,14 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
             </span>
             <span className="pt9 trk uppercase font-semibold" style={{ ...display, color: C.text }}>Menu</span>
           </button>
-          <div className="flex items-baseline gap-2">
+          <div data-tut="balance" className="flex items-baseline gap-2">
             <div className="text-2xl font-bold" style={{ ...mono, color: C.amber, fontVariantNumeric: "tabular-nums", textShadow: `0 0 18px ${C.glow}` }}>₲{fmt(g.bal)}</div>
             <div className="text-xs" style={{ ...mono, color: C.dim }}>+{fmt1(g.rps * (boostOn ? 2 : 1))}/s{boostOn ? " ⚡" : ""}</div>
           </div>
           <div className="mt-0.5 flex items-center gap-1.5">
             <Chip color={C.amber}>{myStatus.name}</Chip>
             {g.devMode && <Chip color="#F08A8A">DEV</Chip>}
-            <span className="pt10 font-bold" style={{ ...mono, color: energyNow(g) > 0 ? C.amber : "#F08A8A", fontVariantNumeric: "tabular-nums" }} title="Energy — spent claiming unowned land, refills in two halves at 00:00 and 12:00 UTC">
+            <span data-tut="energy" className="pt10 font-bold" style={{ ...mono, color: energyNow(g) > 0 ? C.amber : "#F08A8A", fontVariantNumeric: "tabular-nums" }} title="Energy — spent claiming unowned land, refills in two halves at 00:00 and 12:00 UTC">
               ⚡{energyNow(g)}/{myStatus.cap + landmarkEnergyBonus() + collectionEnergyBonus()} today
             </span>
             {energyNow(g) < myStatus.cap + landmarkEnergyBonus() + collectionEnergyBonus() && (
@@ -4623,7 +5082,7 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
             <span className="pt10 font-bold" style={{ ...mono, color: (g.attacksSent || 0) < myStatus.atk ? C.text : "#F08A8A", fontVariantNumeric: "tabular-nums" }} title="Attacks launched — resets once per day">
               ⚔{Math.max(0, myStatus.atk - (g.attacksSent || 0))}/{myStatus.atk} today
             </span>
-            <span className="pt10 font-bold" style={{ ...mono, color: C.text, fontVariantNumeric: "tabular-nums" }} title="Tiles currently under construction">
+            <span data-tut="builds" className="pt10 font-bold" style={{ ...mono, color: C.text, fontVariantNumeric: "tabular-nums" }} title="Tiles currently under construction">
               🔨{g.own.filter((t) => t.bu).length}/{myStatus.slots + collectionSlotBonus()} building
             </span>
           </div>
@@ -4669,6 +5128,7 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
               [IconBug, () => setDbg((v) => !v), "Debug overlay"],
             ].map(([IconC, fn, label], i) => (
               <button key={label} onClick={fn} title={label} aria-label={label}
+                data-tut={label === "Zoom out" ? "zoom-out" : undefined}
                 className="flex h-10 w-10 items-center justify-center transition-colors hover:bg-white/[0.06] active:scale-90 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[-2px]"
                 style={{ color: C.text, borderTop: i ? `1px solid ${C.hair}` : "none", outlineColor: C.amber }}>
                 <IconC size={16} />
@@ -4874,7 +5334,7 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
 
           {/* tile sheet */}
           {sel && (
-            <div className="pt-anim-sheetUp absolute inset-x-0 bottom-0 rounded-t-2xl p-4"
+            <div data-tut="tile-sheet" className="pt-anim-sheetUp absolute inset-x-0 bottom-0 rounded-t-2xl p-4"
               style={{ background: `${C.panel}f7`, backgroundImage: C.panelGrad, borderTop: `1px solid ${C.hairLit}`, boxShadow: C.shadowLg, ...blur(16) }}>
               <div aria-hidden className="mx-auto mb-3 h-1 w-9 rounded-full" style={{ background: C.hairLit }} />
               <div className="mb-2 flex items-start justify-between">
@@ -4939,7 +5399,7 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
                   <div className="mb-3 text-sm leading-relaxed" style={{ color: C.dim }}>
                     This region hasn't been scouted yet — unlock it to claim land here.
                   </div>
-                  <Btn full onClick={() => unlockRegion(sel)} disabled={g.bal < nextUnlockCost()}>
+                  <Btn full tut="unlock-btn" onClick={() => unlockRegion(sel)} disabled={g.bal < nextUnlockCost()}>
                     {g.bal < nextUnlockCost() ? "Not enough ₲" : `Unlock region — ₲${fmt(nextUnlockCost())}`}
                   </Btn>
                 </div>
@@ -5068,7 +5528,7 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
                   ) : selMine.l < MAX_LVL ? (
                     selMine.bu ? (
                       <div className="flex flex-col gap-2">
-                        <div className="rounded-xl p-2.5" style={cardSty}>
+                        <div data-tut="build-progress" className="rounded-xl p-2.5" style={cardSty}>
                           <div className="mb-1.5 flex items-center justify-between text-sm">
                             <span style={{ ...mono, color: C.dim }}>Building {LVL[selMine.l + 1]}…</span>
                             <span className="font-bold" style={{ ...mono, fontVariantNumeric: "tabular-nums" }}>{buildProgressPct(selMine, landmarkPerkPct(regionOf(sel), "build_speed"))}% · {hm(buildSecsLeft(selMine))} left</span>
@@ -5089,8 +5549,18 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
                         </div>
                       </div>
                     ) : (
+                      <>
+                      {/* Foreshadows the prestige loop while the player is
+                          still climbing toward it. Redevelop's whole
+                          discoverability problem was that nothing mentions
+                          it until you've already maxed a tile — by which
+                          point you're being told about a thing you have,
+                          rather than given a reason to get there. */}
+                      <div className="pt10 mb-2" style={{ ...mono, color: C.dim }}>
+                        At {LVL[MAX_LVL]}: redevelop for +25% rent, forever.
+                      </div>
                       <div className="flex gap-2">
-                        <Btn full onClick={() => upgrade(sel)} disabled={g.bal < upCost(selMine)}>
+                        <Btn full tut="build-btn" onClick={() => upgrade(sel)} disabled={g.bal < upCost(selMine)}>
                           Build {LVL[selMine.l + 1]} — ₲{fmt(upCost(selMine))}
                         </Btn>
                         {selMine.p ? (
@@ -5100,10 +5570,11 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
                         )}
                         <Btn tone="danger" onClick={() => abandon(sel)}>50%</Btn>
                       </div>
+                      </>
                     )
                   ) : (
                     <div className="flex flex-col gap-2">
-                      <Btn full onClick={() => redevelop(sel)}>Redevelop — +25% rent, keep tile</Btn>
+                      <Btn full tut="redevelop-btn" onClick={() => redevelop(sel)}>Redevelop — +25% rent, keep tile</Btn>
                       <div className="flex gap-2">
                         {selMine.p ? (
                           <Btn tone="ghost" onClick={() => unlist(sel)}>Unlist</Btn>
@@ -5688,30 +6159,56 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
         ))}
       </div>
 
-      {/* first-run tutorial bubble — top-center so it never covers the
-          tile sheet (bottom) or the nav; hidden while any modal or the
-          rarity roll is up (the tour yields, it doesn't compete), and on
-          non-map tabs (its steps all reference the map view). */}
-      {tut != null && tab === "map" && !modal && !roll && (
-        <div className="pointer-events-none absolute inset-x-0 top-24 z-30 flex justify-center px-4">
-          <div className="pointer-events-auto pt-anim-popIn w-full max-w-xs rounded-2xl p-3.5"
-            style={{ background: `${C.panel}f5`, border: `1px solid ${C.amber}55`, boxShadow: C.shadowLg, ...blur(14) }}>
-            <div className="pt9 trk uppercase font-semibold" style={{ ...display, color: C.amber }}>Tutorial · {tut}/{TUT_STEPS.length}</div>
-            <div className="mt-1 text-sm font-bold" style={{ ...display, color: C.text }}>{TUT_STEPS[tut - 1].title}</div>
-            <div className="pt11 mt-1 leading-relaxed" style={{ color: C.dim }}>{TUT_STEPS[tut - 1].text}</div>
-            <div className="mt-3 flex items-center justify-between">
-              <button onClick={() => endTutorial(false)}
-                className="pt10 underline decoration-dotted underline-offset-2 focus-visible:outline focus-visible:outline-2"
-                style={{ ...mono, color: C.dim, outlineColor: C.amber }}>
-                Skip tour
-              </button>
-              <Btn small onClick={() => (tut < TUT_STEPS.length ? setTut(tut + 1) : endTutorial(true))}>
-                {tut < TUT_STEPS.length ? "Next" : "Finish"}
-              </Btn>
-            </div>
-          </div>
-        </div>
-      )}
+      {/* Guided tour. Unlike the old fixed top-center bubble this is no
+          longer gated on tab === "map" — the last step deliberately sends
+          the player to Assets — but it still yields to modals and the
+          rarity roll rather than competing with them. */}
+      {(() => {
+        if (tut == null || modal || roll) return null;
+        const step = TUT_STEPS[tut - 1];
+        if (!step) return null;
+        const ctx = tutCtx();
+        const rect = resolveAnchor(step.anchor, ctx);
+        const action = step.kind === "action";
+        const entered = tutEnteredAt.current;
+        const stalled = action && entered?.step === tut && Date.now() - entered.at > TUT_ESCAPE_MS;
+        const advance = () => (tut < TUT_STEPS.length ? setTut(tut + 1) : endTutorial(true));
+        return (
+          <Coach
+            rect={rect}
+            side={step.side}
+            blocking={action && step.block !== false}
+            label={`Tutorial · ${tut}/${TUT_STEPS.length}`}
+            title={step.title}
+            text={typeof step.text === "function" ? step.text(ctx) : step.text}
+            onNext={action ? null : advance}
+            nextLabel={tut < TUT_STEPS.length ? "Next" : "Finish"}
+            onDismiss={() => endTutorial(false)}
+            dismissLabel="Skip tour"
+            onSkipStep={stalled ? advance : null}
+          />
+        );
+      })()}
+
+      {/* Just-in-time tips — same overlay, never blocking, one at a time.
+          See TIPS at the top of this file. */}
+      {(() => {
+        const hit = pickTip();
+        if (!hit) return null;
+        const { tip, rect, ctx } = hit;
+        return (
+          <Coach
+            rect={rect}
+            side={tip.side}
+            blocking={false}
+            label="Tip"
+            title={tip.title}
+            text={typeof tip.text === "function" ? tip.text(ctx) : tip.text}
+            onNext={() => markTutorial({ [`tip_${tip.id}`]: 1 })}
+            nextLabel="Got it"
+          />
+        );
+      })()}
 
       {/* update banner */}
       {updateAvailable && (
@@ -5727,7 +6224,7 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
       {/* nav */}
       <div className="flex gap-1 p-1.5" style={{ background: C.panel, borderTop: `1px solid ${C.hair}` }}>
         {[["map", "Map"], ["assets", "Assets"], ["market", "Market"], ["profile", "Profile"], ["world", "World"], ["social", "Social"]].map(([k, label]) => (
-          <button key={k} onClick={() => setTab(k)} className="relative pt11 trk flex-1 rounded-xl py-3.5 font-bold uppercase transition-all duration-150 focus-visible:outline focus-visible:outline-2"
+          <button key={k} onClick={() => setTab(k)} data-tut={`nav-${k}`} className="relative pt11 trk flex-1 rounded-xl py-3.5 font-bold uppercase transition-all duration-150 focus-visible:outline focus-visible:outline-2"
             style={{
               ...display,
               color: tab === k ? C.ink : C.dim,

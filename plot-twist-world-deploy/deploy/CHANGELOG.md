@@ -4,6 +4,51 @@ Player-visible changes. Bumped together with `package.json`'s `version`,
 which is the single source of truth the corner badge and the new-version
 poll both read (see `vite.config.js`).
 
+## 1.22.0
+
+### The tutorial now points at things, and waits for you to do them
+
+- **Every step highlights its actual target.** The tour used to describe
+  where to look ("the ⚡ counter at the top") from a fixed panel that never
+  moved. It now dims the screen around the real button, chip or counter it's
+  talking about — including your own tile on the map, spotlit through the
+  live camera so it stays lit while you pan and zoom.
+- **Steps that teach an action wait for the action.** Opening your tile,
+  starting a build, zooming out to world view and finding the Assets tab no
+  longer have a Next button to click past. If a step sits untouched for 20
+  seconds it offers to skip itself, and "Skip tour" is always there.
+- **Eight steps instead of five**, each one line instead of a paragraph, and
+  the tour now ends on your portfolio rather than on the map.
+- **The tour repositions itself before it asks.** Panned away from your
+  tile, already zoomed out, already on the tab it's about to send you to —
+  each step puts the world back into a state where its instruction actually
+  makes sense, which also means replaying it from the pause menu no longer
+  skips half the steps.
+
+### Tips that arrive when they're relevant
+
+- **Six one-shot hints**, each shown the first time it matters rather than
+  up front: rent collecting itself, unlocking new territory, running out of
+  energy, contracts waiting to be claimed, being raided for the first time,
+  and — one level before you get there — what redeveloping a maxed tile
+  does. Existing players won't see them; they're for people meeting each
+  thing for the first time.
+- **Tile sheets now name the ceiling.** Any tile you can still build on
+  says what happens at Tower, so the redevelop loop stops being a surprise
+  you find by accident.
+
+### Onboarding progress follows your account
+
+- **Finishing the tutorial on your phone now counts on your desktop.**
+  Progress lived in per-device browser storage, so switching device replayed
+  the whole thing. It's on your account now.
+
+### One free rush, for everyone starting out
+
+- **New accounts begin with a rush credit.** Your first build timer can be
+  skipped for free, so rushing is something you've met once before you're
+  ever asked to pay for it. Existing balances are untouched.
+
 ## 1.21.0
 
 ### NPC landlords place in neighbourhoods, and catch up while you're away
