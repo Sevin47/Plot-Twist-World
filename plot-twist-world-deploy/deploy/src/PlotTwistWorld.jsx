@@ -21,7 +21,7 @@ import VectorWorker from "./vectorWorker.js?worker&inline";
 // Bumped by hand alongside any fix worth confirming actually shipped —
 // shows in the debug panel so a stale cached bundle is immediately obvious
 // instead of looking like the bug is still unfixed.
-const BUILD_TAG = "2026-07-23.13-wording-pass-collapsible-activity";
+const BUILD_TAG = "2026-07-27.14-live-feed";
 
 // APP_VERSION: player-facing semver, sourced from package.json (see
 // vite.config.js) — bump package.json's "version" by hand per release.
@@ -41,6 +41,16 @@ const VERSION_CHECK_MS = 5 * 60 * 1000;
 // player-visible change ships with a version bump + entry in the same
 // commit, not after the fact.
 const CHANGELOG = [
+  {
+    id: "1.20.0",
+    date: "Jul 27, 2026",
+    notes: [
+      "New: a live feed on the map — every tile that changes hands anywhere in the world appears the moment it happens, whether it was claimed, bought off the market or captured in a raid.",
+      "Each entry shows who took it, what kind of land it was and what it cost them. Tap one to fly straight to that tile; your own show up as \"You\".",
+      "Fold the panel away with the \"Live feed\" header and it stays folded next time; it shows a count of what you missed while it was closed.",
+      "Company landlords' land grabs stay out of it, as do attacks that were repelled — a defended tile never changed hands.",
+    ],
+  },
   {
     id: "1.19.2",
     date: "Jul 27, 2026",
@@ -528,6 +538,15 @@ const REGION_LEN = 8;         // shared-storage shard prefix (~150km regions)
 const REGION_PREVIEW_COUNT = 6; // HQ territory grid rows shown before "Show all" — keeps the tab from growing unbounded as players unlock more regions
 const ACTIVITY_PREVIEW_COUNT = 8; // Recent activity rows shown before "Show all" — same collapse pattern as regions above
 
+// Live land feed (the collapsible "Live sales" panel on the map — see
+// land_feed in supabase.sql). Realtime INSERTs are what actually make it
+// feel live; the poll is the initial load plus a safety net, so it stays
+// running (just slower) even once the channel is up, and takes over
+// entirely on a project where Realtime is unavailable.
+const FEED_LIMIT = 20;               // rows kept in the panel at once
+const FEED_POLL_LIVE_MS = 45000;     // reconcile poll while the realtime channel is subscribed
+const FEED_POLL_FALLBACK_MS = 12000; // …and when it isn't
+
 const C = {
   ink: "#0A1622", panel: "#111C2B", hair: "#243146",
   ocean: "#0A2233", oceanDeep: "#081B2A", landFill: "#22384A",
@@ -887,6 +906,20 @@ const energySecsToReset = () => {
 // today" display before the region cache next resyncs. Display only:
 // attack_tile() re-derives this server-side and is the sole authority.
 const todayUTC = () => new Date().toISOString().slice(0, 10);
+
+// Normalizes a Postgres timestamp into something new Date() parses the same
+// way everywhere. PostgREST hands back proper ISO-8601, but a Realtime
+// postgres_changes payload carries Postgres's own text form
+// ("2026-07-27 11:24:00.123456+00") — space-separated, offset without
+// minutes — which V8 happens to accept and stricter engines don't. Without
+// this, the live feed's timestamps read "NaNd ago" on those browsers.
+const isoTs = (v) => {
+  if (!v) return new Date().toISOString();
+  let s = String(v).replace(" ", "T").replace(/([+-]\d{2})$/, "$1:00");
+  if (!/([zZ]|[+-]\d{2}:\d{2})$/.test(s)) s += "Z"; // bare timestamp — Postgres stores UTC
+  const d = new Date(s);
+  return Number.isNaN(d.getTime()) ? new Date().toISOString() : d.toISOString();
+};
 
 // relative-time label for the HQ activity log — display only.
 const timeAgo = (iso) => {
@@ -1586,6 +1619,18 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
   const [citySearch, setCitySearch] = useState("");
   const [showBasemap, setShowBasemap] = useState(true);
   const [legendOpen, setLegendOpen] = useState(true);
+  // Live land feed. Collapse state is remembered per device (the legend's
+  // isn't) because this panel is bigger and sits over the map — someone who
+  // folds it away shouldn't have to fold it away again every session.
+  const [feedOpen, setFeedOpen] = useState(() => {
+    try { return localStorage.getItem("ptw_feedOpen") !== "0"; } catch { return true; }
+  });
+  const [feed, setFeed] = useState([]);        // newest-first land_feed rows
+  const [feedUnseen, setFeedUnseen] = useState(0); // arrivals while collapsed — drives the header badge
+  const feedTopId = useRef(0);
+  const feedHydrated = useRef(false); // first poll has landed — everything after it is a live arrival
+  const feedOpenRef = useRef(feedOpen);
+  useEffect(() => { feedOpenRef.current = feedOpen; }, [feedOpen]);
   const [dbg, setDbg] = useState(() => typeof location !== "undefined" && location.hash.includes("debug"));
   const [market, setMarket] = useState({ loading: false, rows: null });
   const [log, setLog] = useState({ loading: false, rows: null });
@@ -3977,6 +4022,76 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
     return () => clearInterval(iv);
   }, [ready]);
 
+  /* ── live land feed: the world-wide "this tile just changed hands"
+     ticker shown on the map — claims, market trades and PvP captures.
+     Reads the public land_feed table directly (see the LIVE LAND FEED
+     section in supabase.sql); that table only ever receives rows from the
+     three RPCs that move a tile to a new player, so company-landlord
+     expansion and repelled attacks deliberately never appear. ── */
+
+  // Rows only ever arrive newer-than-what-we-have, from two sources that
+  // can deliver the same insert (the realtime channel and the poll), so the
+  // high-water-mark id is both the dedupe and the "is this new" test. A row
+  // that commits with a lower id than one we've already shown is dropped
+  // rather than inserted mid-list — for a flavor ticker, staying strictly
+  // append-at-the-top is worth more than catching that rare interleave.
+  const mergeFeed = useCallback((rows) => {
+    const fresh = rows.filter((r) => r && r.id > feedTopId.current);
+    if (!fresh.length) return;
+    feedTopId.current = Math.max(...fresh.map((r) => r.id));
+    // isNew:false for the backlog the first poll returns — otherwise the
+    // whole list would pop in one row at a time as if it had all just
+    // happened, and the collapsed badge would open on "+20"
+    const isNew = feedHydrated.current;
+    setFeed((cur) => [...fresh.map((r) => ({ ...r, isNew, created_at: isoTs(r.created_at) })), ...cur].sort((a, b) => b.id - a.id).slice(0, FEED_LIMIT));
+    if (isNew && !feedOpenRef.current) setFeedUnseen((n) => Math.min(99, n + fresh.length));
+  }, []);
+
+  useEffect(() => {
+    if (!MULTIPLAYER || !ready || pickingHome) return;
+    let cancelled = false;
+    let live = false;
+    let iv = 0;
+    const pull = async () => {
+      if (typeof document !== "undefined" && document.hidden) return;
+      const { data, error } = await supabase
+        .from("land_feed")
+        .select("id,kind,qk,cls,rarity,price,buyer,buyer_name,seller_name,created_at")
+        .order("id", { ascending: false })
+        .limit(FEED_LIMIT);
+      if (cancelled || error || !data) return;
+      mergeFeed(data);
+      feedHydrated.current = true;
+    };
+    const retime = () => { clearInterval(iv); iv = setInterval(pull, live ? FEED_POLL_LIVE_MS : FEED_POLL_FALLBACK_MS); };
+    // coming back to the game shouldn't sit on a feed frozen at whenever the
+    // tab was last visible (pull() no-ops while hidden — see above)
+    const onVisible = () => { if (!document.hidden) pull(); };
+    document.addEventListener("visibilitychange", onVisible);
+    pull();
+    retime();
+    const ch = supabase
+      .channel("land-feed")
+      .on("postgres_changes", { event: "INSERT", schema: "public", table: "land_feed" }, (p) => {
+        if (!cancelled && p.new) mergeFeed([p.new]);
+      })
+      .subscribe((status) => {
+        // SUBSCRIBED means realtime is genuinely delivering, so the poll can
+        // back off to a slow reconcile; anything else (channel error, timed
+        // out, closed, or Realtime simply not enabled on the project) drops
+        // it back to carrying the feed on its own.
+        if (cancelled) return;
+        const nowLive = status === "SUBSCRIBED";
+        if (nowLive !== live) { live = nowLive; retime(); }
+      });
+    return () => {
+      cancelled = true;
+      clearInterval(iv);
+      document.removeEventListener("visibilitychange", onVisible);
+      supabase.removeChannel(ch);
+    };
+  }, [ready, pickingHome, mergeFeed]);
+
   /* ── first-run tutorial ── */
   // Mark the tour pending the moment a brand-new account exists, NOT when
   // it first renders — startFresh is only true on the mount right after
@@ -4566,7 +4681,13 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
               </div>
             </div>
           )}
-          <div className="absolute left-3 top-3 rounded-2xl px-2.5 py-2" style={{ background: `${C.panel}d9`, border: `1px solid ${C.hairLit}`, boxShadow: C.shadowSm, ...blur(14) }}>
+          {/* top-left stack: legend, live sales feed, sync status. One flex
+              column rather than three independently-positioned overlays so
+              collapsing the legend or the feed just reflows the ones below
+              it — the sync pill used to be pinned at left-32 and would have
+              sat on top of the feed panel. */}
+          <div className="pointer-events-none absolute left-3 top-3 flex flex-col items-start gap-2">
+          <div className="pointer-events-auto rounded-2xl px-2.5 py-2" style={{ background: `${C.panel}d9`, border: `1px solid ${C.hairLit}`, boxShadow: C.shadowSm, ...blur(14) }}>
             <button
               onClick={() => setLegendOpen((v) => !v)}
               aria-expanded={legendOpen}
@@ -4596,11 +4717,82 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
             )}
           </div>
 
+          {/* live feed — world-wide tile ownership changes as they happen
+              (see the live land feed effect above). Hidden entirely in
+              single-player/no-Supabase mode, where there's no world to
+              listen to. */}
+          {MULTIPLAYER && (
+            <div className="pointer-events-auto w-52 max-w-[58vw] overflow-hidden rounded-2xl" style={{ background: `${C.panel}d9`, border: `1px solid ${C.hairLit}`, boxShadow: C.shadowSm, ...blur(14) }}>
+              <button
+                onClick={() => {
+                  const next = !feedOpen;
+                  setFeedOpen(next);
+                  if (next) setFeedUnseen(0);
+                  try { localStorage.setItem("ptw_feedOpen", next ? "1" : "0"); } catch { /* private mode — just won't persist */ }
+                }}
+                aria-expanded={feedOpen}
+                className="pt9 flex w-full items-center gap-1.5 px-2.5 py-2 font-medium transition-colors hover:bg-white/[0.04] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[-2px]"
+                style={{ ...display, color: C.dim, outlineColor: C.amber }}
+              >
+                <span className="transition-transform" style={{ display: "inline-flex", transform: feedOpen ? "rotate(-90deg)" : "rotate(90deg)" }}>
+                  <IconChevronLeft size={10} />
+                </span>
+                <span aria-hidden className={reduced ? "" : "pt-anim-glowPulse"}
+                  style={{ height: 6, width: 6, borderRadius: 999, background: C.amber, boxShadow: `0 0 6px ${C.amber}` }} />
+                Live feed
+                {!feedOpen && feedUnseen > 0 && (
+                  <span className="pt9 ml-auto rounded-full px-1.5 font-bold" style={{ ...mono, color: "#221A05", background: C.amber }}>
+                    +{feedUnseen}
+                  </span>
+                )}
+              </button>
+              {feedOpen && (
+                <div className="max-h-40 overflow-y-auto px-1.5 pb-1.5">
+                  {feed.length === 0 ? (
+                    <div className="pt9 px-1 py-1.5 font-medium" style={{ ...display, color: C.dim }}>
+                      Nothing yet — land changing hands anywhere in the world shows up here.
+                    </div>
+                  ) : feed.map((e) => {
+                    const cls = CLS[e.cls] || CLS.rural;
+                    const mine = e.buyer === g.uid;
+                    const raid = e.kind === "capture";
+                    return (
+                      <button
+                        key={e.id}
+                        onClick={() => jumpToTile(e.qk)}
+                        title={`Jump to this tile — ${cls.name}, ₲${fmt(e.price)}${e.seller_name ? `${raid ? ", taken from " : ", from "}${e.seller_name}` : ""}`}
+                        className={`flex w-full items-start gap-1.5 rounded-lg px-1 py-1 text-left transition-colors hover:bg-white/[0.06] active:bg-white/10 focus-visible:outline focus-visible:outline-2 ${e.isNew && !reduced ? "pt-anim-popIn" : ""}`}
+                        style={{ outlineColor: C.amber }}
+                      >
+                        <span aria-hidden className="mt-1 h-2 w-2 shrink-0 rounded-full" style={{ background: cls.color, boxShadow: `0 0 6px ${cls.color}99` }} />
+                        <span className="min-w-0 flex-1">
+                          <span className="pt9 block truncate font-bold" style={{ ...display, color: mine ? C.mine : C.text }}>
+                            {mine ? "You" : e.buyer_name}
+                            {/* a raid reads as an attack, not a transaction — same
+                                red the HQ activity log uses for a lost tile */}
+                            <span className="font-medium" style={{ color: raid ? "#F08A8A" : C.dim }}>
+                              {raid ? " captured" : e.kind === "trade" ? " bought" : " claimed"}
+                            </span>
+                          </span>
+                          <span className="pt9 block truncate" style={{ ...mono, color: C.dim }}>
+                            {cls.name} · ₲{fmt(e.price)} · {timeAgo(e.created_at)}
+                          </span>
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )}
+
           {syncing && (
-            <div className="pt-anim-fadeIn pt10 absolute left-32 top-3 rounded-full px-2.5 py-1 font-medium" style={{ ...display, color: C.dim, background: `${C.panel}e6`, border: `1px solid ${C.hair}`, ...blur(10) }}>
+            <div className="pt-anim-fadeIn pt10 rounded-full px-2.5 py-1 font-medium" style={{ ...display, color: C.dim, background: `${C.panel}e6`, border: `1px solid ${C.hair}`, ...blur(10) }}>
               syncing deeds…
             </div>
           )}
+          </div>
+
           {tilePxNow < 8 && !sel && (
             <div className="pt10 pointer-events-none absolute inset-x-0 top-3 text-center font-medium" style={{ ...display, color: C.dim }}>
               {(() => {
