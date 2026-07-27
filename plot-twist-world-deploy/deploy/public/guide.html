@@ -264,6 +264,7 @@
       <div class="navgroup">
         <div class="navgroup-label">Combat</div>
         <a class="navlink" href="#pvp">PvP &amp; attacks</a>
+        <a class="navlink" href="#companies">Company landlords</a>
       </div>
       <div class="navgroup">
         <div class="navgroup-label">Economy &amp; People</div>
@@ -285,6 +286,8 @@
         <a class="navlink" href="#streak">Daily streak</a>
         <a class="navlink" href="#offline">Offline earnings</a>
         <a class="navlink" href="#boosts">Boosts</a>
+        <a class="navlink" href="#contracts">Contracts</a>
+        <a class="navlink" href="#collections">Collections</a>
         <a class="navlink" href="#achievements">Achievements</a>
         <a class="navlink" href="#inactivity">Inactivity &amp; repossession</a>
       </div>
@@ -353,6 +356,7 @@
           <li><a href="#regions">Regions &amp; unlocking</a></li>
           <li><a href="#landmarks">Landmarks</a></li>
           <li><a href="#pvp">PvP &amp; attacks</a></li>
+          <li><a href="#companies">Company landlords</a></li>
           <li><a href="#market">The open market</a></li>
           <li><a href="#status">Status ranks</a></li>
           <li><a href="#leaderboard">Leaderboard</a></li>
@@ -365,6 +369,8 @@
           <li><a href="#streak">Daily streak</a></li>
           <li><a href="#offline">Offline earnings</a></li>
           <li><a href="#boosts">Boosts</a></li>
+          <li><a href="#contracts">Contracts</a></li>
+          <li><a href="#collections">Collections</a></li>
           <li><a href="#achievements">Achievements</a></li>
           <li><a href="#inactivity">Inactivity &amp; repossession</a></li>
           <li><a href="#strategies">Starter strategies</a></li>
@@ -480,7 +486,9 @@
         <p>Energy is the real limiter on how fast the map gets claimed — not how much ₲ you have. Every claim of a new, unowned tile costs 1 energy. Trading with other players and upgrading tiles you already own never cost energy.</p>
         <div class="callout">
           <span class="callout-label">Hard daily cap — no banking</span>
-          Energy resets once per day at midnight UTC, to whatever your current <a href="#status">status rank</a> grants. Unused energy does <strong>not</strong> carry over — a day you don't spend it is a day it's gone, not saved up.
+          Your daily energy is set by your current <a href="#status">status rank</a>, and arrives in <strong>two halves — at 00:00 and 12:00 UTC</strong>. Unused energy does <strong>not</strong> carry over to the next day: a day you don't spend it is a day it's gone, not saved up.
+          <br /><br />
+          The split is about <em>when</em>, not how much — the daily total is exactly the same as if it all landed at once. Any half you haven't collected yet is handed over the moment you next open the game, so a single visit at 20:00 gets you the full day's energy; you only need two visits if you want to spend the first half early and still have the rest available later.
         </div>
         <p>Claiming your very first tile ever (via the starting-area picker) is always free and unrestricted — no region-unlock needed, no energy spent. Every claim after that follows the normal rules.</p>
       </section>
@@ -594,6 +602,52 @@
           The wealth floor (0.2% of peak net worth) means a brand-new account's attacks are priced almost entirely by the base formula — the floor only starts to bite once your peak net worth climbs into real money. Punching up is always cheap; punching down gets expensive as you get rich.
         </div>
         <p>Winning a raid and capturing a tile unlocks the <strong>Conqueror</strong> achievement. New players and accounts less than 72 hours old can't be attacked at all.</p>
+      </section>
+
+      <section id="companies">
+        <h2>Company landlords</h2>
+        <p class="section-desc">Eight holding companies buy up quiet parts of the map, so there's always a neighbour to raid and trade against — and they withdraw as real landlords arrive.</p>
+        <p>A company landlord is an ordinary landlord in every mechanical sense: it owns real tiles, its name shows on them, it borders you, you can attack it, and you can buy from it on the <a href="#market">market</a>. The only difference is that there's no person behind it. They exist because <a href="#pvp">attacks</a>, borders and trading all assume someone is nearby, and in an empty stretch of map all three quietly stop working.</p>
+        <div class="table-wrap">
+          <table class="wikitable">
+            <thead><tr><th>The companies</th></tr></thead>
+            <tbody>
+              <tr><td>Bolder Boulders Holdings · Artisanal Gravel Estates · InvisiBlinds Property Co · Soup Loans Realty · Pigeon Mail Land Trust · The Ladder Store Group · Mildly Haunted Realty · Actual Cloud Holdings</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>Where they move in</h3>
+        <p>A company will only claim a tile in a <strong>neighbourhood where no real landlord owns anything</strong>. A neighbourhood here is roughly 9.8km across — the same kind of square as a <a href="#regions">region</a>, just much smaller. They're capped at 4 tiles per neighbourhood and 24 per region, and they buy at most one new tile per region every two hours, so a quiet area fills in gradually rather than all at once.</p>
+        <p>The practical effect: companies fill in around you, never on top of you. They can't appear in a neighbourhood you've already claimed anything in.</p>
+
+        <h3>Where they move out</h3>
+        <p>Once real landlords start buying in a neighbourhood a company holds tiles in, that company begins withdrawing from it:</p>
+        <ul>
+          <li><strong>First it lists</strong> the tile on the open market at 80% of what it paid — so a company pulling out is a source of cheap land for whoever moved in, not an obstruction.</li>
+          <li><strong>Then it releases</strong> the tile back to unowned if nobody buys it within 48 hours of listing.</li>
+          <li><strong>Never within 24 hours</strong> of the company acquiring the tile, so land can't dissolve out from under you mid-campaign.</li>
+          <li><strong>Never below 3 tiles</strong> per region — a small company presence always survives, so there's a practice target available even in a busy area.</li>
+        </ul>
+
+        <h3>Attacking them</h3>
+        <p>Exactly the same rules as attacking a player: you need an <a href="#pvp">orthogonally adjacent</a> tile, it costs the same, it counts against the same daily caps, and a single company tile still only absorbs 2 attacks a day. Their tiles are seeded partly built (level 1–3, usually Common) so they're worth taking, and a captured tile resets to Vacant/Common like any other capture.</p>
+        <div class="callout">
+          <span class="callout-label">They get harder the more you take</span>
+          Every tile you capture from a given company raises the defense power of that company's <em>remaining</em> tiles by 35% — against you specifically. Take four tiles off Soup Loans Realty and its fifth is more than twice as hard for you as its first was. Other landlords are unaffected: a company never gets harder for a newcomer because someone else has been grinding it.
+        </div>
+        <p>The escalation is per company, so spreading your attacks across several of them stays cheaper than farming one to the ground. It resets for nobody — it's a permanent record of what you've taken.</p>
+
+        <h3>What they never do</h3>
+        <ul>
+          <li><strong>They never attack you.</strong> Losing a tile while you were offline to something that isn't even a person is not a fight, it's just a tax.</li>
+          <li><strong>They never claim <a href="#landmarks">landmark</a> tiles.</strong> Those are meant to be contested between real landlords.</li>
+          <li><strong>They don't appear on the <a href="#leaderboard">World register</a></strong>, and can't be added as friends or messaged — they're companies, not players.</li>
+        </ul>
+        <div class="trivia">
+          <span class="trivia-label">Did you know</span>
+          Unlike a real landlord, a company is never protected by the 72-hour new-account shield — a company that moved in an hour ago is fair game immediately. It also never decays from inactivity the way an absent player's tiles do, because "inactive" is its permanent condition; withdrawal is handled entirely by the neighbourhood rules above.
+        </div>
       </section>
 
       <section id="market">
@@ -724,6 +778,130 @@
         <p>Tapping the boost button (fake ad, joke brand, no real ad network involved) grants <strong>2× rent for 5 minutes</strong>, only while actively playing (see <a href="#offline">Offline earnings</a>). It's on a <strong>30-minute cooldown</strong> between uses — long enough to be something to catch, not a timer to babysit.</p>
       </section>
 
+      <section id="contracts">
+        <h2>Contracts</h2>
+        <p class="section-desc">Three daily jobs and one weekly one, on your Profile tab. They're finished by playing normally — and they pay in things ₲ can't buy.</p>
+        <p>You hold <strong>3 daily contracts and 1 weekly contract</strong> at a time, drawn at random from a pool of 26. Progress is credited automatically as you play: claim a tile, finish a build, win a raid, sell something, and whichever contracts cover that just went up. There's nothing to activate or accept.</p>
+        <p>Daily contracts rotate at 00:00 UTC, the same reset as your <a href="#buying-land">energy</a>. The weekly one rotates on Monday. A dot appears on the Profile tab whenever something is ready to claim.</p>
+
+        <h3>What they pay</h3>
+        <p>Contract rewards lean deliberately toward things you can't just buy:</p>
+        <ul>
+          <li><strong>₲</strong> — modest amounts. Useful early, less interesting once your rent compounds.</li>
+          <li><strong>Bonus energy</strong> — granted on top of your daily cap, so a contract can take you above your normal ceiling for the day. Like all energy, it doesn't carry into tomorrow.</li>
+          <li><strong>Rush credits</strong> — the interesting one. A rush credit finishes any in-progress <a href="#buildings">build</a> instantly and free, <em>regardless of what rushing it would have cost</em>. They're spent automatically the next time you rush, and the Rush button reads "free" while you're holding any.</li>
+        </ul>
+        <div class="trivia">
+          <span class="trivia-label">Did you know</span>
+          A rush credit is worth more the more expensive the build — rushing a fresh Tower costs far more than a fresh Cottage, but one credit covers either. Saving your credits for high-level builds is strictly better than burning them on Cottages, which is the whole reason contracts pay in credits rather than in the ₲ those rushes would have cost.
+        </div>
+
+        <h3>Nothing is wasted</h3>
+        <div class="callout">
+          <span class="callout-label">Finished contracts always pay</span>
+          If you complete a contract but don't open the game to claim it before it rotates out, it pays automatically anyway — the rewards land on your account and show up in your "while you were away" summary and your activity log. Expiring something you actually earned because you didn't log in at the right hour would make the whole thing an obligation, which is exactly what it isn't.
+        </div>
+        <p>Contracts you haven't finished simply rotate away with no penalty. There's no streak to protect and nothing to lose by ignoring them entirely.</p>
+
+        <h3>The pool</h3>
+        <p>Some contracts only appear once you've reached a given <a href="#status">status rank</a> — a day-one account is never handed a raiding job it structurally can't do.</p>
+        <h4>Daily</h4>
+        <div class="table-wrap">
+          <table class="wikitable">
+            <thead><tr><th>Contract</th><th>Goal</th><th>Pays</th><th>Needs</th></tr></thead>
+            <tbody>
+              <tr><td>Land office</td><td>Claim 3 unowned tiles</td><td>₲400 · +1 energy</td><td>—</td></tr>
+              <tr><td>Shoreline survey</td><td>Claim 2 coast or waterfront tiles</td><td>₲500 · +1 energy</td><td>—</td></tr>
+              <tr><td>Out in the sticks</td><td>Claim 3 rural tiles</td><td>₲350 · +1 energy</td><td>—</td></tr>
+              <tr><td>Downtown interest</td><td>Claim 2 downtown or urban tiles</td><td>₲700 · +1 energy</td><td>—</td></tr>
+              <tr><td>Lucky deed</td><td>Claim a tile that rolls Uncommon or better</td><td>₲600 · +1 energy</td><td>—</td></tr>
+              <tr><td>Ground broken</td><td>Start 2 builds</td><td>₲400 · +1 rush</td><td>—</td></tr>
+              <tr><td>Topping out</td><td>Finish 2 builds without rushing them</td><td>₲600 · +1 energy</td><td>—</td></tr>
+              <tr><td>On the clock</td><td>Rush a build to completion</td><td>₲500 · +1 energy</td><td>—</td></tr>
+              <tr><td>Open house</td><td>List a tile on the market</td><td>₲300</td><td>—</td></tr>
+              <tr><td>Sponsored segment</td><td>Activate a rent boost</td><td>₲250</td><td>—</td></tr>
+              <tr><td>Going up</td><td>Start a build on Apartments or Tower</td><td>₲800 · +1 rush</td><td>Homesteader</td></tr>
+              <tr><td>Bought local</td><td>Buy a tile from another landlord</td><td>₲600 · +1 energy</td><td>Homesteader</td></tr>
+              <tr><td>Border pressure</td><td>Launch an attack on a rival tile</td><td>₲700 · +1 rush</td><td>Homesteader</td></tr>
+              <tr><td>Expedition</td><td>Unlock a new region</td><td>₲800 · +2 energy</td><td>Homesteader</td></tr>
+              <tr><td>Spoils of war</td><td>Capture a tile by force</td><td>₲1,200 · +1 energy · +1 rush</td><td>Landholder</td></tr>
+              <tr><td>Wrecking ball</td><td>Redevelop a maxed-out tile</td><td>₲1,000 · +1 rush</td><td>Landholder</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <h4>Weekly</h4>
+        <div class="table-wrap">
+          <table class="wikitable">
+            <thead><tr><th>Contract</th><th>Goal</th><th>Pays</th><th>Needs</th></tr></thead>
+            <tbody>
+              <tr><td>Acquisition drive</td><td>Claim 15 tiles</td><td>₲4,000 · +3 energy · +2 rush</td><td>—</td></tr>
+              <tr><td>General contractor</td><td>Finish 10 builds</td><td>₲5,000 · +3 energy · +2 rush</td><td>—</td></tr>
+              <tr><td>Coastal holdings</td><td>Claim 8 coast or waterfront tiles</td><td>₲5,000 · +3 energy · +1 rush</td><td>—</td></tr>
+              <tr><td>Skyline works</td><td>Start 4 builds on Apartments or Tower</td><td>₲6,000 · +2 energy · +3 rush</td><td>Homesteader</td></tr>
+              <tr><td>Urban portfolio</td><td>Claim 8 downtown or urban tiles</td><td>₲6,000 · +3 energy · +1 rush</td><td>Homesteader</td></tr>
+              <tr><td>Campaign season</td><td>Launch 5 attacks</td><td>₲6,000 · +2 energy · +3 rush</td><td>Homesteader</td></tr>
+              <tr><td>Moving inventory</td><td>Sell 3 tiles to other landlords</td><td>₲5,000 · +2 energy · +2 rush</td><td>Homesteader</td></tr>
+              <tr><td>Annexation</td><td>Capture 2 tiles by force</td><td>₲9,000 · +4 energy · +3 rush</td><td>Landholder</td></tr>
+              <tr><td>Urban renewal</td><td>Redevelop 3 maxed-out tiles</td><td>₲8,000 · +3 energy · +3 rush</td><td>Landholder</td></tr>
+              <tr><td>Monument to excess</td><td>Claim a piece of any landmark</td><td>₲25,000 · +5 energy · +5 rush</td><td>Baron</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p>"Finish a build without rushing it" means exactly that — rushing a build satisfies <em>On the clock</em>, not <em>Topping out</em>. The two are separate jobs on purpose, so a patient player and an impatient one each have something to do.</p>
+      </section>
+
+      <section id="collections">
+        <h2>Collections</h2>
+        <p class="section-desc">Thirteen sets that reward you for <em>which</em> tiles you own rather than how many — and pay permanently.</p>
+        <p>Every other system in the game treats a rural tile in Mongolia and a rural tile in Kansas as the same object. Collections are where that stops: they're the reason to care about a tile's district, its neighbours, and where on Earth it actually sits. Progress shows on your Profile tab and is worked out live from whatever you currently own — there's nothing to opt into.</p>
+
+        <h3>What they pay</h3>
+        <p>Collection rewards are <strong>permanent capacity</strong>, never rent:</p>
+        <ul>
+          <li><strong>+daily energy</strong> — a permanent raise to your daily allowance, stacking on top of your <a href="#status">status rank</a> and any <a href="#landmarks">landmark</a> energy boost.</li>
+          <li><strong>+builder slots</strong> — a permanent extra concurrent <a href="#buildings">build</a>.</li>
+          <li><strong>Titles</strong>, for four of the harder ones.</li>
+        </ul>
+        <p>Completing all thirteen is worth <strong>+10 daily energy and +5 builder slots, forever</strong> — comparable to several status ranks' worth of capacity, earned by portfolio shape instead of net worth.</p>
+        <div class="trivia">
+          <span class="trivia-label">Did you know</span>
+          Collections deliberately don't boost rent, unlike the equivalent feature in most games of this kind. A rent bonus is a win-more engine — it pays out most to whoever is already furthest ahead. Capacity rewards give you more to <em>do</em> instead of more to bank, which is the same rule landmark perks are built on.
+        </div>
+
+        <h3>The sets</h3>
+        <div class="table-wrap">
+          <table class="wikitable">
+            <thead><tr><th>Collection</th><th>Requirement</th><th>Reward</th></tr></thead>
+            <tbody>
+              <tr><td>Surveyor</td><td>Own a tile in every one of the six districts</td><td>₲2,500 · +1 energy</td></tr>
+              <tr><td>Shoreline</td><td>Own 5 coast tiles</td><td>₲2,000 · +1 energy</td></tr>
+              <tr><td>Harbourmaster</td><td>Own 5 waterfront tiles</td><td>₲4,000 · +1 energy</td></tr>
+              <tr><td>Smallholding</td><td>Own 10 rural tiles</td><td>₲2,000 · +1 energy</td></tr>
+              <tr><td>Skyline</td><td>Own 3 downtown tiles in one region</td><td>₲6,000 · +1 slot</td></tr>
+              <tr><td>Block Party</td><td>Own all 4 tiles of a single 2×2 block</td><td>₲5,000 · +1 slot</td></tr>
+              <tr><td>City Block</td><td>Own all 16 tiles of a single 4×4 block</td><td>₲25,000 · +1 slot · "Blockholder"</td></tr>
+              <tr><td>Skyscraper Club</td><td>Own 5 tiles built all the way to Tower</td><td>₲12,000 · +1 slot</td></tr>
+              <tr><td>Reborn</td><td>Own 3 tiles <a href="#redevelop">redeveloped</a> at least twice</td><td>₲15,000 · +1 slot · "Renewer"</td></tr>
+              <tr><td>Equatorial</td><td>Own 2 tiles within 5° of the equator</td><td>₲8,000 · +1 energy</td></tr>
+              <tr><td>Midnight Sun</td><td>Own a tile inside the Arctic or Antarctic Circle</td><td>₲10,000 · +1 energy · "Polar"</td></tr>
+              <tr><td>Four Corners</td><td>Own a tile in all four hemispheres</td><td>₲15,000 · +2 energy · "Circumnavigator"</td></tr>
+              <tr><td>Pilgrim</td><td>Own a piece of 3 different <a href="#landmarks">landmarks</a></td><td>₲50,000 · +2 energy · "Pilgrim"</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>Blocks, and why they're exact</h3>
+        <p>Block Party and City Block ask for a genuinely <strong>contiguous square</strong> — 4 tiles in a 2×2, or 16 in a 4×4 — not just four tiles near each other. The progress number shows your best single block, so 3/4 means you're one tile away from completing some specific square, and it's worth checking which.</p>
+        <p>These are the only collections where <em>which particular</em> tiles you own matters down to the individual parcel, and they're the reason it can be worth buying a tile you'd otherwise skip.</p>
+
+        <h3>Claiming</h3>
+        <div class="callout">
+          <span class="callout-label">Claimed is claimed</span>
+          Progress is recalculated live from the tiles you currently hold, so selling, abandoning, or losing a tile can un-finish a set you <em>haven't claimed yet</em>. It can never take back one you already claimed — the energy, the slots and the title are yours permanently, whatever happens to the portfolio afterwards.
+        </div>
+        <p>The practical advice: claim a collection the moment it lights up. There's no reason to wait, and holding a completed set unclaimed is the only way to lose one.</p>
+      </section>
+
       <section id="achievements">
         <h2>Achievements</h2>
         <p class="section-desc">13 one-time milestones, tracked from HQ.</p>
@@ -755,7 +933,7 @@
         <div class="stratlist">
           <div class="strat">
             <div class="strat-head"><span class="strat-t">The Daily Grind</span><span class="strat-tag">Best for: everyone</span></div>
-            <div class="strat-d">Energy doesn't bank and a missed day resets your streak all the way to 1. The single highest-value habit in the game is logging in once every day, spending your energy the same day, and collecting the stipend before it caps at day 7. This alone outperforms most "clever" plays over a long enough timeline.</div>
+            <div class="strat-d">Energy doesn't bank and a missed day resets your streak all the way to 1. The single highest-value habit in the game is logging in every day, spending your energy the same day, and collecting the stipend before it caps at day 7. This alone outperforms most "clever" plays over a long enough timeline. Since energy now lands in two halves (00:00 and 12:00 UTC), checking in on both sides of noon lets you spend the first half immediately instead of sitting on it — but a single later visit still collects the whole day's worth.</div>
           </div>
           <div class="strat">
             <div class="strat-head"><span class="strat-t">Rural Spam</span><span class="strat-tag">Best for: brand-new accounts</span></div>
@@ -845,7 +1023,7 @@ energy_boost:                                    +2 energy/day per tile owned (a
               <tr><td>Building levels</td><td>Vacant → Cottage (5m) → Duplex (30m) → Apartments (2h) → Tower (8h)</td></tr>
               <tr><td>Redevelop bonus</td><td>+25% rent per cycle, free, permanent, uncapped; cost/time penalty caps at 10 cycles</td></tr>
               <tr><td>Region unlock cost</td><td>₲1,000 → ₲2,000 → ₲4,000 → doubling each time</td></tr>
-              <tr><td>Daily energy</td><td>10–24/day by status rank, hard reset at UTC midnight</td></tr>
+              <tr><td>Daily energy</td><td>10–24/day by status rank, in two halves at 00:00 and 12:00 UTC, no banking</td></tr>
               <tr><td>Builder slots</td><td>2–6 by status rank</td></tr>
               <tr><td>Daily attacks / per-tile defense</td><td>6–20/day by status rank · 2 absorbed/day per tile, flat</td></tr>
               <tr><td>Attack cost floor</td><td>0.2% of attacker's peak net worth</td></tr>

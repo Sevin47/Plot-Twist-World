@@ -42,6 +42,52 @@ const VERSION_CHECK_MS = 5 * 60 * 1000;
 // commit, not after the fact.
 const CHANGELOG = [
   {
+    id: "1.19.1",
+    date: "Jul 27, 2026",
+    notes: [
+      "The Wiki now covers Contracts, Collections and company landlords, including the full list of every contract and collection and what each one pays.",
+      "Renamed the \"Homesteader\" collection to \"Smallholding\" so it no longer shares a name with the Homesteader status rank.",
+    ],
+  },
+  {
+    id: "1.19.0",
+    date: "Jul 27, 2026",
+    notes: [
+      "Energy now arrives in two halves — at 00:00 and 12:00 UTC — instead of all at once at midnight. Your daily total is exactly the same; only the timing changed.",
+      "Any half you haven't collected yet is handed over the moment you next open the game, so one visit at 8pm still gets you the full day's energy. You only need two visits if you want to spend the first half early and still have the rest later.",
+      "The energy counter now counts down to the next refill rather than to midnight.",
+    ],
+  },
+  {
+    id: "1.18.0",
+    date: "Jul 27, 2026",
+    notes: [
+      "New: Collections — 13 sets on the Profile tab that reward you for which tiles you own, not just how many. Five coast tiles, one of every district, all four tiles of a 2x2 block, a piece of three different landmarks, a tile inside the Arctic Circle, a tile in all four hemispheres, and more.",
+      "Collections pay permanent rewards: extra daily energy and extra builder slots, plus a few titles. They never expire and are never taken back.",
+      "Your energy and builder-slot counters now show these bonuses included.",
+    ],
+  },
+  {
+    id: "1.17.0",
+    date: "Jul 27, 2026",
+    notes: [
+      "New: company landlords. Quiet stretches of the map now get bought up by holding companies — Soup Loans Realty, Mildly Haunted Realty and friends — so there's always something to raid, trade against and share a border with.",
+      "They only move into areas nobody is playing in, and they pull out once real landlords arrive: their tiles go up for sale on the market first, and return to open land if nobody buys.",
+      "Every tile you take off a company makes the rest of that company's land defend harder against you specifically — so farming the same one gets progressively tougher.",
+      "Companies never attack you, never take landmark tiles, and don't appear on the World register.",
+    ],
+  },
+  {
+    id: "1.16.0",
+    date: "Jul 27, 2026",
+    notes: [
+      "New: Contracts — three daily jobs and one weekly one, on the Profile tab. They're finished by playing normally (claim tiles, finish builds, trade, raid) and pay out ₲, bonus energy and rush credits.",
+      "Rush credits are a new reward that finishes any build instantly, free, no matter how expensive it was — spent automatically the next time you rush.",
+      "Daily contracts rotate at the usual UTC reset, the weekly one on Monday. Anything you finished still pays out even if you don't tap Claim before it rotates.",
+      "A dot appears on the Profile tab when a contract is ready to claim.",
+    ],
+  },
+  {
     id: "1.15.3",
     date: "Jul 23, 2026",
     notes: [
@@ -810,14 +856,22 @@ const fmt1 = (n) => (n < 1 ? n.toFixed(3) : n < 100 ? n.toFixed(1) : fmt(n));
 // need to care whether that's a plain field read; the server re-derives
 // and enforces the real value independently either way.
 const energyNow = (g) => g.energy;
-// Seconds until the next UTC-midnight reset — display-only estimate of
-// when reset_daily_energy() will next actually reset this player's energy
-// (the real reset only happens lazily, on that player's next RPC call
-// after the boundary, same "compute on read" pattern as everything else
-// here, but midnight UTC is close enough for a countdown).
+// Seconds until the next energy tranche — display-only estimate of when
+// reset_daily_energy() will next top this player up. Energy arrives in two
+// halves per UTC day, at 00:00 and 12:00 (see the split-refill note on
+// reset_daily_energy in supabase.sql), so the next boundary is whichever of
+// those comes first. The real grant only happens lazily, on that player's
+// next RPC call after the boundary — same "compute on read" pattern as
+// everything else here — but the boundary itself is fixed, so a countdown
+// to it is accurate regardless of how many tranches have already landed.
+const ENERGY_REFILL_HOURS = [0, 12]; // MUST match reset_daily_energy's v_target split
 const energySecsToReset = () => {
   const now = new Date();
-  const next = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1, 0, 0, 0);
+  const h = now.getUTCHours();
+  const nextH = ENERGY_REFILL_HOURS.find((x) => x > h);
+  const next = nextH != null
+    ? Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), nextH, 0, 0)
+    : Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1, ENERGY_REFILL_HOURS[0], 0, 0);
   return Math.max(0, Math.round((next - Date.now()) / 1000));
 };
 
@@ -856,6 +910,9 @@ const gameFromProfile = (uid, profile) => ({
   lastSeen: profile.last_seen ? new Date(profile.last_seen).getTime() : Date.now(),
   peakNetWorth: profile.peak_net_worth || 0,
   energy: profile.energy ?? statusFor(profile.peak_net_worth || 0).cap,
+  // free instant-finish charges earned from contracts — spent by rush_build
+  // before it charges ₲ (see supabase.sql's Contracts section)
+  rushCredits: profile.rush_credits || 0,
   attacksSent: profile.attacks_sent_count || 0,
   devMode: profile.dev_mode || false,
   hasUnseenLoss: false, // pure client-side cosmetic flag, never persisted server-side — see collectBattles
@@ -1526,6 +1583,8 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
   const [market, setMarket] = useState({ loading: false, rows: null });
   const [log, setLog] = useState({ loading: false, rows: null });
   const [social, setSocial] = useState({ loading: false, rows: null, err: false });
+  const [contracts, setContracts] = useState({ loading: false, rows: null });
+  const [collections, setCollections] = useState({ loading: false, rows: null });
   const [friendDraft, setFriendDraft] = useState("");
   // accepted-friend uids as a ref, not state — read inside the canvas draw
   // loop every frame (friend-teal territory), same pattern as regions/
@@ -1650,7 +1709,7 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
   const collectBank = useCallback(async () => {
     const { data, error } = await supabase.rpc("claim_bank_ledger");
     if (error || !data || !data.length) return;
-    const { sale_total, sale_count, repo_total, repo_count } = data[0];
+    const { sale_total, sale_count, repo_total, repo_count, contract_total, contract_count } = data[0];
     if (sale_count) {
       if (!g.ach.trader) { g.ach.trader = 1; toast("Unlocked — Trader"); }
       toast(`+₲${fmt(sale_total)} from ${sale_count} tile sale${sale_count === 1 ? "" : "s"}`);
@@ -1659,6 +1718,11 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
       // a tile going stale isn't "trading" — kept separate from the sale
       // toast/achievement above on purpose
       toast(`+₲${fmt(repo_total)} refunded — ${repo_count} tile${repo_count === 1 ? "" : "s"} repossessed for inactivity (30+ days)`);
+    }
+    if (contract_count) {
+      // a contract you finished but never opened the app to claim before it
+      // rotated out — paid automatically at rollover (see roll_contract_scope)
+      toast(`+₲${fmt(contract_total)} — ${contract_count} finished contract${contract_count === 1 ? "" : "s"} paid out`);
     }
   }, [g, toast]);
 
@@ -1672,6 +1736,7 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
     g.boostUntil = data.boost_until ? new Date(data.boost_until).getTime() : 0;
     g.boostReadyAt = data.boost_ready_at ? new Date(data.boost_ready_at).getTime() : 0;
     if (data.energy != null) g.energy = data.energy;
+    if (data.rush_credits != null) g.rushCredits = data.rush_credits;
     if (data.peak_net_worth != null) g.peakNetWorth = data.peak_net_worth;
     if (data.attacks_sent_count != null) g.attacksSent = data.attacks_sent_count;
     if (data.dev_mode != null) g.devMode = data.dev_mode;
@@ -1829,6 +1894,8 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
       if (pendings.current.length) setModal(pendings.current.shift());
       collectBank();
       collectBattles();
+      refreshContracts();
+      refreshCollections();
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -1857,10 +1924,14 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
       n++;
       if (n % 8 === 0) checkAch();
       if (n % 80 === 0) { syncRent(); collectBank(); collectBattles(); }
+      // contracts change far more slowly than money does — a minute is
+      // plenty to keep the "claimable" nav dot honest without adding a
+      // fourth RPC to the 20s reconcile above
+      if (n % 240 === 0) { refreshContracts(); refreshCollections(); }
       force();
     }, 250);
     return () => clearInterval(iv);
-  }, [ready, g, checkAch, syncRent, collectBank, collectBattles, toast]);
+  }, [ready, g, checkAch, syncRent, collectBank, collectBattles, refreshContracts, refreshCollections, toast]);
 
   /* Classification is fully vector-driven (see classifyFromVector above);
      there's no procedural mask/coastline-image fallback. */
@@ -2329,7 +2400,7 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
       // (owner, flip_royalty_to as of the flip feature), so PostgREST can no
       // longer infer which relationship an unqualified `profiles(username)`
       // embed means and rejects the whole query. Must stay qualified.
-      .select("qk,owner,cls,rarity,level,paid,list_price,prestige,attacks_received_count,attacks_received_date,build_until,owner_since,profiles!tiles_owner_fkey(username,peak_net_worth)")
+      .select("qk,owner,cls,rarity,level,paid,list_price,prestige,attacks_received_count,attacks_received_date,build_until,owner_since,profiles!tiles_owner_fkey(username,peak_net_worth,is_npc)")
       .like("qk", `${prefix}%`);
     const t = {};
     if (error) {
@@ -2348,6 +2419,7 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
       for (const row of data || []) {
         t[row.qk] = {
           o: row.owner, n: row.profiles?.username, pnw: row.profiles?.peak_net_worth || 0, r: row.rarity, l: row.level, pr: row.prestige || 0,
+          ...(row.profiles?.is_npc ? { npc: true } : {}),
           cls: row.cls, pd: row.paid, ...(row.list_price != null ? { p: row.list_price } : {}),
           arc: row.attacks_received_date === todayUTC() ? (row.attacks_received_count || 0) : 0,
           ...(row.build_until != null ? { bu: row.build_until } : {}),
@@ -2408,6 +2480,63 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
     return r ? r.t[qk] : undefined;
   };
 
+  /* ── NPC landlords: keep a region populated when real players aren't
+     (see the "NPC landlords" section in supabase.sql for the three rules
+     this serves). The server decides everything — whether to spawn at all,
+     where, for whom, and which NPC land to retire. All the client does is
+     hand it a list of quadkeys it has already classified, because
+     classification lives entirely in the local vector pipeline and the
+     server has no way to know which tiles are water or park.
+
+     Nothing here is trusted server-side: candidates are re-validated
+     against ownership, landmarks, district sellability, the region prefix,
+     and — the load-bearing one — whether any real player already owns
+     anything in that ~9.8km block. ── */
+  const npcSyncedAt = useRef(new Map()); // region -> last call, ms
+  const collectNpcCandidates = useCallback((prefix, max = 40) => {
+    const { s, x: ox, y: oy } = cam.current;
+    const { w, h } = size.current;
+    const tilePx = s / N;
+    // only meaningful at fine-grid zoom: that's the only time vector data
+    // for individual parcels is actually loaded, so anywhere else every
+    // classify() would come back "pending" and be rejected anyway
+    if (tilePx < 8 || !w || !h) return [];
+    const tx0 = Math.max(0, Math.floor(-ox / tilePx));
+    const ty0 = Math.max(0, Math.floor(-oy / tilePx));
+    const tx1 = Math.min(N - 1, Math.ceil((w - ox) / tilePx));
+    const ty1 = Math.min(N - 1, Math.ceil((h - oy) / tilePx));
+    if ((tx1 - tx0 + 1) * (ty1 - ty0 + 1) > 6500) return []; // same sanity bound the renderer uses
+    const qks = [], clss = [];
+    for (let ty = ty0; ty <= ty1 && qks.length < max; ty++) {
+      for (let tx = tx0; tx <= tx1 && qks.length < max; tx++) {
+        const qk = qkOf(tx, ty);
+        if (regionOf(qk) !== prefix) continue;
+        if (recOf(qk)) continue;                       // already owned by someone
+        const c = classify(qk).c;
+        if (c === "pending" || c === "water" || c === "landmark") continue;
+        if (!CLS[c] || CLS[c].sale === false) continue;
+        qks.push(qk); clss.push(c);
+      }
+    }
+    return [qks, clss];
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [classify]);
+
+  const syncNpcPresence = useCallback(async (prefix) => {
+    // Throttled hard on the client too, independent of the server's own 2h
+    // spawn cooldown — this rides the viewport region sync, which re-fires
+    // every ~8s while the player sits still, and there's no reason to make
+    // that round-trip most of the time.
+    const last = npcSyncedAt.current.get(prefix) || 0;
+    if (Date.now() - last < 5 * 60 * 1000) return;
+    const cand = collectNpcCandidates(prefix);
+    if (!cand.length || !cand[0].length) return;
+    npcSyncedAt.current.set(prefix, Date.now());
+    try {
+      await supabase.rpc("sync_npc_presence", { p_region: prefix, p_qks: cand[0], p_clss: cand[1] });
+    } catch { /* best effort — NPC upkeep must never disrupt play */ }
+  }, [collectNpcCandidates]);
+
   /* ── market: just a live query over tiles.list_price, no separate index ── */
   // Builds a PostgREST `.or()` filter matching any of the player's
   // currently-unlocked regions — keeps the Market tab scoped to territory
@@ -2453,8 +2582,11 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
     }
     const bankEvents = bankRows.map((r) => ({
       id: `bank-${r.id}`, ts: r.created_at, qk: r.qk,
+      // 'contract' rows carry the contract's title in from_username rather
+      // than a player name — see roll_contract_scope's rollover auto-claim
       text: r.kind === "repossession" ? `Tile repossessed for inactivity — ₲${fmt(r.amount)} refunded`
         : r.kind === "flip" ? `Flip royalty from ${r.from_username || "a player"} — +₲${fmt(r.amount)}`
+        : r.kind === "contract" ? `Contract paid out: ${r.from_username || "a contract"} — +₲${fmt(r.amount)}`
         : `Sold to ${r.from_username || "a player"} — +₲${fmt(r.amount)}`,
       tone: r.kind === "repossession" ? "dim" : "good",
     }));
@@ -2471,6 +2603,68 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
     setLog({ loading: false, rows: merged });
   }, [g]);
   useEffect(() => { if (tab === "world") { refreshLog(); g.hasUnseenLoss = false; } }, [tab, refreshLog, g]);
+
+  /* ── contracts: rotating daily/weekly objectives (see the Contracts
+     section in supabase.sql for the design rationale). The server does all
+     the work — progress is credited inside the same RPCs that perform the
+     actions themselves, so the client only ever reads the current slate
+     and taps Claim. Nothing here is authoritative; a client that lied
+     about progress would just be told no by claim_contract(). ── */
+  const refreshContracts = useCallback(async () => {
+    const { data, error } = await supabase.rpc("list_contracts");
+    if (error) { setContracts((c) => ({ ...c, loading: false })); return; }
+    setContracts({ loading: false, rows: data || [] });
+  }, []);
+  useEffect(() => { if (tab === "profile") refreshContracts(); }, [tab, refreshContracts]);
+
+  // how many finished contracts are sitting unclaimed — drives the nav dot
+  // so a completed contract is visible without opening the tab to find it
+  const claimableContracts = (contracts.rows || []).filter((c) => !c.claimed && c.progress >= c.target).length;
+
+  const claimContract = async (slot) => {
+    const { data, error } = await supabase.rpc("claim_contract", { p_slot: slot });
+    if (error || !data || !data.length) { toast(error?.message || "Couldn't claim that contract."); return; }
+    const { gbux, nrg, rush, title } = data[0];
+    g.bal += Number(gbux || 0);
+    g.energy += nrg || 0;
+    g.rushCredits += rush || 0;
+    const parts = [gbux ? `+₲${fmt(gbux)}` : null, nrg ? `+${nrg} energy` : null, rush ? `+${rush} rush` : null].filter(Boolean);
+    toast(`${title} — ${parts.join(", ")}`);
+    dirty.current = true;
+    refreshContracts();
+  };
+
+  /* ── collections: portfolio sets (see the Collections section in
+     supabase.sql). Progress is evaluated live server-side off the tiles
+     table, so there's nothing to track client-side — just read the slate
+     and claim. Rewards are permanent capacity (+daily energy, +builder
+     slots), never rent, so the two helpers below feed the same cap
+     displays and gates that status tier and landmark perks already do. ── */
+  const refreshCollections = useCallback(async () => {
+    const { data, error } = await supabase.rpc("list_collections");
+    if (error) { setCollections((c) => ({ ...c, loading: false })); return; }
+    setCollections({ loading: false, rows: data || [] });
+  }, []);
+  useEffect(() => { if (tab === "profile") refreshCollections(); }, [tab, refreshCollections]);
+
+  // Display/gate mirrors of collection_bonus() in supabase.sql — the server
+  // is authoritative for both; these exist so the HUD shows the real cap and
+  // so the local pre-flight check in upgrade() doesn't reject a build the
+  // server would happily accept.
+  const collectionEnergyBonus = () => (collections.rows || []).reduce((s, c) => s + (c.claimed ? (c.reward_energy || 0) : 0), 0);
+  const collectionSlotBonus = () => (collections.rows || []).reduce((s, c) => s + (c.claimed ? (c.reward_slots || 0) : 0), 0);
+  const claimableCollections = (collections.rows || []).filter((c) => !c.claimed && c.have >= c.need).length;
+
+  const claimCollection = async (code) => {
+    const { data, error } = await supabase.rpc("claim_collection", { p_code: code });
+    if (error || !data || !data.length) { toast(error?.message || "Couldn't claim that collection."); return; }
+    const { gbux, nrg, slots, cname } = data[0];
+    g.bal += Number(gbux || 0);
+    const parts = [gbux ? `+₲${fmt(gbux)}` : null, nrg ? `+${nrg} daily energy` : null, slots ? `+${slots} builder slot` : null].filter(Boolean);
+    toast(`${cname} complete — ${parts.join(", ")}`);
+    dirty.current = true;
+    refreshCollections();
+  };
 
   /* ── friends (social phase 1) — one RPC returns the whole graph slice:
      accepted friends, pending requests both directions, and players
@@ -2705,7 +2899,7 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
     // Client-side check just saves a round-trip; the server enforces this
     // independently and for real.
     if (!g.devMode && energyNow(g) < 1) {
-      toast(`Out of energy for today (${statusFor(g.peakNetWorth).cap}/day) — resets at midnight UTC`);
+      toast(`Out of energy — more arrives at 00:00 and 12:00 UTC`);
       return;
     }
     setRoll({ qk, phase: "spin" });
@@ -2923,7 +3117,9 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
     if (t.bu) { toast("Already building — rush it or wait for it to finish."); return; }
     if (!g.devMode) {
       const activeBuilds = g.own.filter((x) => x.bu).length;
-      const slotCap = statusFor(g.peakNetWorth).slots;
+      // + permanent slots from completed collections, or this local
+      // pre-flight check would reject a build the server would allow
+      const slotCap = statusFor(g.peakNetWorth).slots + collectionSlotBonus();
       if (activeBuilds >= slotCap) { toast(`No free builder slots (${slotCap}) — rush a build or wait for one to finish`); return; }
     }
     const cost = upCost(t);
@@ -2951,14 +3147,20 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
   const rushBuild = async (qk) => {
     const t = ownMap.current.get(qk);
     if (!t || !t.bu) return;
-    const cost = rushCostFor(t);
-    if (g.bal < cost) { toast("Not enough ₲ to rush this build."); return; }
+    // a contract-earned rush credit covers the whole cost — mirrors
+    // rush_build's own "spend credits before ₲" rule (supabase.sql), which
+    // is the authority; this is only so the local balance doesn't visibly
+    // drop and then snap back on the next syncRent()
+    const usingCredit = (g.rushCredits || 0) > 0;
+    const cost = usingCredit ? 0 : rushCostFor(t);
+    if (!usingCredit && g.bal < cost) { toast("Not enough ₲ to rush this build."); return; }
     const { data, error } = await supabase.rpc("rush_build", { p_qk: qk });
     if (error || !data) { toast(error?.message || "Couldn't rush this build."); return; }
-    g.bal -= cost; t.l = data.level;
+    if (usingCredit) g.rushCredits -= 1; else g.bal -= cost;
+    t.l = data.level;
     delete t.bu;
     rebuildOwn(); checkAch(); dirty.current = true; save();
-    toast(`Rushed — ${LVL[t.l]} built for ₲${fmt(cost)}`);
+    toast(usingCredit ? `Rushed — ${LVL[t.l]} built with a rush credit` : `Rushed — ${LVL[t.l]} built for ₲${fmt(cost)}`);
   };
 
   // Manual, sequential batch upgrade over a given tile set (the Assets
@@ -2984,7 +3186,7 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
     while (pool.length) {
       if (!g.devMode) {
         const activeBuilds = g.own.filter((x) => x.bu).length;
-        const slotCap = statusFor(g.peakNetWorth).slots;
+        const slotCap = statusFor(g.peakNetWorth).slots + collectionSlotBonus();
         if (activeBuilds >= slotCap) { slotLimited = true; break; }
       }
       pool.sort((a, b) => upCost(a) - upCost(b));
@@ -3692,10 +3894,17 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
     const iv = setInterval(() => {
       if (tab !== "map") return;
       if (cam.current.s / N < 8) return;
-      for (const q of prefixesFor(cam.current, size.current)) ensureRegion(q, false);
+      for (const q of prefixesFor(cam.current, size.current)) {
+        ensureRegion(q, false);
+        // NPC upkeep rides the same lazy region sync (compute-on-read, like
+        // everything else here) — cost scales with active players rather
+        // than world size, since it only runs for regions someone is
+        // actually looking at. Self-throttled to once per 5 min per region.
+        syncNpcPresence(q);
+      }
     }, 1200);
     return () => clearInterval(iv);
-  }, [ready, tab, ensureRegion]);
+  }, [ready, tab, ensureRegion, syncNpcPresence]);
 
   // hydrate ownership data for every unlocked region right at login —
   // otherwise the world-view territory dots (draw()'s preview branch below)
@@ -3936,6 +4145,8 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
       refreshOwnedTiles();
       collectBank();
       collectBattles();
+      refreshContracts();
+      refreshCollections();
       if (tab === "map") for (const q of prefixesFor(cam.current, size.current)) ensureRegion(q, true);
     };
     const onVis = () => { if (!document.hidden) resync(); };
@@ -4110,7 +4321,9 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
         </span>
         <div className="flex gap-1.5">
           {t.bu ? (
-            <Btn small onClick={() => rushBuild(t.qk)} disabled={g.bal < rushCostFor(t)}>Rush ₲{fmt(rushCostFor(t))}</Btn>
+            <Btn small onClick={() => rushBuild(t.qk)} disabled={!g.rushCredits && g.bal < rushCostFor(t)}>
+              {g.rushCredits ? "Rush · free" : `Rush ₲${fmt(rushCostFor(t))}`}
+            </Btn>
           ) : landmarksByQk.current.has(t.qk) ? (
             <span className="pt10 px-1" style={{ ...mono, color: C.dim }}>🏛️ landmark</span>
           ) : t.l < MAX_LVL ? (
@@ -4246,17 +4459,17 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
           <div className="mt-0.5 flex items-center gap-1.5">
             <Chip color={C.amber}>{myStatus.name}</Chip>
             {g.devMode && <Chip color="#F08A8A">DEV</Chip>}
-            <span className="pt10 font-bold" style={{ ...mono, color: energyNow(g) > 0 ? C.amber : "#F08A8A", fontVariantNumeric: "tabular-nums" }} title="Energy — spent claiming unowned land, resets once per day">
-              ⚡{energyNow(g)}/{myStatus.cap + landmarkEnergyBonus()} today
+            <span className="pt10 font-bold" style={{ ...mono, color: energyNow(g) > 0 ? C.amber : "#F08A8A", fontVariantNumeric: "tabular-nums" }} title="Energy — spent claiming unowned land, refills in two halves at 00:00 and 12:00 UTC">
+              ⚡{energyNow(g)}/{myStatus.cap + landmarkEnergyBonus() + collectionEnergyBonus()} today
             </span>
-            {energyNow(g) < myStatus.cap && (
-              <span className="pt10" style={{ ...mono, color: C.dim }}>resets in {hm(energySecsToReset())}</span>
+            {energyNow(g) < myStatus.cap + landmarkEnergyBonus() + collectionEnergyBonus() && (
+              <span className="pt10" style={{ ...mono, color: C.dim }}>more in {hm(energySecsToReset())}</span>
             )}
             <span className="pt10 font-bold" style={{ ...mono, color: (g.attacksSent || 0) < myStatus.atk ? C.text : "#F08A8A", fontVariantNumeric: "tabular-nums" }} title="Attacks launched — resets once per day">
               ⚔{Math.max(0, myStatus.atk - (g.attacksSent || 0))}/{myStatus.atk} today
             </span>
             <span className="pt10 font-bold" style={{ ...mono, color: C.text, fontVariantNumeric: "tabular-nums" }} title="Tiles currently under construction">
-              🔨{g.own.filter((t) => t.bu).length}/{myStatus.slots} building
+              🔨{g.own.filter((t) => t.bu).length}/{myStatus.slots + collectionSlotBonus()} building
             </span>
           </div>
         </div>
@@ -4398,8 +4611,8 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
                   <span style={{ color: "#F08A8A" }}> · {g.own.filter((t) => !CLS[t.cls] || CLS[t.cls].rps === 0).length} zero-rent!</span>
                 )}
               </div>
-              <div>energy {energyNow(g)}/{myStatus.cap} today ({myStatus.name}) · resets in {hm(energySecsToReset())}</div>
-              <div>builds: {g.own.filter((t) => t.bu).length}/{myStatus.slots} slots · attacks {g.attacksSent || 0}/{myStatus.atk} sent</div>
+              <div>energy {energyNow(g)}/{myStatus.cap}+{landmarkEnergyBonus()}lm+{collectionEnergyBonus()}col today ({myStatus.name}) · resets in {hm(energySecsToReset())}</div>
+              <div>builds: {g.own.filter((t) => t.bu).length}/{myStatus.slots}+{collectionSlotBonus()}col slots · attacks {g.attacksSent || 0}/{myStatus.atk} sent · rush credits {g.rushCredits || 0}</div>
               <div>territory: {unlockedRegions.current.size} region(s){homeRegionRef.current ? ` · home ${homeRegionRef.current}` : ""}{sel ? ` · sel ${regionOf(sel)} locked=${String(selLocked)}` : ""}</div>
               <div>fps {D.fps} · draw {D.avg}ms · max {D.max}ms</div>
               <div>tilePx {D.tilePx.toFixed(2)} · grid {String(D.gridOn)} · tiles {D.cnt}</div>
@@ -4537,7 +4750,13 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
                     <Chip color={RAR[selRec.r || 0].color}>{RAR[selRec.r || 0].name}</Chip>
                     <Chip color={CLS[selCls].color}>{LVL[selRec.l || 0]}</Chip>
                     <span className="text-xs" style={{ ...mono, color: C.dim }}>owned by {selRec.n || "a player"}</span>
-                    <Chip color={C.amber}>{statusFor(selRec.pnw).name}</Chip>
+                    {/* an NPC landlord has no status ladder to show (they're
+                        excluded from the register) — label the holding
+                        instead, so "why can't I friend or message them" has
+                        a visible answer */}
+                    {selRec.npc
+                      ? <Chip color="#8FA6C4">Company</Chip>
+                      : <Chip color={C.amber}>{statusFor(selRec.pnw).name}</Chip>}
                   </div>
                   {selRec.p ? (
                     <Btn full onClick={() => buyListed(sel)} disabled={g.bal < selRec.p}>
@@ -4627,8 +4846,12 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
                           </div>
                         </div>
                         <div className="flex gap-2">
-                          <Btn full tone="ghost" onClick={() => rushBuild(sel)} disabled={g.bal < rushCostFor(selMine, landmarkPerkPct(regionOf(sel), "build_speed"), landmarkPerkPct(regionOf(sel), "rush_discount"))}>
-                            Rush — ₲{fmt(rushCostFor(selMine, landmarkPerkPct(regionOf(sel), "build_speed"), landmarkPerkPct(regionOf(sel), "rush_discount")))}
+                          {/* a contract-earned rush credit pays for any build
+                              regardless of size — see rush_build in supabase.sql */}
+                          <Btn full tone="ghost" onClick={() => rushBuild(sel)} disabled={!g.rushCredits && g.bal < rushCostFor(selMine, landmarkPerkPct(regionOf(sel), "build_speed"), landmarkPerkPct(regionOf(sel), "rush_discount"))}>
+                            {g.rushCredits
+                              ? `Rush — free (${g.rushCredits} credit${g.rushCredits === 1 ? "" : "s"})`
+                              : `Rush — ₲${fmt(rushCostFor(selMine, landmarkPerkPct(regionOf(sel), "build_speed"), landmarkPerkPct(regionOf(sel), "rush_discount")))}`}
                           </Btn>
                           <Btn tone="danger" onClick={() => abandon(sel)}>50%</Btn>
                         </div>
@@ -4801,6 +5024,73 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
         {/* HQ */}
         {tab === "profile" && (
           <div className="absolute inset-0 overflow-y-auto p-4">
+            {/* Contracts sit at the very top of this tab on purpose: they're
+                the game's "what should I do today" surface, and the whole
+                point of adding them was that a session used to end the
+                moment energy ran out with nothing else on offer. See the
+                Contracts section in supabase.sql for the design rationale. */}
+            <div className="mb-3 rounded-xl p-3" style={cardSty}>
+              <div className="mb-2 flex items-center justify-between gap-2">
+                <Eyebrow>Contracts</Eyebrow>
+                {g.rushCredits > 0 && (
+                  <Chip color={C.amber}>{g.rushCredits} rush credit{g.rushCredits === 1 ? "" : "s"}</Chip>
+                )}
+              </div>
+              {contracts.rows == null ? (
+                <div className="pt11" style={{ ...mono, color: C.dim }}>Loading…</div>
+              ) : contracts.rows.length === 0 ? (
+                <div className="pt11" style={{ ...mono, color: C.dim }}>No contracts right now — check back shortly.</div>
+              ) : (
+                <div className="flex flex-col gap-2">
+                  {contracts.rows.map((c) => {
+                    const done = c.progress >= c.target;
+                    const pct = Math.min(100, Math.round((c.progress / Math.max(1, c.target)) * 100));
+                    const rewards = [
+                      c.reward_gbux ? `₲${fmt(c.reward_gbux)}` : null,
+                      c.reward_energy ? `+${c.reward_energy} energy` : null,
+                      c.reward_rush ? `+${c.reward_rush} rush` : null,
+                    ].filter(Boolean).join(" · ");
+                    return (
+                      <div key={c.slot} className="rounded-lg p-2.5"
+                        style={{ background: C.panel, border: `1px solid ${done && !c.claimed ? C.amber : C.hair}` }}>
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-1.5">
+                              <span className="pt9 trk uppercase font-semibold" style={{ ...display, color: c.scope === "weekly" ? C.amber : C.dim }}>
+                                {c.scope === "weekly" ? "Weekly" : "Daily"}
+                              </span>
+                              <span className="truncate text-sm font-bold" style={display}>{c.name}</span>
+                            </div>
+                            <div className="pt10 mt-0.5 truncate" style={{ ...mono, color: C.dim }}>{c.descr}</div>
+                          </div>
+                          {c.claimed ? (
+                            <span className="pt10 shrink-0 font-bold" style={{ ...display, color: C.dim }}>Claimed</span>
+                          ) : done ? (
+                            <Btn small onClick={() => claimContract(c.slot)}>Claim</Btn>
+                          ) : (
+                            <span className="pt11 shrink-0 font-bold" style={{ ...mono, color: C.dim, fontVariantNumeric: "tabular-nums" }}>
+                              {c.progress}/{c.target}
+                            </span>
+                          )}
+                        </div>
+                        {!c.claimed && (
+                          <>
+                            <div className="mt-2 h-1 w-full overflow-hidden rounded-full" style={{ background: C.hair }}>
+                              <div className="h-full rounded-full" style={{ width: `${pct}%`, background: done ? C.amber : C.dim }} />
+                            </div>
+                            <div className="pt10 mt-1.5" style={{ ...mono, color: C.dim }}>Pays {rewards}</div>
+                          </>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+              <div className="pt10 mt-2" style={{ ...mono, color: C.dim }}>
+                Daily contracts rotate at the same UTC reset as energy; the weekly one rotates on Monday. Anything you finish still pays out even if you don't claim it before it rotates.
+              </div>
+            </div>
+
             <div className="mb-3 rounded-xl p-3" style={cardSty}>
               <div className="mb-2 flex items-center justify-between gap-2">
                 {g.name ? (
@@ -4834,7 +5124,7 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
                 <div className="pt10" style={{ ...mono, color: C.dim }}>Highest status reached — ₲{fmt(g.peakNetWorth)} peak net worth.</div>
               )}
               <div className="pt10 mt-2" style={{ ...mono, color: C.dim }}>
-                Status is sticky (never drops) and raises your daily energy cap — {myStatus.cap}/day now. Your name is public on tiles, listings and the leaderboard.
+                Status is sticky (never drops) and raises your daily energy — {myStatus.cap + landmarkEnergyBonus() + collectionEnergyBonus()}/day now, including collection and landmark bonuses, arriving in two halves at 00:00 and 12:00 UTC. Your name is public on tiles, listings and the leaderboard.
               </div>
             </div>
 
@@ -4866,6 +5156,72 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
                     {a.name}
                   </span>
                 ))}
+              </div>
+            </div>
+
+            {/* Collections — sets defined by WHICH tiles you own rather than
+                how many. Rewards are permanent capacity (energy, builder
+                slots), never rent: see the Collections section in
+                supabase.sql for why income rewards were ruled out. */}
+            <div className="mb-3 rounded-xl p-3" style={cardSty}>
+              <div className="mb-2 flex items-center justify-between gap-2">
+                <Eyebrow>Collections</Eyebrow>
+                {collections.rows && (
+                  <span className="pt10 font-bold" style={{ ...mono, color: C.dim }}>
+                    {collections.rows.filter((c) => c.claimed).length}/{collections.rows.length}
+                  </span>
+                )}
+              </div>
+              {collections.rows == null ? (
+                <div className="pt11" style={{ ...mono, color: C.dim }}>Loading…</div>
+              ) : (
+                <div className="flex flex-col gap-2">
+                  {collections.rows.map((c) => {
+                    const done = c.have >= c.need;
+                    const pct = Math.min(100, Math.round((c.have / Math.max(1, c.need)) * 100));
+                    const rewards = [
+                      c.reward_gbux ? `₲${fmt(c.reward_gbux)}` : null,
+                      c.reward_energy ? `+${c.reward_energy} daily energy` : null,
+                      c.reward_slots ? `+${c.reward_slots} builder slot` : null,
+                      c.title ? `“${c.title}”` : null,
+                    ].filter(Boolean).join(" · ");
+                    return (
+                      <div key={c.code} className="rounded-lg p-2.5"
+                        style={{
+                          background: C.panel,
+                          border: `1px solid ${done && !c.claimed ? C.amber : C.hair}`,
+                          opacity: c.claimed ? 0.65 : 1,
+                        }}>
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="min-w-0">
+                            <div className="truncate text-sm font-bold" style={display}>{c.name}</div>
+                            <div className="pt10 mt-0.5 truncate" style={{ ...mono, color: C.dim }}>{c.descr}</div>
+                          </div>
+                          {c.claimed ? (
+                            <span className="pt10 shrink-0 font-bold" style={{ ...display, color: C.amber }}>✓ Complete</span>
+                          ) : done ? (
+                            <Btn small onClick={() => claimCollection(c.code)}>Claim</Btn>
+                          ) : (
+                            <span className="pt11 shrink-0 font-bold" style={{ ...mono, color: C.dim, fontVariantNumeric: "tabular-nums" }}>
+                              {c.have}/{c.need}
+                            </span>
+                          )}
+                        </div>
+                        {!c.claimed && (
+                          <>
+                            <div className="mt-2 h-1 w-full overflow-hidden rounded-full" style={{ background: C.hair }}>
+                              <div className="h-full rounded-full" style={{ width: `${pct}%`, background: done ? C.amber : C.dim }} />
+                            </div>
+                            <div className="pt10 mt-1.5" style={{ ...mono, color: C.dim }}>Pays {rewards}</div>
+                          </>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+              <div className="pt10 mt-2" style={{ ...mono, color: C.dim }}>
+                Collection rewards are permanent and never taken back — selling a tile can un-finish a set you haven't claimed yet, but never one you already have.
               </div>
             </div>
 
@@ -5152,6 +5508,11 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
               <span className="absolute right-2.5 top-1.5 h-2 w-2 rounded-full"
                 style={{ background: "#F08A8A", boxShadow: "0 0 6px #F08A8A99" }}
                 title="Territory lost while you were away" />
+            )}
+            {k === "profile" && claimableContracts + claimableCollections > 0 && (
+              <span className="absolute right-2.5 top-1.5 h-2 w-2 rounded-full"
+                style={{ background: C.amber, boxShadow: `0 0 6px ${C.amber}99` }}
+                title={`${claimableContracts + claimableCollections} reward${claimableContracts + claimableCollections === 1 ? "" : "s"} ready to claim`} />
             )}
             {k === "social" && unreadTotal > 0 && (
               <span className="absolute right-2.5 top-1.5 h-2 w-2 rounded-full"

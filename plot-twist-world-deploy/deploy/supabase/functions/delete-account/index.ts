@@ -68,7 +68,30 @@ Deno.serve(async (req) => {
       return json({ error: tilesErr.message }, 500);
     }
 
-    // Deletes the profiles row too, via `on delete cascade` from auth.users.
+    // These three used to be cleaned up automatically by `on delete cascade`
+    // from auth.users. Those foreign keys were dropped when NPC landlords
+    // landed — an NPC is a profiles row with no auth account behind it, and
+    // would have violated all three (see the FK drops in supabase.sql) — so
+    // this function now has to delete them explicitly, exactly as it already
+    // does for `tiles` just above.
+    //
+    // Order matters: profiles goes LAST, because unlocked_regions,
+    // friendships, messages, tile_nicknames, push_subscriptions and reports
+    // all still cascade from profiles and are cleaned up by that one delete.
+    // battle_log.attacker still has its auth.users FK, so those rows are
+    // cascade-deleted by deleteUser below; only the defender-side rows need
+    // clearing here.
+    for (const step of [
+      admin.from("bank_ledger").delete().eq("recipient", uid),
+      admin.from("battle_log").delete().eq("defender", uid),
+      admin.from("npc_conquests").delete().eq("attacker", uid),
+      admin.from("contract_slots").delete().eq("owner", uid),
+      admin.from("profiles").delete().eq("user_id", uid),
+    ]) {
+      const { error } = await step;
+      if (error) return json({ error: error.message }, 500);
+    }
+
     const { error: delErr } = await admin.auth.admin.deleteUser(uid);
     if (delErr) {
       return json({ error: delErr.message }, 500);
