@@ -42,6 +42,13 @@ const VERSION_CHECK_MS = 5 * 60 * 1000;
 // commit, not after the fact.
 const CHANGELOG = [
   {
+    id: "1.19.2",
+    date: "Jul 27, 2026",
+    notes: [
+      "Fixed the game failing to load after signing in — the previous release crashed on startup for anyone with an account.",
+    ],
+  },
+  {
     id: "1.19.1",
     date: "Jul 27, 2026",
     notes: [
@@ -1900,6 +1907,33 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  /* ── contracts + collections: the two reward slates (see the Contracts
+     and Collections sections in supabase.sql). The server does all the
+     work — progress is credited inside the same RPCs that perform the
+     actions themselves, and collections are evaluated live off the tiles
+     table — so the client only ever reads the current slate and taps
+     Claim. Nothing here is authoritative; a client that lied about
+     progress would just be told no by claim_contract/claim_collection.
+
+     DECLARED HERE, deliberately high up: both are named in the dependency
+     array of the economy tick immediately below, and a dependency array is
+     evaluated DURING RENDER — not deferred like the effect body. Declaring
+     them further down (next to the rest of the contracts/collections UI
+     code, where they read more naturally) put them in the temporal dead
+     zone at that point in the render and crashed the whole app on boot
+     with "Cannot access X before initialization". It only reproduced once
+     signed in, since this component doesn't mount on the title screen. ── */
+  const refreshContracts = useCallback(async () => {
+    const { data, error } = await supabase.rpc("list_contracts");
+    if (error) { setContracts((c) => ({ ...c, loading: false })); return; }
+    setContracts({ loading: false, rows: data || [] });
+  }, []);
+  const refreshCollections = useCallback(async () => {
+    const { data, error } = await supabase.rpc("list_collections");
+    if (error) { setCollections((c) => ({ ...c, loading: false })); return; }
+    setCollections({ loading: false, rows: data || [] });
+  }, []);
+
   /* ── economy tick: live optimistic display locally, reconciled against
      the real server balance roughly every 20s ── */
   useEffect(() => {
@@ -2604,17 +2638,6 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
   }, [g]);
   useEffect(() => { if (tab === "world") { refreshLog(); g.hasUnseenLoss = false; } }, [tab, refreshLog, g]);
 
-  /* ── contracts: rotating daily/weekly objectives (see the Contracts
-     section in supabase.sql for the design rationale). The server does all
-     the work — progress is credited inside the same RPCs that perform the
-     actions themselves, so the client only ever reads the current slate
-     and taps Claim. Nothing here is authoritative; a client that lied
-     about progress would just be told no by claim_contract(). ── */
-  const refreshContracts = useCallback(async () => {
-    const { data, error } = await supabase.rpc("list_contracts");
-    if (error) { setContracts((c) => ({ ...c, loading: false })); return; }
-    setContracts({ loading: false, rows: data || [] });
-  }, []);
   useEffect(() => { if (tab === "profile") refreshContracts(); }, [tab, refreshContracts]);
 
   // how many finished contracts are sitting unclaimed — drives the nav dot
@@ -2634,17 +2657,6 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
     refreshContracts();
   };
 
-  /* ── collections: portfolio sets (see the Collections section in
-     supabase.sql). Progress is evaluated live server-side off the tiles
-     table, so there's nothing to track client-side — just read the slate
-     and claim. Rewards are permanent capacity (+daily energy, +builder
-     slots), never rent, so the two helpers below feed the same cap
-     displays and gates that status tier and landmark perks already do. ── */
-  const refreshCollections = useCallback(async () => {
-    const { data, error } = await supabase.rpc("list_collections");
-    if (error) { setCollections((c) => ({ ...c, loading: false })); return; }
-    setCollections({ loading: false, rows: data || [] });
-  }, []);
   useEffect(() => { if (tab === "profile") refreshCollections(); }, [tab, refreshCollections]);
 
   // Display/gate mirrors of collection_bonus() in supabase.sql — the server
