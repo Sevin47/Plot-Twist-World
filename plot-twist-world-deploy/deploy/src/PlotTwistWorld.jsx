@@ -42,6 +42,13 @@ const VERSION_CHECK_MS = 5 * 60 * 1000;
 // commit, not after the fact.
 const CHANGELOG = [
   {
+    id: "1.22.1",
+    date: "Jul 27, 2026",
+    notes: [
+      "Your balance no longer looks stuck when you're starting out. A single tile earns about ₲0.027 a second, so the number only moved once every ~37 seconds — small balances now show two decimals so you can actually watch it climb, and go back to whole ₲ once your income is fast enough to see.",
+    ],
+  },
+  {
     id: "1.22.0",
     date: "Jul 27, 2026",
     notes: [
@@ -1034,6 +1041,22 @@ function fmt(n) {
 // rps values now go well under 1 (see CLS) — 1 decimal alone would round
 // e.g. 0.018 down to a meaningless "0.0", so sub-1 values get 3 decimals.
 const fmt1 = (n) => (n < 1 ? n.toFixed(3) : n < 100 ? n.toFixed(1) : fmt(n));
+
+// The HUD balance is the one number a player actually watches tick, and
+// fmt()'s floor makes it look broken early on: a single starter tile earns
+// ~₲0.027/s, so the whole-₲ display only moves once every ~37 seconds and
+// reads as frozen — right at the moment the tutorial is claiming it climbs
+// every second. g.bal already carries the fraction (the economy tick adds
+// rps/4 every 250ms), so this is purely a display change.
+//
+// Two decimals, not three: at 0.027/s the third decimal changes several
+// times per tick and reads as noise rather than income. Scoped to a slow
+// rate AND a small balance so it turns itself off as soon as the whole-₲
+// digits move on their own — and never fights fmt's k/m abbreviation,
+// which kicks in at the same 10k threshold.
+const fmtBal = (n, rate) => (rate > 0 && rate < 1 && n < 10000
+  ? n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+  : fmt(n));
 
 // energy is now a flat daily value with no client-side ticking to
 // simulate (unlike the old continuous regen model) — it only ever changes
@@ -5067,7 +5090,7 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
             <span className="pt9 trk uppercase font-semibold" style={{ ...display, color: C.text }}>Menu</span>
           </button>
           <div data-tut="balance" className="flex items-baseline gap-2">
-            <div className="text-2xl font-bold" style={{ ...mono, color: C.amber, fontVariantNumeric: "tabular-nums", textShadow: `0 0 18px ${C.glow}` }}>₲{fmt(g.bal)}</div>
+            <div className="text-2xl font-bold" style={{ ...mono, color: C.amber, fontVariantNumeric: "tabular-nums", textShadow: `0 0 18px ${C.glow}` }}>₲{fmtBal(g.bal, g.rps * (boostOn ? 2 : 1))}</div>
             <div className="text-xs" style={{ ...mono, color: C.dim }}>+{fmt1(g.rps * (boostOn ? 2 : 1))}/s{boostOn ? " ⚡" : ""}</div>
           </div>
           <div className="mt-0.5 flex items-center gap-1.5">

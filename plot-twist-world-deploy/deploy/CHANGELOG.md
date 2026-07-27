@@ -4,6 +4,15 @@ Player-visible changes. Bumped together with `package.json`'s `version`,
 which is the single source of truth the corner badge and the new-version
 poll both read (see `vite.config.js`).
 
+## 1.22.1
+
+- **Your balance no longer looks stuck when you're starting out.** One
+  starter tile earns around ₲0.027 a second, so the whole-₲ display only
+  moved once every ~37 seconds — which read as broken, right while the
+  tutorial was telling you it climbs every second. Small balances earning
+  under ₲1/s now show two decimals, so you can watch it tick. It goes back
+  to whole ₲ on its own once your income is fast enough to see.
+
 ## 1.22.0
 
 ### The tutorial now points at things, and waits for you to do them
