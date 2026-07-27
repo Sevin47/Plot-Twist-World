@@ -2562,8 +2562,8 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
   /* ── NPC landlords: keep a region populated when real players aren't
      (see the "NPC landlords" section in supabase.sql for the three rules
      this serves). The server decides everything — whether to spawn at all,
-     where, for whom, and which NPC land to retire. All the client does is
-     hand it a list of quadkeys it has already classified, because
+     how many, where, for whom, and which NPC land to retire. All the client
+     does is hand it a list of quadkeys it has already classified, because
      classification lives entirely in the local vector pipeline and the
      server has no way to know which tiles are water or park.
 
@@ -2572,7 +2572,11 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
      and — the load-bearing one — whether any real player already owns
      anything in that ~9.8km block. ── */
   const npcSyncedAt = useRef(new Map()); // region -> last call, ms
-  const collectNpcCandidates = useCallback((prefix, max = 40) => {
+  // 64 rather than a couple of dozen because one call can now place up to
+  // six tiles (rule 3 banks spawn budget while nobody is looking), and the
+  // server needs enough legal room left after each insert to put the next
+  // tile beside the last one rather than wherever happens to be left.
+  const collectNpcCandidates = useCallback((prefix, max = 64) => {
     const { s, x: ox, y: oy } = cam.current;
     const { w, h } = size.current;
     const tilePx = s / N;
@@ -2585,27 +2589,51 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
     const tx1 = Math.min(N - 1, Math.ceil((w - ox) / tilePx));
     const ty1 = Math.min(N - 1, Math.ceil((h - oy) / tilePx));
     if ((tx1 - tx0 + 1) * (ty1 - ty0 + 1) > 6500) return []; // same sanity bound the renderer uses
-    const qks = [], clss = [];
-    for (let ty = ty0; ty <= ty1 && qks.length < max; ty++) {
-      for (let tx = tx0; tx <= tx1 && qks.length < max; tx++) {
+
+    // Sweep the WHOLE viewport, then sample — rather than walking row-major
+    // and stopping at `max`. Stopping early meant every candidate came from
+    // the top-left corner of the screen, and since the server can only
+    // choose from what it's sent, that corner WAS the legal world: seeds
+    // landed up and left of wherever you were actually looking, and once
+    // clustering grows a neighbourhood off its seed, so did everything
+    // after them. The bias compounded instead of averaging out.
+    //
+    // The full sweep is affordable because classifyTxy memoises into
+    // clsCache and draw() has already populated it for every visible cell
+    // this frame — so this is Map lookups over a bounded viewport, not
+    // reclassification, and it runs at most once per 5 min per region.
+    const aq = [], ac = [];
+    for (let ty = ty0; ty <= ty1; ty++) {
+      for (let tx = tx0; tx <= tx1; tx++) {
         const qk = qkOf(tx, ty);
         if (regionOf(qk) !== prefix) continue;
         if (recOf(qk)) continue;                       // already owned by someone
         const c = classify(qk).c;
         if (c === "pending" || c === "water" || c === "landmark") continue;
         if (!CLS[c] || CLS[c].sale === false) continue;
-        qks.push(qk); clss.push(c);
+        aq.push(qk); ac.push(c);
       }
     }
-    return [qks, clss];
+
+    // Partial Fisher-Yates: after n swaps the first n entries are a uniform
+    // sample of the whole viewport, without shuffling or copying the rest.
+    const n = Math.min(max, aq.length);
+    for (let i = 0; i < n; i++) {
+      const j = i + Math.floor(Math.random() * (aq.length - i));
+      const tq = aq[i]; aq[i] = aq[j]; aq[j] = tq;
+      const tc = ac[i]; ac[i] = ac[j]; ac[j] = tc;
+    }
+    return [aq.slice(0, n), ac.slice(0, n)];
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [classify]);
 
   const syncNpcPresence = useCallback(async (prefix) => {
     // Throttled hard on the client too, independent of the server's own 2h
-    // spawn cooldown — this rides the viewport region sync, which re-fires
+    // spawn accrual — this rides the viewport region sync, which re-fires
     // every ~8s while the player sits still, and there's no reason to make
-    // that round-trip most of the time.
+    // that round-trip most of the time. Throttling here costs nothing now
+    // that the server banks elapsed time: a call skipped at minute 3 isn't
+    // a spawn lost, just a spawn still owed at minute 5.
     const last = npcSyncedAt.current.get(prefix) || 0;
     if (Date.now() - last < 5 * 60 * 1000) return;
     const cand = collectNpcCandidates(prefix);
