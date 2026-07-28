@@ -1,7 +1,8 @@
 import { useState, useEffect, useRef, useCallback, useReducer } from "react";
 import { supabase, MULTIPLAYER } from "./storage.js";
-import { signInWithGoogle, signOut, onAuthStateChange } from "./auth.js";
+import { signInWithGoogle, signOut, onAuthStateChange, playAsGuest, linkGoogle, linkErrorIsIdentityTaken, isGuestSession } from "./auth.js";
 import { pushSupported, getPushPrefs, setPushPrefs } from "./push.js";
+import { CAPTCHA_ON, captchaMessage } from "./captcha.js";
 // Inlined rather than referenced by URL: Vite's separate-chunk worker
 // resolution (new Worker(new URL(...), import.meta.url)) has documented
 // failure modes specifically with a relative build base ("./", which this
@@ -41,6 +42,18 @@ const VERSION_CHECK_MS = 5 * 60 * 1000;
 // player-visible change ships with a version bump + entry in the same
 // commit, not after the fact.
 const CHANGELOG = [
+  {
+    id: "1.27.0",
+    date: "Jul 28, 2026",
+    notes: [
+      "You can play without an account now. Press Play now, pick your spot, and the map is yours — no sign-in, no email, nothing to fill in first.",
+      "Your guest tile is a real tile on the real map: real district, real rarity roll, real rent while you're away.",
+      "Sign in with Google whenever you're ready and everything comes with you — same tile, same ₲, same streak, now on every device you sign into. Doing it earns +₲1,000 and a free rush.",
+      "Guests get their home tile and the tutorial. The market, raids, new territory and friends open up once you've signed in.",
+      "One catch worth knowing: a guest world lives in that browser alone. Clear your history before signing in and it's gone.",
+      "Play now is captcha-protected against bots. It's invisible — you'll usually never see it.",
+    ],
+  },
   {
     id: "1.26.0",
     date: "Jul 28, 2026",
@@ -506,6 +519,13 @@ const CHANGELOG = [
    supabase.sql), NOT localStorage — a player who switches device would
    otherwise replay the whole thing. localStorage is kept as an offline
    mirror so a failed round-trip can't re-run the tour. */
+
+// What a guest is paid for turning their session into a real account.
+// MUST match link_bonus_geobux() / link_bonus_rushes() in supabase.sql —
+// these two are display copy only (the server decides and pays), but a
+// promise that doesn't match the payout is worse than no promise.
+const LINK_BONUS_GEOBUX = 1000;
+const LINK_BONUS_RUSHES = 1;
 
 const TUT_ESCAPE_MS = 20000;
 
@@ -1299,6 +1319,13 @@ const gameFromProfile = (uid, profile) => ({
   // than localStorage so a player who switches device doesn't replay the
   // tour or re-see every tip.
   tutorial: profile.tutorial || {},
+  // true until this account links a Google identity — see the GUEST
+  // ACCOUNTS section in supabase.sql. Read off the profile row rather than
+  // the JWT's is_anonymous claim because the two disagree for exactly one
+  // moment that matters: straight after linking, the token says "not
+  // anonymous" while the profile still says "guest", and that gap is what
+  // triggers the one-time bonus (see claimLinkBonus).
+  isGuest: !!profile.is_guest,
   devMode: profile.dev_mode || false,
   hasUnseenLoss: false, // pure client-side cosmetic flag, never persisted server-side — see collectBattles
   rps: 0,
@@ -1492,10 +1519,26 @@ function MenuBackBtn({ onClick }) {
 const osReducedMotion = () => typeof window !== "undefined" && window.matchMedia &&
   window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
+// Auto-name for a guest account. claim_username enforces
+// ^[A-Za-z0-9_]{2,16}$ and uniqueness, so this stays inside that shape and
+// the caller retries on collision. Deliberately reads as a placeholder —
+// it should look like something you'd want to change, because linking is
+// where we ask them to.
+const guestName = () => `Newcomer_${Math.floor(1000 + Math.random() * 9000)}`;
+
 export default function PlotTwistWorld() {
   // checking | unconfigured | signedOut | needsUsername | ready
   const [authState, setAuthState] = useState(MULTIPLAYER ? "checking" : "unconfigured");
   const [session, setSession] = useState(null);
+  const [guestBusy, setGuestBusy] = useState(false);
+  const [guestErr, setGuestErr] = useState("");
+  // Set once, by the boot-time claim_link_bonus round-trip, when a guest
+  // world has just become a real account. Consumed by Game, which turns it
+  // into the celebration + rename modal.
+  const [linkBonus, setLinkBonus] = useState(null);
+  // "taken" when the Google account they picked already owns a different
+  // world — the one link failure with no automatic resolution.
+  const [linkErr, setLinkErr] = useState("");
   const [nameDraft, setNameDraft] = useState("");
   const [nameErr, setNameErr] = useState("");
   const [nameBusy, setNameBusy] = useState(false);
@@ -1520,6 +1563,7 @@ export default function PlotTwistWorld() {
   const [startTutorial, setStartTutorial] = useState(false);
 
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [confirmDiscard, setConfirmDiscard] = useState(false);
   const [deleteBusy, setDeleteBusy] = useState(false);
   const [deleteErr, setDeleteErr] = useState("");
   // Deleting an auth user needs the service-role key, which must never ship
@@ -1664,12 +1708,50 @@ export default function PlotTwistWorld() {
         return;
       }
       if (data) {
-        G.current = gameFromProfile(sess.user.id, data);
+        // Guest profile on a session that is no longer anonymous = they
+        // just came back from linking Google. Pay the one-time bonus and
+        // adopt the row the server hands back, rather than the pre-link
+        // one we just read. Failure here is not fatal: is_guest stays set,
+        // so the next boot tries again.
+        let row = data;
+        if (data.is_guest && !isGuestSession(sess)) {
+          const { data: res, error: bonusErr } = await supabase.rpc("claim_link_bonus");
+          if (cancelled) return;
+          if (!bonusErr && res?.profile) {
+            row = res.profile;
+            if (res.bonus) setLinkBonus({ geobux: res.geobux, rushes: res.rushes });
+          }
+        }
+        G.current = gameFromProfile(sess.user.id, row);
         setInGame(true);
         setAuthState("ready");
+      } else if (isGuestSession(sess)) {
+        // A guest never sees the name screen — the whole point is that
+        // nothing stands between "Play" and the map. They get a
+        // placeholder handle now and are asked to pick a real one when
+        // they link (see the linkBonus modal in Game).
+        await claimGuestName(sess);
       } else {
         setAuthState("needsUsername");
       }
+    };
+
+    // Retries on the (rare) unique-username collision. Anything else is a
+    // real failure — drop back to signed out rather than stranding them on
+    // a blank "checking" screen forever.
+    const claimGuestName = async (sess, tries = 0) => {
+      const { data, error } = await supabase.rpc("claim_username", { p_username: guestName() });
+      if (cancelled) return;
+      if (error) {
+        if (tries < 4) return claimGuestName(sess, tries + 1);
+        setGuestErr("Couldn't start a guest world — try signing in instead.");
+        setAuthState("signedOut");
+        return;
+      }
+      G.current = gameFromProfile(sess.user.id, data);
+      setFreshAccount(true);
+      setInGame(true);
+      setAuthState("ready");
     };
     // Deliberately NOT also calling getSession() here — onAuthStateChange
     // fires an INITIAL_SESSION event immediately upon subscribing, which is
@@ -1682,7 +1764,11 @@ export default function PlotTwistWorld() {
     const unsub = onAuthStateChange((event, sess) => {
       if (cancelled) return;
       setSession(sess);
-      if (!sess) { G.current = null; setAuthState("signedOut"); return; }
+      // guestBusy stays true across the whole sign-in → profile → ready
+      // handoff (the button is gone by then); clearing it here is what
+      // makes "Play now" usable again for anyone who lands back on this
+      // screen later, whether from a sign-out or a discarded guest world.
+      if (!sess) { G.current = null; setGuestBusy(false); setAuthState("signedOut"); return; }
       // TOKEN_REFRESHED fires routinely in the background (Supabase renews
       // the access token roughly hourly) — it is NOT a new sign-in. Treating
       // it as one re-fetched only the profile (not tiles) into a brand new
@@ -1695,6 +1781,44 @@ export default function PlotTwistWorld() {
     });
     return () => { cancelled = true; unsub(); };
   }, []);
+
+  const startGuest = async () => {
+    setGuestErr(""); setGuestBusy(true);
+    const { error } = await playAsGuest();
+    if (error) {
+      // Two very different causes wearing the same failure: the player
+      // closed the captcha (their problem, fixable by pressing again) or
+      // the project is misconfigured — "Allow anonymous sign-ins" off,
+      // captcha secret missing. captchaMessage recognises the first;
+      // anything else gets the generic line, and the real reason goes to
+      // the console, because a misconfigured deployment otherwise looks
+      // exactly like a working one.
+      console.warn("guest sign-in failed", error);
+      setGuestErr(captchaMessage(error) || "Couldn't start a guest world — sign in with Google to play.");
+      setGuestBusy(false);
+    }
+    // On success the auth listener takes it from here (loadProfile →
+    // claimGuestName → ready), so busy stays true through the handoff.
+  };
+
+  // Guest → permanent account. Redirects out to Google; everything after
+  // the return trip happens in loadProfile.
+  const upgradeToGoogle = async () => {
+    setLinkErr("");
+    const { error } = await linkGoogle();
+    if (!error) return;
+    setLinkErr(linkErrorIsIdentityTaken(error)
+      ? "taken"
+      : (error.message || "Couldn't connect that Google account — try again."));
+  };
+
+  // The escape hatch for the "taken" case: their Google account already
+  // has a world, so this guest one can't be merged into it and is
+  // abandoned. Never called without an explicit confirmation.
+  const abandonGuestForGoogle = async () => {
+    await signOut();
+    signInWithGoogle();
+  };
 
   const claimName = async () => {
     if (!session) return;
@@ -1728,15 +1852,35 @@ export default function PlotTwistWorld() {
   }
 
   if (authState === "signedOut") {
+    // Play first, sign in later. The Google button stays visible for
+    // returning players (that's the ONLY way back into an existing world),
+    // but it's no longer the toll gate on a first visit — a stranger who
+    // has never seen the game shouldn't have to hand over an identity to
+    // find out whether they like it.
     return (
       <MenuShell>
         <div className="mx-auto flex w-64 flex-col gap-2.5">
-          <Btn full onClick={() => signInWithGoogle()}>Sign in with Google</Btn>
+          <Btn full onClick={startGuest} disabled={guestBusy}>{guestBusy ? "Opening the map…" : "Play now"}</Btn>
+          <Btn full tone="ghost" onClick={() => signInWithGoogle()}>Sign in with Google</Btn>
           <Btn full tone="ghost" onClick={() => window.open(`${import.meta.env.BASE_URL}guide.html`, "_blank", "noopener,noreferrer")}>Wiki</Btn>
         </div>
+        {guestErr && <div className="pt10 mx-auto mt-3 max-w-xs" style={{ ...mono, color: "#F08A8A" }}>{guestErr}</div>}
         <div className="pt9 mx-auto mt-10 max-w-xs leading-relaxed" style={{ ...mono, color: C.dim }}>
-          One account per player, tied to your Google sign-in — no separate "new game," ever. ₲ Geobux are virtual and worth nothing.
+          Play now claims a real tile on the real map, no account needed — sign in with Google afterwards to keep it (and pocket a bonus for doing so). Already have a world? Sign in. ₲ Geobux are virtual and worth nothing.
         </div>
+        {/* Required attribution: the guest button runs hCaptcha in invisible
+            mode (see captcha.js), and hiding the badge is only permitted
+            with these two links on the page. Don't remove them. */}
+        {CAPTCHA_ON && (
+          <div className="pt9 mx-auto mt-3 max-w-xs" style={{ ...mono, color: C.dim, opacity: 0.7 }}>
+            Protected by hCaptcha —{" "}
+            <a href="https://www.hcaptcha.com/privacy" target="_blank" rel="noopener noreferrer"
+              className="underline decoration-dotted underline-offset-2" style={{ color: C.dim }}>Privacy</a>
+            {" · "}
+            <a href="https://www.hcaptcha.com/terms" target="_blank" rel="noopener noreferrer"
+              className="underline decoration-dotted underline-offset-2" style={{ color: C.dim }}>Terms</a>
+          </div>
+        )}
       </MenuShell>
     );
   }
@@ -1759,10 +1903,38 @@ export default function PlotTwistWorld() {
   }
 
   // authState === "ready"
+  const isGuest = isGuestSession(session);
+
   if (!inGame) {
     // Shared across all three pause-menu screens (main/leaderboard/settings)
     // since either modal can be triggered from whichever one is showing.
     const overlay = <>
+      {confirmDiscard && (
+        <Modal onClose={() => setConfirmDiscard(false)}>
+          <Eyebrow>Discard this guest world?</Eyebrow>
+          <div className="mt-3 text-sm leading-relaxed" style={{ color: C.text }}>
+            Your tile, your ₲ and everything you've built here go back to the world unclaimed. Nothing about a guest world can be recovered afterwards — there's no account to sign back into.
+          </div>
+          <div className="mt-4 flex gap-2">
+            <Btn full tone="ghost" onClick={() => setConfirmDiscard(false)}>Keep playing</Btn>
+            <Btn full tone="danger" onClick={() => signOut()}>Discard it</Btn>
+          </div>
+        </Modal>
+      )}
+      {linkErr && (
+        <Modal onClose={() => setLinkErr("")}>
+          <Eyebrow>{linkErr === "taken" ? "That account already has a world" : "Couldn't sign in"}</Eyebrow>
+          <div className="mt-3 text-sm leading-relaxed" style={{ color: C.text }}>
+            {linkErr === "taken"
+              ? "That Google account is already a landlord somewhere on this map. Two worlds can't be merged into one, so you can either sign into the world you already have — leaving this guest one behind — or link a different Google account to keep this one."
+              : linkErr}
+          </div>
+          <div className="mt-4 flex gap-2">
+            <Btn full tone="ghost" onClick={() => setLinkErr("")}>Back</Btn>
+            {linkErr === "taken" && <Btn full tone="danger" onClick={abandonGuestForGoogle}>Use my old world</Btn>}
+          </div>
+        </Modal>
+      )}
       {confirmDelete && (
         <Modal onClose={() => !deleteBusy && setConfirmDelete(false)}>
           <Eyebrow>Delete account &amp; data?</Eyebrow>
@@ -1914,7 +2086,24 @@ export default function PlotTwistWorld() {
           <Btn full tone="ghost" onClick={() => { setStartTutorial(true); setInGame(true); }}>Replay tutorial</Btn>
           <Btn full tone="ghost" onClick={() => setMenuView("leaderboard")}>World register</Btn>
           <Btn full tone="ghost" onClick={() => setMenuView("settings")}>Settings</Btn>
-          <Btn full tone="ghost" onClick={() => signOut()}>Sign out</Btn>
+          {/* A guest has no account to sign out OF — signing out here
+              would silently destroy their world, since the anonymous
+              session in this browser is the only thing that can reach it.
+              So the slot becomes the save prompt instead, and the
+              destructive version moves behind an explicit confirmation. */}
+          {isGuest ? (
+            <>
+              <Btn full onClick={upgradeToGoogle}>Save world — sign in with Google</Btn>
+              <Btn full tone="ghost" onClick={() => setConfirmDiscard(true)}>Discard guest world</Btn>
+            </>
+          ) : (
+            <Btn full tone="ghost" onClick={() => signOut()}>Sign out</Btn>
+          )}
+          {isGuest && (
+            <div className="pt9 mt-1 leading-relaxed" style={{ ...mono, color: C.dim }}>
+              This world lives in this browser only. Signing in keeps your tile, your ₲ and your streak — and pays a bonus.
+            </div>
+          )}
         </div>
       </MenuShell>
     );
@@ -1922,7 +2111,10 @@ export default function PlotTwistWorld() {
 
   return <Game key={session.user.id} G={G} onExit={() => setInGame(false)} startFresh={freshAccount} reducedOverride={reducedOverride}
     jumpToQk={jumpToQk} onJumpHandled={() => setJumpToQk(null)}
-    startTutorial={startTutorial} onTutorialStarted={() => setStartTutorial(false)} />;
+    startTutorial={startTutorial} onTutorialStarted={() => setStartTutorial(false)}
+    guest={isGuest} onUpgrade={upgradeToGoogle} onAbandonGuest={abandonGuestForGoogle}
+    linkBonus={linkBonus} onLinkBonusSeen={() => setLinkBonus(null)}
+    linkErr={linkErr} onLinkErrClear={() => setLinkErr("")} />;
 }
 
 function Modal({ children, onClose }) {
@@ -2092,7 +2284,8 @@ function Coach({
    GAME
    ═════════════════════════════════════════════════════════════ */
 
-function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled, startTutorial, onTutorialStarted }) {
+function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled, startTutorial, onTutorialStarted,
+  guest, onUpgrade, onAbandonGuest, linkBonus, onLinkBonusSeen, linkErr, onLinkErrClear }) {
   const [, force] = useReducer((x) => x + 1, 0);
   // Brand-new accounts (startFresh, seeded once from the mount-time prop —
   // see claimName in PlotTwistWorld) start on a basemap-only "pick your
@@ -3601,8 +3794,38 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
      snappy UI, then syncRent() reconciles the real balance periodically. ── */
   const needName = () => false; // username is claimed before the game ever mounts now
 
+  /* ── guest gates ──────────────────────────────────────────────────
+     A guest (no Google account linked yet — see the GUEST ACCOUNTS
+     section in supabase.sql) plays the tutorial for real: their home tile,
+     its rarity roll and everything they build on it are genuine, on the
+     genuine shared map. What they can't do yet is anything that touches
+     the shared land supply or another player.
+
+     These are UI mirrors of server checks, not the checks themselves —
+     assert_not_guest in supabase.sql is what actually decides. Their job
+     is to turn a refusal into an invitation, at the exact moment the
+     player has shown they want the thing. */
+  const guestGate = (what) => {
+    if (!guest) return false;
+    setModal({ kind: "guestGate", what });
+    return true;
+  };
+
+  // Every "List…" button routes through here so the guest gate lands
+  // BEFORE the price prompt — being asked to name a price and only then
+  // told you can't sell would be a worse refusal than not offering it.
+  const openListModal = (qk, base) => {
+    if (guestGate("sell land")) return;
+    setPriceDraft(String(Math.round(base * 1.5)));
+    setModal({ kind: "list", qk });
+  };
+
   const buyUnowned = async (qk) => {
     if (roll || needName()) return;
+    // The home tile is free of this gate — it's the tile the tutorial is
+    // about, and g.own is still empty when it's claimed. Every claim after
+    // that asks for an account (mirrors buy_unowned_tile's own check).
+    if (g.own.length && guestGate("claim more land")) return;
     const cls = classify(qk).c;
     if (CLS[cls].sale === false) return;
     const price = landmarksByQk.current.get(qk)?.claimPrice ?? CLS[cls].price;
@@ -3652,6 +3875,7 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
   const unlockRegion = async (qk) => {
     const region = regionOf(qk);
     if (unlockedRegions.current.has(region)) return;
+    if (guestGate("unlock new territory")) return;
     const cost = nextUnlockCost();
     if (g.bal < cost) return;
     const { data, error } = await supabase.rpc("unlock_region", { p_qk: qk });
@@ -3706,6 +3930,7 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
 
   const buyListed = async (qk) => {
     if (needName()) return;
+    if (guestGate("trade with other players")) return;
     const rec = recOf(qk);
     if (!rec) { toast("Tile not synced yet — one moment, then try again."); return; }
     if (rec.p == null || rec.o === g.uid) return;
@@ -3750,6 +3975,7 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
     // on that too meant a repelled attack couldn't be retried without
     // deselecting the tile and reselecting it to force setRoll(null).
     if ((roll && roll.phase === "battle") || needName()) return;
+    if (guestGate("raid other players")) return;
     const rec = recOf(qk);
     if (!rec || rec.o == null || rec.o === g.uid) return;
     if (!attackableFrom(qk)) { toast("You need to own a neighboring tile to attack this one."); return; }
@@ -4000,6 +4226,26 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
     if (pendings.current.length) setModal(pendings.current.shift());
     else setModal(null);
   };
+
+  // A guest world that just became a real account (the round trip through
+  // Google landed, claim_link_bonus paid out — see loadProfile). Jumps the
+  // queue ahead of the welcome/daily modals: it's the answer to something
+  // the player just did, and those two are ambient.
+  const linkBonusShown = useRef(false);
+  useEffect(() => {
+    if (!ready || !linkBonus || linkBonusShown.current) return;
+    linkBonusShown.current = true;
+    setNameDraft(g.name || "");
+    if (modal) pendings.current.unshift({ kind: "linkBonus", ...linkBonus });
+    else setModal({ kind: "linkBonus", ...linkBonus });
+  }, [ready, linkBonus, modal, g]);
+
+  // Link failures surface as a modal rather than a toast: the one that
+  // matters ("that Google account already has a world") needs a decision,
+  // not an acknowledgement.
+  useEffect(() => {
+    if (linkErr) setModal({ kind: "linkErr", msg: linkErr });
+  }, [linkErr]);
 
   const setName = async () => {
     const n = nameDraft.trim().slice(0, 16);
@@ -4975,6 +5221,12 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
     markTutorial({ tour: "done", step: TUT_STEPS.length });
     setTut(null);
     if (completed && !g.ach.tutorial) { g.ach.tutorial = 1; toast("Unlocked — Oriented"); dirty.current = true; }
+    // The one moment worth asking a guest for an account: they've claimed
+    // a tile, watched it earn, and put a building on it. Asked before any
+    // of that, "sign in" is a toll; asked here, it's about keeping
+    // something they already have. Dismissible — the pill in the HUD and
+    // the pause menu both stay available afterwards.
+    if (completed && guest) setModal({ kind: "guestSave" });
   };
 
   // First unseen tip whose condition holds AND whose anchor is currently on
@@ -5314,7 +5566,7 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
             <Btn small tone="ghost" onClick={() => unlist(t.qk)}>Unlist</Btn>
           ) : (
             <Btn small tone="ghost" disabled={!!modsOf(t).no_list}
-              onClick={() => { setPriceDraft(String(Math.round((t.pd || CLS[t.cls].price) * 1.5))); setModal({ kind: "list", qk: t.qk }); }}>List</Btn>
+              onClick={() => openListModal(t.qk, t.pd || CLS[t.cls].price)}>List</Btn>
           ))}
         </div>
       </div>
@@ -5454,6 +5706,19 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
           </div>
         </div>
         <div className="flex shrink-0 flex-col items-end gap-1.5">
+          {/* The standing, quiet version of the ask. The modal at the end
+              of the tutorial is dismissible on purpose, so there has to be
+              a way back to it that isn't buried in the pause menu — and a
+              guest should never be more than one glance from knowing this
+              world isn't saved yet. */}
+          {guest && (
+            <button onClick={() => setModal({ kind: "guestSave" })}
+              className="pt9 trk rounded-full px-2.5 py-1 uppercase font-semibold transition-colors hover:bg-white/[0.08] focus-visible:outline focus-visible:outline-2"
+              style={{ ...display, color: C.amber, border: `1px solid ${C.amber}66`, background: `${C.amber}14`, outlineColor: C.amber }}
+              title="This world lives in this browser only — sign in to keep it">
+              Guest · save world
+            </button>
+          )}
           <div className="pt9 flex items-center gap-1.5" style={{ ...mono, color: C.dim }}>
             <span>v{APP_VERSION}</span>
             <button onClick={() => setModal({ kind: "changelog" })}
@@ -5765,8 +6030,10 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
                   <div className="mb-3 text-sm leading-relaxed" style={{ color: C.dim }}>
                     This region hasn't been scouted yet — unlock it to claim land here.
                   </div>
-                  <Btn full tut="unlock-btn" onClick={() => unlockRegion(sel)} disabled={g.bal < nextUnlockCost()}>
-                    {g.bal < nextUnlockCost() ? "Not enough ₲" : `Unlock region — ₲${fmt(nextUnlockCost())}`}
+                  <Btn full tut="unlock-btn" onClick={() => unlockRegion(sel)} disabled={!guest && g.bal < nextUnlockCost()}>
+                    {guest ? "Sign in to unlock territory"
+                      : g.bal < nextUnlockCost() ? "Not enough ₲"
+                      : `Unlock region — ₲${fmt(nextUnlockCost())}`}
                   </Btn>
                 </div>
               )}
@@ -5795,9 +6062,17 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
                     <span style={{ color: C.dim }}>{selLandmark ? "Landmark tile · claim price" : "Unclaimed · deed price"}</span>
                     <span className="font-bold" style={selLandmark ? { color: "#FFD700" } : undefined}>₲{fmt(selLandmark ? selLandmark.claimPrice : CLS[selCls].price)}</span>
                   </div>
-                  <Btn full onClick={() => buyUnowned(sel)} disabled={g.bal < (selLandmark ? selLandmark.claimPrice : CLS[selCls].price)}>
-                    {g.bal < (selLandmark ? selLandmark.claimPrice : CLS[selCls].price) ? "Not enough ₲" : `Claim deed — ₲${fmt(selLandmark ? selLandmark.claimPrice : CLS[selCls].price)}`}
-                  </Btn>
+                  {/* A guest past their home tile gets the ask instead of
+                      the price — the button still works, it just leads
+                      somewhere else (buyUnowned's own gate is the backstop
+                      for every other path into it). */}
+                  {guest && g.own.length ? (
+                    <Btn full onClick={() => guestGate("claim more land")}>Sign in to claim more land</Btn>
+                  ) : (
+                    <Btn full onClick={() => buyUnowned(sel)} disabled={g.bal < (selLandmark ? selLandmark.claimPrice : CLS[selCls].price)}>
+                      {g.bal < (selLandmark ? selLandmark.claimPrice : CLS[selCls].price) ? "Not enough ₲" : `Claim deed — ₲${fmt(selLandmark ? selLandmark.claimPrice : CLS[selCls].price)}`}
+                    </Btn>
+                  )}
                 </div>
               )}
 
@@ -5977,7 +6252,7 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
                         {selMine.p ? (
                           <Btn tone="ghost" onClick={() => unlist(sel)}>Unlist</Btn>
                         ) : (
-                          <Btn tone="ghost" onClick={() => { setPriceDraft(String(Math.round((selMine.pd || CLS[selCls].price) * 1.5))); setModal({ kind: "list", qk: sel }); }}>List…</Btn>
+                          <Btn tone="ghost" onClick={() => openListModal(sel, selMine.pd || CLS[selCls].price)}>List…</Btn>
                         )}
                         <Btn tone="danger" onClick={() => abandon(sel)}>50%</Btn>
                       </div>
@@ -6024,7 +6299,7 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
                           <Btn tone="ghost" onClick={() => unlist(sel)}>Unlist</Btn>
                         ) : (
                           <Btn tone="ghost" disabled={!!modsOf(selMine).no_list}
-                            onClick={() => { setPriceDraft(String(Math.round((selMine.pd || CLS[selCls].price) * 1.5))); setModal({ kind: "list", qk: sel }); }}>List…</Btn>
+                            onClick={() => openListModal(sel, selMine.pd || CLS[selCls].price)}>List…</Btn>
                         )}
                         <Btn tone="danger" onClick={() => abandon(sel)}>50%</Btn>
                       </div>
@@ -6049,7 +6324,7 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
                           <Btn tone="ghost" onClick={() => unlist(sel)}>Unlist</Btn>
                         ) : (
                           <Btn tone="ghost" disabled={!!modsOf(selMine).no_list}
-                            onClick={() => { setPriceDraft(String(Math.round((selMine.pd || CLS[selCls].price) * 1.5))); setModal({ kind: "list", qk: sel }); }}>List…</Btn>
+                            onClick={() => openListModal(sel, selMine.pd || CLS[selCls].price)}>List…</Btn>
                         )}
                         <Btn tone="danger" onClick={() => abandon(sel)}>50%</Btn>
                       </div>
@@ -6552,7 +6827,26 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
           </div>
         )}
 
-        {tab === "social" && (
+        {tab === "social" && guest && (
+          /* The one tab with nothing to show a guest: friendship and DMs
+             both need an identity that outlives this browser, and a friend
+             request from an account that can vanish on a cache clear isn't
+             a friend request. Shown as an invitation rather than an empty
+             list full of controls that error. */
+          <div className="absolute inset-0 overflow-y-auto p-4">
+            <div className="rounded-xl p-4" style={cardSty}>
+              <Eyebrow>Friends &amp; messages</Eyebrow>
+              <div className="mb-3 mt-2 text-sm leading-relaxed" style={{ color: C.text }}>
+                Other landlords are out there — buying, building and occasionally raiding each other. Meeting them needs an account they can find you by.
+              </div>
+              <div className="mb-4 text-xs leading-relaxed" style={{ color: C.dim }}>
+                Signing in keeps the tile you've already claimed, unlocks the market and adds +₲{fmt(LINK_BONUS_GEOBUX)} plus {LINK_BONUS_RUSHES} free rush.
+              </div>
+              <Btn full onClick={onUpgrade}>Sign in with Google</Btn>
+            </div>
+          </div>
+        )}
+        {tab === "social" && !guest && (
           <div className="absolute inset-0 overflow-y-auto p-4">
             {/* friends — social phase 1. Teal dot ties list entries to the
                 same C.friend color their territory renders in on the map. */}
@@ -6778,6 +7072,84 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
                   className="min-w-0 flex-1 rounded-xl px-3 py-2.5 text-sm focus-visible:outline focus-visible:outline-2"
                   style={{ ...display, ...inputSty }} />
                 <Btn small onClick={setName} disabled={!nameDraft.trim()}>Save</Btn>
+              </div>
+            </>
+          )}
+          {/* ── guest → account ────────────────────────────────────────
+              Three modals, one story: the ask (guestSave), the refusal
+              that doubles as an ask (guestGate), and the payoff
+              (linkBonus). None of them is a wall — every one of them can
+              be closed straight back into the game. */}
+          {modal.kind === "guestSave" && (
+            <>
+              <Eyebrow>Nicely done, landlord</Eyebrow>
+              <div className="mb-3 mt-2 text-sm leading-relaxed" style={{ color: C.text }}>
+                {tutHomeQk ? `${coordLabel(tutHomeQk)} is really yours` : "That tile is really yours"}, on the real map, and it's earning while you read this.
+              </div>
+              <div className="mb-4 text-xs leading-relaxed" style={{ color: C.dim }}>
+                Right now it lives in this browser alone — clear your history and it's gone. Sign in with Google to keep it forever, play from your phone as well, and trade with everyone else out there.
+              </div>
+              <div className="mb-4 rounded-xl px-3 py-2.5" style={{ background: `${C.amber}14`, border: `1px solid ${C.amber}44` }}>
+                <div className="pt10 trk uppercase font-semibold" style={{ ...display, color: C.amber }}>Welcome package</div>
+                <div className="pt11 mt-1" style={{ ...mono, color: C.text }}>
+                  +₲{fmt(LINK_BONUS_GEOBUX)} and {LINK_BONUS_RUSHES} free rush, the moment you sign in.
+                </div>
+              </div>
+              <div className="flex flex-col gap-2">
+                <Btn full onClick={onUpgrade}>Sign in with Google</Btn>
+                <Btn full tone="ghost" onClick={closeModal}>Keep looking around</Btn>
+              </div>
+            </>
+          )}
+          {modal.kind === "guestGate" && (
+            <>
+              <Eyebrow>Accounts only</Eyebrow>
+              <div className="mb-3 mt-2 text-sm leading-relaxed" style={{ color: C.text }}>
+                You'll need a real account to {modal.what}. Guests get their home tile — everything that touches other players' land waits until there's a name on the deed.
+              </div>
+              <div className="mb-4 text-xs leading-relaxed" style={{ color: C.dim }}>
+                Signing in keeps everything you've built so far, and pays +₲{fmt(LINK_BONUS_GEOBUX)} plus {LINK_BONUS_RUSHES} free rush for making it official.
+              </div>
+              <div className="flex flex-col gap-2">
+                <Btn full onClick={onUpgrade}>Sign in with Google</Btn>
+                <Btn full tone="ghost" onClick={closeModal}>Not yet</Btn>
+              </div>
+            </>
+          )}
+          {modal.kind === "linkBonus" && (
+            <>
+              <Eyebrow>The deed is in your name</Eyebrow>
+              <div className="my-2 text-3xl font-bold" style={{ ...mono, color: C.amber, textShadow: `0 0 26px ${C.glow}` }}>
+                +₲{fmt(modal.geobux)}
+              </div>
+              <div className="mb-4 text-xs leading-relaxed" style={{ color: C.dim }}>
+                Plus {modal.rushes} free rush. Your world is saved to your account now — same tile, same ₲, same streak, on any device you sign into. The whole map is open.
+              </div>
+              <div className="mb-2 text-xs" style={{ color: C.text }}>
+                One last thing: pick the name your deeds are signed with.
+              </div>
+              <div className="flex gap-2">
+                <input value={nameDraft} onChange={(e) => setNameDraft(e.target.value)} maxLength={16} placeholder="e.g. DirtBaron"
+                  className="min-w-0 flex-1 rounded-xl px-3 py-2.5 text-sm focus-visible:outline focus-visible:outline-2"
+                  style={{ ...display, ...inputSty }} />
+                <Btn small onClick={async () => { await setName(); onLinkBonusSeen?.(); }} disabled={!nameDraft.trim() || nameDraft.trim() === g.name}>Save</Btn>
+              </div>
+              <div className="mt-2">
+                <Btn full tone="ghost" onClick={() => { onLinkBonusSeen?.(); closeModal(); }}>Keep {g.name}</Btn>
+              </div>
+            </>
+          )}
+          {modal.kind === "linkErr" && (
+            <>
+              <Eyebrow>{modal.msg === "taken" ? "That account already has a world" : "Couldn't sign in"}</Eyebrow>
+              <div className="mb-4 mt-2 text-sm leading-relaxed" style={{ color: C.text }}>
+                {modal.msg === "taken"
+                  ? "That Google account is already a landlord somewhere on this map. Two worlds can't be merged into one — so either sign into the world you already have and leave this guest one behind, or try again with a different Google account."
+                  : modal.msg}
+              </div>
+              <div className="flex flex-col gap-2">
+                {modal.msg === "taken" && <Btn full tone="danger" onClick={onAbandonGuest}>Use my old world</Btn>}
+                <Btn full tone="ghost" onClick={() => { onLinkErrClear?.(); closeModal(); }}>Back to my tile</Btn>
               </div>
             </>
           )}

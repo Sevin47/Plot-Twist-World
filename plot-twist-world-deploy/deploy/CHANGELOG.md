@@ -4,6 +4,46 @@ Player-visible changes. Bumped together with `package.json`'s `version`,
 which is the single source of truth the corner badge and the new-version
 poll both read (see `vite.config.js`).
 
+## 1.27.0
+
+### Play first, sign in later
+
+- **"Play now" opens the map with no account.** A first-time visitor
+  presses one button, picks a spot on Earth and starts playing. The Google
+  sign-in is still there for returning players, but it is no longer the
+  toll gate on a stranger's first thirty seconds.
+- **A guest tile is a real tile.** Same shared map, same district
+  classification, same rarity roll, same rent accruing while the tab is
+  closed. Guests are Supabase anonymous accounts, so the world they play
+  in is the world everyone else is playing in — not a sandbox.
+- **Linking keeps everything.** Signing in with Google attaches the
+  account to the identity a guest already has, so the tile, the ₲, the
+  streak and the tutorial progress survive the upgrade untouched, and the
+  world becomes reachable from any device. **+₲1,000 and one free rush**
+  are paid on linking.
+- **The ask waits for the end of the tutorial.** Once a new player has
+  claimed a tile, watched it earn and built on it, they're invited to keep
+  it — dismissibly. A "Guest · save world" pill in the header, and the
+  pause menu, both lead back to the same offer.
+- **Guests are held to their home tile.** Claiming further land,
+  unlocking territory, the market, raids, listings and friends all wait
+  until an account exists — enforced server-side, not just in the UI,
+  because anonymous accounts are cheap to mint. Guests are also kept off
+  the World register until they link.
+- **Known limit:** a guest world lives in one browser. Clearing site data
+  before linking loses it, and there is no recovery — the sign-in prompt
+  says so.
+- **"Play now" is captcha-protected**, invisibly — a challenge only
+  appears if hCaptcha doesn't like the request. Guest accounts are the one
+  door into this game that hands out an identity to nobody in particular,
+  so it's the one worth guarding; every bot-minted account would also
+  count toward the project's monthly-active-user billing. Signing in with
+  Google is unaffected.
+
+Requires three Supabase dashboard settings — anonymous sign-ins, manual
+identity linking, and captcha protection (hCaptcha) — plus the
+`VITE_HCAPTCHA_SITE_KEY` build secret.
+
 ## 1.26.0
 
 ### Covenants are drafted at redevelopment, and last your whole tenure

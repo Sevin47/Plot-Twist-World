@@ -1,11 +1,13 @@
 import { createClient } from "@supabase/supabase-js";
 
 /*
-  Single shared Supabase client for the whole app: real accounts (Google
-  sign-in) plus the server-validated economy RPCs in supabase.sql. There is
-  no anonymous/local-only mode anymore — accounts are mandatory, so without
-  VITE_SUPABASE_URL/VITE_SUPABASE_ANON_KEY configured the game simply can't
-  start (see the "unconfigured" state in PlotTwistWorld.jsx).
+  Single shared Supabase client for the whole app: accounts (guest or
+  Google — see auth.js) plus the server-validated economy RPCs in
+  supabase.sql. There is no local-only mode: even a player who hasn't
+  signed in yet is a real Supabase anonymous auth user playing on the real
+  shared world, so without VITE_SUPABASE_URL/VITE_SUPABASE_ANON_KEY
+  configured the game simply can't start (see the "unconfigured" state in
+  PlotTwistWorld.jsx).
 */
 
 const url = import.meta.env.VITE_SUPABASE_URL;
