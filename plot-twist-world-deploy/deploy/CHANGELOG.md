@@ -4,6 +4,43 @@ Player-visible changes. Bumped together with `package.json`'s `version`,
 which is the single source of truth the corner badge and the new-version
 poll both read (see `vite.config.js`).
 
+## 1.25.0
+
+### Covenants run with the land
+
+A covenant is now an encumbrance on the ground rather than a deal with
+whoever currently holds the deed — which is what the word means in property
+law, and what the name always implied.
+
+- **It survives everything.** Selling, being conquered, redeveloping,
+  abandoning. Land that goes back on the market goes back carrying its
+  terms, and whoever claims it next takes them on.
+- **New: pay to release one.** The only way off a covenant now. Priced at
+  ten times the district's deed price or 0.5% of your peak net worth,
+  whichever is larger — the same wealth-indexing as raid costs, so it stays
+  a real decision instead of decaying into a rounding error.
+- **Disclosure before commitment, everywhere.** Unclaimed land that carries
+  terms shows them on its sheet before the claim button; a rival's tile
+  shows its card before you raid it; market listings already did.
+- **Redeveloping no longer clears one.** It demolishes the building, and
+  the covenant was never on the building.
+- **Heritage Listing is now a permanent prestige loop.** Capped at
+  Apartments, it redevelops a level early — and now keeps doing so every
+  cycle rather than needing to be redrawn. Deliberate, and the first thing
+  to look at if prestige pacing drifts.
+
+Why the paid release exists rather than a free one: with no exit at all, an
+expired Ground Lease would be a permanently worthless tile that anyone could
+deliberately manufacture on prime land and then abandon — turning a
+self-inflicted cost into a way to salt ground for every future player. A
+covenant should be a bad deal you signed, never permanent damage to the
+shared map.
+
+*Server-side changes live in `supabase.sql` (new `tile_covenants` land
+record, `release_covenant`, and edits to `buy_unowned_tile`, `attack_tile`,
+`redevelop_tile` and `accept_covenant`) and must be re-applied to the
+database for this release to do anything.*
+
 ## 1.24.0
 
 ### Covenant offers wait for you instead of stopping you

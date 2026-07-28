@@ -42,6 +42,17 @@ const VERSION_CHECK_MS = 5 * 60 * 1000;
 // commit, not after the fact.
 const CHANGELOG = [
   {
+    id: "1.25.0",
+    date: "Jul 28, 2026",
+    notes: [
+      "Covenants now run with the land. A covenant stays on its tile through selling, being conquered, redeveloping — even through being abandoned and claimed by someone else years later. It's an encumbrance on the ground, not a deal with whoever's holding the deed.",
+      "New: release a covenant by paying it out. That's the only way off one now, and it's priced against your net worth so it stays a real decision however rich you get.",
+      "Unclaimed land that carries terms says so on its sheet before you claim it, with both sides spelled out. Same for a rival's tile before you raid it.",
+      "Redeveloping no longer clears a covenant — it tears down the building, and the covenant was never on the building.",
+      "Heritage Listing is now a permanent prestige loop rather than a one-cycle card: capped at Apartments, it redevelops a level early every time.",
+    ],
+  },
+  {
     id: "1.24.0",
     date: "Jul 28, 2026",
     notes: [
@@ -631,7 +642,7 @@ const TIPS = [
     anchor: { dom: "covenant-offer" },
     side: "above-sheet",
     title: "Someone wants terms",
-    text: "Finished buildings attract offers. Every one is a trade — more rent for weaker walls, cheaper builds for lower rent. Take one or none; declining is free, and redeveloping clears whatever you sign.",
+    text: "Finished buildings attract offers. Every one is a trade — more rent for weaker walls, cheaper builds for lower rent. Take one or none; declining is free. What you sign runs with the land, so it stays through sale, conquest and redevelopment — buying it back out is the only way off.",
   },
   {
     // Level 3, not 4, and deliberately: at Tower you'd be explaining a thing
@@ -1040,6 +1051,9 @@ const COVENANTS = {
   anchor_tenant:  { name: "Anchor Tenant",         mods: { rent: 1.25, def: 0.6 } },
   heritage:       { name: "Heritage Listing",      mods: { rent: 1.2, max_level: 3 } },
   ground_lease:   { name: "Ground Lease",          mods: { rent: 1.6, expires_days: 14, after: { rent: 0 } } },
+  // NOTE: covenants now run with the LAND (see tile_covenants in
+  // supabase.sql) — they survive trade, conquest, redevelopment and
+  // abandonment alike. release_covenant is the only way out.
   fortified:      { name: "Fortified Block",       mods: { rent: 0.5, def: 2 } },
   gated:          { name: "Gated Community",       mods: { rent: 0.85, def: 1.5, atk_cost: 2 } },
   easement:       { name: "Conservation Easement", mods: { rent: 0.75, no_attack: true } },
@@ -1124,6 +1138,15 @@ const upCost = (t) => Math.round(CLS[t.cls].price * 0.8 * Math.pow(t.l + 1, 1.6)
 // the tile's effective build ceiling — 4 normally, lower under a covenant
 // that caps it (heritage_listing). Mirrors upgrade_tile's max_level gate.
 const maxLevelOf = (t) => modsOf(t).max_level ?? 4;
+// Cost to buy out a covenant — MUST match release_covenant in supabase.sql.
+// Wealth-indexed with the same greatest(base, floor) shape as attack cost,
+// so it stays a real decision at every scale instead of decaying into a
+// rounding error. peakNetWorth is the caller's, passed in because this is
+// module-level and has no access to game state.
+const releaseCostFor = (t, peakNetWorth) => Math.max(
+  Math.round(CLS[t.cls].price * 10),
+  Math.round((peakNetWorth || 0) * 0.005)
+);
 
 // Build timers — base seconds per TARGET level, MUST match the CASE in
 // upgrade_tile()/rush_build() in supabase.sql exactly. Display/disabled-
@@ -2503,6 +2526,11 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
   const [covOffer, setCovOffer] = useState(null);   // cards for the SELECTED tile: { qk, cards: [...] }
   const [covTick, setCovTick] = useState(0);
   const covOfferQks = useRef(new Map());   // qk -> created_at of its pending offer
+  // qk -> { cv, cvAt } straight off tile_covenants, populated per region by
+  // ensureRegion. Covers UNOWNED land specifically: a covenant runs with the
+  // land, so an abandoned encumbered tile still carries its terms and a
+  // buyer has to be able to read them before claiming.
+  const landCovenants = useRef(new Map());
   // which qk@created_at the inline strip currently holds, so re-renders and
   // the 20s poll don't refetch, but a genuinely NEW offer on the same tile
   // (rush another build while looking at it) does.
@@ -2567,6 +2595,25 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
     setCovOffer(null);
     rebuildOwn(); dirty.current = true; save();
     toast(`Signed — ${COVENANTS[code]?.name || code}`);
+  };
+
+  // Buy your way out. The only exit now that a covenant runs with the land
+  // — see release_covenant in supabase.sql for why it costs rather than
+  // being free, and why redevelop no longer clears anything.
+  const releaseCovenant = async (qk) => {
+    const t = ownMap.current.get(qk);
+    if (!t || !t.cv) return;
+    const cost = releaseCostFor(t, g.peakNetWorth);
+    if (g.bal < cost) { toast(`Releasing this covenant costs ₲${fmt(cost)}.`); return; }
+    const { data, error } = await supabase.rpc("release_covenant", { p_qk: qk });
+    if (error || !data) { toast(error?.message || "Couldn't release that covenant."); return; }
+    const name = COVENANTS[t.cv]?.name || "Covenant";
+    g.bal -= cost;
+    delete t.cv; delete t.cvAt; delete t.cvm;
+    const r = regions.current.get(regionOf(qk));
+    if (r && r.t[qk]) { const n = { ...r.t[qk] }; delete n.cv; delete n.cvAt; delete n.cvm; r.t[qk] = n; }
+    rebuildOwn(); dirty.current = true; save();
+    toast(`${name} released for ₲${fmt(cost)}`);
   };
 
   // Declining is free and always available — the floor of this whole
@@ -3081,6 +3128,19 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
     if (busyRegions.current.has(prefix)) return cur;
     busyRegions.current.add(prefix);
     setSyncing(true);
+    // Land records for this region, in parallel with the tiles query. These
+    // are covenants on quadkeys that may have NO tiles row at all — land
+    // that was abandoned or repossessed while encumbered, which now keeps
+    // its terms for whoever claims it next (see tile_covenants). Without
+    // this, that covenant would be invisible until after purchase, and an
+    // undisclosed encumbrance is exactly the trap this system is built not
+    // to be. Failure is non-fatal: worst case the unowned sheet shows no
+    // covenant line, and the server still applies it.
+    supabase.from("tile_covenants").select("qk,covenant,covenant_at").like("qk", `${prefix}%`)
+      .then(({ data: lc }) => {
+        if (!lc) return;
+        for (const row of lc) landCovenants.current.set(row.qk, { cv: row.covenant, cvAt: row.covenant_at });
+      });
     const { data, error } = await supabase
       .from("tiles")
       // profiles!tiles_owner_fkey — tiles now has two FKs into profiles
@@ -3609,7 +3669,10 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
     g.bal -= price;
     g.energy = Math.max(0, energyNow(g) - 1);
     const r = data.rarity;
-    g.own.push({ qk, l: data.level, r, pr: data.prestige || 0, cls, pd: data.paid });
+    // buy_unowned_tile copies any land covenant onto the fresh row, so a
+    // reclaimed encumbered tile arrives already carrying its terms
+    g.own.push({ qk, l: data.level, r, pr: data.prestige || 0, cls, pd: data.paid,
+      ...(data.covenant != null ? { cv: data.covenant, cvAt: data.covenant_at } : {}) });
     // if this was the player's very first tile anywhere, the server just
     // set it as their free home region (see buy_unowned_tile) — mirror
     // that locally so it doesn't render as freshly-fogged before the next
@@ -3767,10 +3830,9 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
         r.t[qk] = { ...r.t[qk], o: g.uid, n: g.name, pnw: g.peakNetWorth, r: 0, l: 0, pr: 0, pd: CLS[targetCls].price, arc: (rec.arc || 0) + 1 };
         delete r.t[qk].p;
         delete r.t[qk].fp;
-        // a capture wipes the covenant along with level/rarity/prestige
-        // (see attack_tile) — the card was the previous owner's bargain
-        delete r.t[qk].cv;
-        delete r.t[qk].cvAt;
+        // cv/cvAt deliberately survive: a covenant runs with the land, so
+        // conquest inherits it (see attack_tile). cvm is dropped only
+        // because it's a cached resolve keyed to the old owner's portfolio.
         delete r.t[qk].cvm;
       } else {
         r.t[qk] = { ...r.t[qk], arc: (rec.arc || 0) + 1 };
@@ -3778,7 +3840,11 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
     }
 
     if (result.won) {
-      g.own.push({ qk, l: 0, r: 0, pr: 0, cls: targetCls, pd: CLS[targetCls].price });
+      // the captured tile keeps whatever covenant was on it — the attacker
+      // saw it on the target's sheet before committing, and it was already
+      // priced into the defence and cost they were quoted
+      g.own.push({ qk, l: 0, r: 0, pr: 0, cls: targetCls, pd: CLS[targetCls].price,
+        ...(rec.cv ? { cv: rec.cv, cvAt: rec.cvAt } : {}) });
       const region = regionOf(qk);
       unlockedRegions.current.add(region);
       if (!homeRegionRef.current) homeRegionRef.current = region;
@@ -3945,18 +4011,15 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
     const { data, error } = await supabase.rpc("redevelop_tile", { p_qk: qk });
     if (error || !data) { toast(error?.message || "Couldn't redevelop."); return; }
     t.l = data.level; t.pr = data.prestige;
-    // redevelop is the covenant escape hatch (see redevelop_tile) — the
-    // card and any pending offer go with the demolished building
-    const hadCov = t.cv;
-    delete t.cv; delete t.cvAt; delete t.cvm;
+    // The covenant is NOT cleared here any more — it's on the land, not the
+    // building (see redevelop_tile). Only the pending offer goes, since it
+    // was rolled against a level this tile no longer has.
     const rr = regions.current.get(regionOf(qk));
-    if (rr && rr.t[qk]) { const n = { ...rr.t[qk] }; delete n.cv; delete n.cvAt; delete n.cvm; rr.t[qk] = n; }
+    if (rr && rr.t[qk]) rr.t[qk] = { ...rr.t[qk], l: 0, pr: data.prestige };
     covOfferQks.current.delete(qk);
     if (!g.ach.redevelop1) { g.ach.redevelop1 = 1; toast("Unlocked — Redeveloper"); }
     rebuildOwn(); dirty.current = true; save();
-    toast(hadCov
-      ? `Redeveloped — ★${t.pr} · +${t.pr * 25}% rent · ${COVENANTS[hadCov]?.name || "covenant"} cleared`
-      : `Redeveloped — ★${t.pr} · +${t.pr * 25}% rent permanently`);
+    toast(`Redeveloped — ★${t.pr} · +${t.pr * 25}% rent permanently`);
   };
 
   const abandon = async (qk) => {
@@ -5783,6 +5846,31 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
                     <span style={{ color: C.dim }}>{selLandmark ? "Landmark tile · claim price" : "Unclaimed · deed price"}</span>
                     <span className="font-bold" style={selLandmark ? { color: "#FFD700" } : undefined}>₲{fmt(selLandmark ? selLandmark.claimPrice : CLS[selCls].price)}</span>
                   </div>
+                  {/* Encumbered land. A covenant runs with the land, so an
+                      abandoned or repossessed tile still carries its terms
+                      and they bind whoever claims it next — which is only
+                      fair if it's on the sheet BEFORE the claim button. */}
+                  {(() => {
+                    const land = landCovenants.current.get(sel);
+                    const c = land && COVENANTS[land.cv];
+                    if (!c) return null;
+                    return (
+                      <div className="mb-3 rounded-xl p-2.5" style={cardSty}>
+                        <div className="mb-1 flex flex-wrap items-center gap-2">
+                          <Chip color="#C9A0FF">{c.name}</Chip>
+                          <span className="pt10 font-bold" style={{ ...mono, color: C.dim }}>runs with this land</span>
+                        </div>
+                        <div className="flex flex-wrap gap-1">
+                          {covChips(covMods({ cv: land.cv, cvAt: land.cvAt })).map((ch, i) => (
+                            <span key={i} className="pt10 font-bold" style={{ ...mono, color: ch.good ? "#7FD1A0" : "#F08A8A" }}>{ch.t}</span>
+                          ))}
+                        </div>
+                        <div className="pt10 mt-1" style={{ ...mono, color: C.dim }}>
+                          Claiming this tile takes on these terms. Releasing them later costs ₲.
+                        </div>
+                      </div>
+                    );
+                  })()}
                   <Btn full onClick={() => buyUnowned(sel)} disabled={g.bal < (selLandmark ? selLandmark.claimPrice : CLS[selCls].price)}>
                     {g.bal < (selLandmark ? selLandmark.claimPrice : CLS[selCls].price) ? "Not enough ₲" : `Claim deed — ₲${fmt(selLandmark ? selLandmark.claimPrice : CLS[selCls].price)}`}
                   </Btn>
@@ -5900,11 +5988,26 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
                         return (
                           <div className="pt10 mt-1.5" style={{ ...mono, color: left > 0 ? C.dim : "#F08A8A" }}>
                             {left > 0
-                              ? `${hm(left)} of premium rent left — then it earns nothing until you redevelop.`
-                              : "Lease expired — this tile earns nothing until you redevelop it."}
+                              ? `${hm(left)} of premium rent left — then it earns nothing until released.`
+                              : "Lease expired — this tile earns nothing until the covenant is released."}
                           </div>
                         );
                       })()}
+                      {/* The only exit. Says so plainly, because a covenant
+                          now survives selling, being conquered, redeveloping
+                          and abandoning — there is no other way to be rid of
+                          one, and hiding that would make the trade dishonest. */}
+                      <div className="pt10 mt-1.5" style={{ ...mono, color: C.dim }}>
+                        Runs with the land — it stays through sale, conquest and redevelopment.
+                      </div>
+                      <div className="mt-2">
+                        <Btn full small tone="ghost" onClick={() => releaseCovenant(sel)}
+                          disabled={g.bal < releaseCostFor(selMine, g.peakNetWorth)}>
+                          {g.bal < releaseCostFor(selMine, g.peakNetWorth)
+                            ? `Release — ₲${fmt(releaseCostFor(selMine, g.peakNetWorth))} (not enough)`
+                            : `Release covenant — ₲${fmt(releaseCostFor(selMine, g.peakNetWorth))}`}
+                        </Btn>
+                      </div>
                     </div>
                   )}
                   {/* The draft, inline. Deliberately NOT a modal: rushing
@@ -5921,7 +6024,7 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
                           style={{ ...mono, color: C.dim, outlineColor: C.amber }}>Decline all</button>
                       </div>
                       <div className="pt10 mb-2" style={{ ...mono, color: C.dim }}>
-                        Sign one or none — declining is free. It sticks to the deed and travels if you sell; redeveloping clears it.
+                        Sign one or none — declining is free. What you sign runs with the land: it survives selling, conquest and redevelopment, and only a paid release lifts it.
                       </div>
                       <div className="flex flex-col gap-1.5">
                         {covOffer.cards.map((c) => (
