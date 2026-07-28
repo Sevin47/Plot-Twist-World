@@ -42,6 +42,14 @@ const VERSION_CHECK_MS = 5 * 60 * 1000;
 // commit, not after the fact.
 const CHANGELOG = [
   {
+    id: "1.23.1",
+    date: "Jul 28, 2026",
+    notes: [
+      "Fixed: \"Later\" on a covenant offer did nothing — the card reappeared instantly, so the only way past it was to accept or decline. It now steps aside properly, and the tile's own sheet has a button back to it whenever you want.",
+      "Offers waiting from builds that finished while you were away now show up the moment you open the game, instead of after the first sync. They come one at a time, and skipping one moves you to the next.",
+    ],
+  },
+  {
     id: "1.23.0",
     date: "Jul 28, 2026",
     notes: [
@@ -2459,12 +2467,18 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
      its temporal dead zone and throw. ── */
   const [covOffer, setCovOffer] = useState(null);   // { qk, cards: [{ code, name, descr, mods }] }
   const [covTick, setCovTick] = useState(0);
-  const covOfferQks = useRef(new Set());
+  const covOfferQks = useRef(new Map());   // qk -> created_at of its pending offer
+  // Offers the player has waved off with "Later" (or a backdrop tap). Keyed
+  // by qk AND the offer's created_at, not qk alone: deferring must silence
+  // THIS offer, but a genuinely new one rolled for the same tile by a later
+  // build is a new decision and should surface again on its own.
+  const covDeferred = useRef(new Set());
+  const covKey = (qk, at) => `${qk}@${at}`;
 
   const refreshCovOffers = useCallback(async () => {
-    const { data, error } = await supabase.from("covenant_offers").select("qk");
+    const { data, error } = await supabase.from("covenant_offers").select("qk,created_at");
     if (error || !data) return;
-    covOfferQks.current = new Set(data.map((r) => r.qk));
+    covOfferQks.current = new Map(data.map((r) => [r.qk, r.created_at]));
     setCovTick((n) => n + 1);
   }, []);
 
@@ -2481,9 +2495,26 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
   // handed a stack of them.
   useEffect(() => {
     if (covOffer) return;
-    const next = [...covOfferQks.current].find((qk) => ownMap.current.has(qk));
+    const next = [...covOfferQks.current.keys()].find((qk) =>
+      ownMap.current.has(qk) && !covDeferred.current.has(covKey(qk, covOfferQks.current.get(qk))));
     if (next) tryOpenCovOffer(next);
   }, [covOffer, covTick, tryOpenCovOffer]);
+
+  // "Later" — keep the offer (it lives server-side and the tile sheet has a
+  // button back to it) but stop this effect from immediately reopening it.
+  // Without the deferral set, closing the modal just re-satisfies the
+  // condition that opened it, and the player cannot get past the decision.
+  const deferCovOffer = () => {
+    if (covOffer) covDeferred.current.add(covKey(covOffer.qk, covOfferQks.current.get(covOffer.qk)));
+    setCovOffer(null);
+  };
+
+  // Load whatever accumulated while away as soon as the session is live.
+  // Builds run offline, so a player coming back to four finished towers has
+  // four offers already waiting server-side; without this they wouldn't
+  // appear until the first 20s reconcile tick, which is precisely the
+  // moment they're most expected.
+  useEffect(() => { if (ready) refreshCovOffers(); }, [ready, refreshCovOffers]);
 
   const acceptCovenant = async (code) => {
     if (!covOffer) return;
@@ -2494,6 +2525,7 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
     if (t) { t.cv = data.covenant; t.cvAt = data.covenant_at; }
     const r = regions.current.get(regionOf(qk));
     if (r && r.t[qk]) r.t[qk] = { ...r.t[qk], cv: data.covenant, cvAt: data.covenant_at };
+    covDeferred.current.delete(covKey(qk, covOfferQks.current.get(qk)));
     covOfferQks.current.delete(qk);
     setCovOffer(null);
     rebuildOwn(); dirty.current = true; save();
@@ -2505,6 +2537,7 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
   const declineCovenant = async () => {
     if (!covOffer) return;
     const qk = covOffer.qk;
+    covDeferred.current.delete(covKey(qk, covOfferQks.current.get(qk)));
     covOfferQks.current.delete(qk);
     setCovOffer(null);
     const { error } = await supabase.rpc("decline_covenant", { p_qk: qk });
@@ -6771,7 +6804,7 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
           hides it (the offer is stored server-side and comes back) —
           "Decline" is the only thing that actually gives it up. */}
       {covOffer && !modal && (
-        <Modal onClose={() => setCovOffer(null)}>
+        <Modal onClose={deferCovOffer}>
           <Eyebrow>Covenant offered · {coordLabel(covOffer.qk)}</Eyebrow>
           <div className="mb-1 mt-2 text-sm font-bold" style={display}>The building's finished. Someone wants terms.</div>
           <div className="mb-3 text-xs" style={{ color: C.dim }}>
@@ -6803,7 +6836,7 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
           </div>
           <div className="mt-3 flex gap-2">
             <Btn full tone="ghost" onClick={declineCovenant}>Decline all</Btn>
-            <Btn full tone="ghost" onClick={() => setCovOffer(null)}>Later</Btn>
+            <Btn full tone="ghost" onClick={deferCovOffer}>Later</Btn>
           </div>
         </Modal>
       )}

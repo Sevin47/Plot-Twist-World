@@ -4,6 +4,21 @@ Player-visible changes. Bumped together with `package.json`'s `version`,
 which is the single source of truth the corner badge and the new-version
 poll both read (see `vite.config.js`).
 
+## 1.23.1
+
+- **"Later" on a covenant offer actually works now.** Dismissing the card
+  (or tapping the backdrop) cleared the modal, but the effect that surfaces
+  a waiting offer immediately re-satisfied its own condition and reopened
+  the same one — so the only way past the decision was to accept or decline
+  it. Deferring now silences that specific offer for the session; the tile's
+  sheet keeps a button back to it, and a genuinely new offer rolled by a
+  later build on the same tile still surfaces on its own.
+- **Offers earned while you were away appear on open.** Builds run offline,
+  so returning after several finish leaves several offers waiting
+  server-side. They were only picked up by the 20-second reconcile tick;
+  they now load as soon as the session is live. They still arrive one at a
+  time, and skipping one moves to the next.
+
 ## 1.23.0
 
 ### Covenants — three offers on every finished build
