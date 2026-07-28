@@ -4,6 +4,34 @@ Player-visible changes. Bumped together with `package.json`'s `version`,
 which is the single source of truth the corner badge and the new-version
 poll both read (see `vite.config.js`).
 
+## 1.24.0
+
+### Covenant offers wait for you instead of stopping you
+
+The build timer was meant to space these decisions out, but rushing is
+*designed* to collapse that timer — it's the game's main money sink. So for
+an active player doing a rush-upgrade-rush session, completions arrive
+seconds apart and a modal on each one turned an upgrade bender into a wall
+of forced choices. The frequency of that event is entirely player-controlled
+and unbounded, so nothing that blocks on it can behave well.
+
+- **No popup, ever.** Offers roll exactly as before and wait to be found.
+- **The three cards render inline in the tile's own sheet**, under the build
+  buttons — the panel a rushing player is already standing in. One tap takes
+  a card; ignoring it costs nothing and it stays put.
+- **A violet dot on the Assets tab** counts tiles with an offer waiting, and
+  Assets rows keep their per-tile chip, so an offer on a tile you're not
+  looking at still surfaces.
+- **A one-shot tip** introduces the system the first time cards appear,
+  anchored to the real cards rather than describing them from elsewhere.
+- **Rushing still earns a full draft on every completed build.** Making
+  rushing forfeit the draft would have fixed the spam by taxing the exact
+  playstyle the money sink depends on — the wrong trade.
+
+"Later" is gone as a concept, along with the deferral bookkeeping added in
+1.23.1 to work around the popup: with nothing interrupting, there is nothing
+to defer.
+
 ## 1.23.1
 
 - **"Later" on a covenant offer actually works now.** Dismissing the card

@@ -42,6 +42,16 @@ const VERSION_CHECK_MS = 5 * 60 * 1000;
 // commit, not after the fact.
 const CHANGELOG = [
   {
+    id: "1.24.0",
+    date: "Jul 28, 2026",
+    notes: [
+      "Covenant offers no longer interrupt you. If you rush your builds, completions arrive seconds apart, and a popup on each one turned an upgrade session into a queue of forced decisions. Offers now wait instead of asking.",
+      "The three cards appear inside the tile's own sheet, right under the build buttons — take one with a tap, or keep building and it stays there.",
+      "A violet dot on the Assets tab counts how many tiles have an offer waiting, so nothing gets lost just because it didn't stop you.",
+      "Nothing was taken away: rushing still earns a full draft on every completed build, exactly as before.",
+    ],
+  },
+  {
     id: "1.23.1",
     date: "Jul 28, 2026",
     notes: [
@@ -609,6 +619,19 @@ const TIPS = [
     anchor: { dom: "nav-world" },
     title: "You were raided",
     text: "Other players can take your tiles. The World tab has the details of what happened.",
+  },
+  {
+    // Covenants deliberately never interrupt — see the covenant block in
+    // Game(). That buys a rusher an uninterrupted session but costs the
+    // discoverability a modal gets for free, so this tip does that job
+    // once, anchored to the real cards in the sheet rather than describing
+    // them from somewhere else.
+    id: "covenant_offer",
+    when: (ctx) => ctx.covOfferHere,
+    anchor: { dom: "covenant-offer" },
+    side: "above-sheet",
+    title: "Someone wants terms",
+    text: "Finished buildings attract offers. Every one is a trade — more rent for weaker walls, cheaper builds for lower rent. Take one or none; declining is free, and redeveloping clears whatever you sign.",
   },
   {
     // Level 3, not 4, and deliberately: at Tower you'd be explaining a thing
@@ -2448,32 +2471,42 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
   /* ── covenants: the three-card draft a completed build earns ────────
      Offers are rolled and stored SERVER-side (covenant_offer_roll in
      supabase.sql), which is what makes them un-rerollable — refetching
-     returns the same three cards, and dismissing the modal doesn't lose
-     the offer, it just leaves it waiting.
+     returns the same three cards.
 
-     covOfferQks is the authoritative "which of my tiles have one" set,
+     PULL, NOT PUSH. This deliberately never interrupts. The original
+     version popped a modal on every completion, which is fine at the
+     pace the build timers set — but rushing is DESIGNED to collapse those
+     timers (it's the game's main money sink), so an active player doing a
+     rush-upgrade-rush bender hits a completion every few seconds and the
+     modal became a wall of forced decisions. The frequency of this event
+     is entirely player-controlled and unbounded, so nothing that blocks on
+     it can be well-behaved. Making rushing forfeit the draft would fix the
+     spam by taxing the exact playstyle the sink depends on — the wrong
+     trade. So offers now wait: a badge counts them, the tile sheet renders
+     the cards inline where a rusher's attention already is, and a one-shot
+     TIP teaches it once instead of a modal asking forever.
+
+     covOfferQks is the authoritative "which of my tiles have one" map,
      read straight from covenant_offers (RLS already scopes that table to
      tiles you own, so an unfiltered select IS the personal list). Reading
      the table rather than tracking completions client-side matters for the
      timer path: the client completes a build optimistically the moment the
      countdown hits zero, BEFORE accrue_rent/finish_builds has necessarily
      run server-side, so at that instant the offer genuinely doesn't exist
-     yet. Polling the table sidesteps the race entirely and also picks up
-     offers earned on another device.
+     yet. Polling sidesteps the race and also picks up offers earned on
+     another device.
 
      Declared here rather than down with the other tile actions because the
      economy tick below lists refreshCovOffers in its dependency array —
      that array is evaluated during render, so a later `const` would be in
      its temporal dead zone and throw. ── */
-  const [covOffer, setCovOffer] = useState(null);   // { qk, cards: [{ code, name, descr, mods }] }
+  const [covOffer, setCovOffer] = useState(null);   // cards for the SELECTED tile: { qk, cards: [...] }
   const [covTick, setCovTick] = useState(0);
   const covOfferQks = useRef(new Map());   // qk -> created_at of its pending offer
-  // Offers the player has waved off with "Later" (or a backdrop tap). Keyed
-  // by qk AND the offer's created_at, not qk alone: deferring must silence
-  // THIS offer, but a genuinely new one rolled for the same tile by a later
-  // build is a new decision and should surface again on its own.
-  const covDeferred = useRef(new Set());
-  const covKey = (qk, at) => `${qk}@${at}`;
+  // which qk@created_at the inline strip currently holds, so re-renders and
+  // the 20s poll don't refetch, but a genuinely NEW offer on the same tile
+  // (rush another build while looking at it) does.
+  const covLoadedFor = useRef(null);
 
   const refreshCovOffers = useCallback(async () => {
     const { data, error } = await supabase.from("covenant_offers").select("qk,created_at");
@@ -2482,39 +2515,43 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
     setCovTick((n) => n + 1);
   }, []);
 
-  const tryOpenCovOffer = useCallback(async (qk) => {
-    const { data, error } = await supabase.rpc("list_covenant_offer", { p_qk: qk });
-    if (error || !data || !data.length) { covOfferQks.current.delete(qk); return false; }
-    setCovOffer({ qk, cards: data });
-    return true;
-  }, []);
-
-  // auto-surface one waiting offer at a time. Re-runs when the modal closes
-  // (covOffer -> null) so a player who finished four builds while away is
-  // walked through all four, one decision per screen, rather than being
-  // handed a stack of them.
-  useEffect(() => {
-    if (covOffer) return;
-    const next = [...covOfferQks.current.keys()].find((qk) =>
-      ownMap.current.has(qk) && !covDeferred.current.has(covKey(qk, covOfferQks.current.get(qk))));
-    if (next) tryOpenCovOffer(next);
-  }, [covOffer, covTick, tryOpenCovOffer]);
-
-  // "Later" — keep the offer (it lives server-side and the tile sheet has a
-  // button back to it) but stop this effect from immediately reopening it.
-  // Without the deferral set, closing the modal just re-satisfies the
-  // condition that opened it, and the player cannot get past the decision.
-  const deferCovOffer = () => {
-    if (covOffer) covDeferred.current.add(covKey(covOffer.qk, covOfferQks.current.get(covOffer.qk)));
-    setCovOffer(null);
-  };
-
   // Load whatever accumulated while away as soon as the session is live.
   // Builds run offline, so a player coming back to four finished towers has
-  // four offers already waiting server-side; without this they wouldn't
-  // appear until the first 20s reconcile tick, which is precisely the
-  // moment they're most expected.
+  // four offers already waiting server-side; without this the badge would
+  // stay dark until the first 20s reconcile tick.
   useEffect(() => { if (ready) refreshCovOffers(); }, [ready, refreshCovOffers]);
+
+  // Fetch the selected tile's cards for the inline strip. Nothing here opens
+  // anything — the strip only exists inside a sheet the player chose to open.
+  useEffect(() => {
+    const at = sel ? covOfferQks.current.get(sel) : undefined;
+    if (!sel || at === undefined || !ownMap.current.has(sel)) {
+      covLoadedFor.current = null;
+      setCovOffer((cur) => (cur ? null : cur));
+      return;
+    }
+    const key = `${sel}@${at}`;
+    if (covLoadedFor.current === key) return;
+    covLoadedFor.current = key;
+    let cancelled = false;
+    supabase.rpc("list_covenant_offer", { p_qk: sel }).then(({ data, error }) => {
+      if (cancelled) return;
+      if (error || !data || !data.length) {
+        covOfferQks.current.delete(sel);
+        covLoadedFor.current = null;
+        setCovOffer(null);
+        return;
+      }
+      setCovOffer({ qk: sel, cards: data });
+    });
+    return () => { cancelled = true; };
+  }, [sel, covTick]);
+
+  // Recomputed every render, which is fine: the 250ms economy tick already
+  // re-renders constantly, and this map holds at most one entry per tile
+  // with an unanswered completion — bounded by tiles touched, not upgrades
+  // performed, since a tile only ever has one pending offer.
+  const covOfferCount = [...covOfferQks.current.keys()].filter((qk) => ownMap.current.has(qk)).length;
 
   const acceptCovenant = async (code) => {
     if (!covOffer) return;
@@ -2525,8 +2562,8 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
     if (t) { t.cv = data.covenant; t.cvAt = data.covenant_at; }
     const r = regions.current.get(regionOf(qk));
     if (r && r.t[qk]) r.t[qk] = { ...r.t[qk], cv: data.covenant, cvAt: data.covenant_at };
-    covDeferred.current.delete(covKey(qk, covOfferQks.current.get(qk)));
     covOfferQks.current.delete(qk);
+    covLoadedFor.current = null;
     setCovOffer(null);
     rebuildOwn(); dirty.current = true; save();
     toast(`Signed — ${COVENANTS[code]?.name || code}`);
@@ -2537,8 +2574,8 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
   const declineCovenant = async () => {
     if (!covOffer) return;
     const qk = covOffer.qk;
-    covDeferred.current.delete(covKey(qk, covOfferQks.current.get(qk)));
     covOfferQks.current.delete(qk);
+    covLoadedFor.current = null;
     setCovOffer(null);
     const { error } = await supabase.rpc("decline_covenant", { p_qk: qk });
     if (error) toast(error.message || "Couldn't dismiss that offer.");
@@ -4796,6 +4833,10 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
       selMine: sel ? ownMap.current.get(sel) : undefined,
       selLocked: sel && g.own.length > 0 ? !unlockedRegions.current.has(regionOf(sel)) : false,
       claimable: claimableContracts + claimableCollections,
+      // gated on the strip being rendered RIGHT NOW, not merely on an offer
+      // existing somewhere — the tip anchors to that element, so firing it
+      // while the sheet is closed would spotlight nothing
+      covOfferHere: !!(covOffer && covOffer.qk === sel),
       showTile: tutFocusTile,
     };
   };
@@ -5866,11 +5907,45 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
                       })()}
                     </div>
                   )}
-                  {/* an offer the player dismissed with "Later" — the only
-                      way back to it, since the auto-popup has had its turn */}
-                  {covOfferQks.current.has(sel) && !covOffer && (
-                    <div className="mb-2">
-                      <Btn full tone="ghost" onClick={() => tryOpenCovOffer(sel)}>Covenant offered — review terms</Btn>
+                  {/* The draft, inline. Deliberately NOT a modal: rushing
+                      collapses the build timers by design, so completions
+                      can arrive seconds apart and anything that blocks on
+                      one becomes a wall. This sits in the sheet a rusher is
+                      already standing in — take a card with one tap, or
+                      keep building and it waits. */}
+                  {covOffer && covOffer.qk === sel && (
+                    <div data-tut="covenant-offer" className="mb-2 rounded-xl p-2.5" style={cardSty}>
+                      <div className="mb-1.5 flex items-center justify-between gap-2">
+                        <Eyebrow>Covenant offered</Eyebrow>
+                        <button onClick={declineCovenant} className="pt10 font-bold focus-visible:outline focus-visible:outline-2"
+                          style={{ ...mono, color: C.dim, outlineColor: C.amber }}>Decline all</button>
+                      </div>
+                      <div className="pt10 mb-2" style={{ ...mono, color: C.dim }}>
+                        Sign one or none — declining is free. It sticks to the deed and travels if you sell; redeveloping clears it.
+                      </div>
+                      <div className="flex flex-col gap-1.5">
+                        {covOffer.cards.map((c) => (
+                          <button key={c.code} onClick={() => acceptCovenant(c.code)}
+                            className="rounded-lg p-2 text-left transition-all duration-150 hover:brightness-110 active:scale-[0.98] focus-visible:outline focus-visible:outline-2"
+                            style={{ background: `${C.panel}b3`, border: `1px solid ${C.hairLit}`, outlineColor: C.amber }}>
+                            <div className="pt11 font-bold" style={{ ...display, color: C.amber }}>{c.name}</div>
+                            <div className="pt10 mt-0.5" style={{ color: C.text }}>{c.descr}</div>
+                            <div className="mt-1 flex flex-wrap gap-1">
+                              {covChips(c.mods || {}).map((ch, i) => (
+                                <span key={i} className="pt10 rounded-full px-1.5 py-0.5 font-bold"
+                                  style={{
+                                    ...display,
+                                    color: ch.good ? "#7FD1A0" : "#F08A8A",
+                                    background: (ch.good ? "#7FD1A0" : "#F08A8A") + "1f",
+                                    border: `1px solid ${(ch.good ? "#7FD1A0" : "#F08A8A")}55`,
+                                  }}>
+                                  {ch.t}
+                                </span>
+                              ))}
+                            </div>
+                          </button>
+                        ))}
+                      </div>
                     </div>
                   )}
                   {selLandmark && !selMine.bu ? (
@@ -6631,6 +6706,14 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
                 style={{ background: "#F08A8A", boxShadow: "0 0 6px #F08A8A99" }}
                 title="Territory lost while you were away" />
             )}
+            {/* covenants never interrupt (see the covenant block above), so
+                this dot is the whole discovery path for one waiting on a
+                tile you aren't currently looking at */}
+            {k === "assets" && covOfferCount > 0 && (
+              <span className="absolute right-2.5 top-1.5 h-2 w-2 rounded-full"
+                style={{ background: "#C9A0FF", boxShadow: "0 0 6px #C9A0FF99" }}
+                title={`${covOfferCount} covenant${covOfferCount === 1 ? "" : "s"} offered`} />
+            )}
             {k === "profile" && claimableContracts + claimableCollections > 0 && (
               <span className="absolute right-2.5 top-1.5 h-2 w-2 rounded-full"
                 style={{ background: C.amber, boxShadow: `0 0 6px ${C.amber}99` }}
@@ -6794,50 +6877,6 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
               <Btn full tone="ghost" onClick={closeModal}>Close</Btn>
             </>
           )}
-        </Modal>
-      )}
-
-      {/* Covenant draft — three cards on a completed build, pick one or
-          none. Gated behind !modal so it queues politely behind the
-          welcome/daily popups rather than stacking on top of them; the
-          auto-open effect re-fires when those close. Backdrop click just
-          hides it (the offer is stored server-side and comes back) —
-          "Decline" is the only thing that actually gives it up. */}
-      {covOffer && !modal && (
-        <Modal onClose={deferCovOffer}>
-          <Eyebrow>Covenant offered · {coordLabel(covOffer.qk)}</Eyebrow>
-          <div className="mb-1 mt-2 text-sm font-bold" style={display}>The building's finished. Someone wants terms.</div>
-          <div className="mb-3 text-xs" style={{ color: C.dim }}>
-            Sign one, or none — declining costs nothing. A covenant sticks to the
-            deed (it travels if you sell), and redeveloping clears it.
-          </div>
-          <div className="flex flex-col gap-2">
-            {covOffer.cards.map((c) => (
-              <button key={c.code} onClick={() => acceptCovenant(c.code)}
-                className="rounded-xl p-3 text-left transition-all duration-150 hover:brightness-110 active:scale-[0.98] focus-visible:outline focus-visible:outline-2"
-                style={{ background: `${C.panel}b3`, border: `1px solid ${C.hairLit}`, outlineColor: C.amber }}>
-                <div className="text-sm font-bold" style={{ ...display, color: C.amber }}>{c.name}</div>
-                <div className="mt-1 text-xs" style={{ color: C.text }}>{c.descr}</div>
-                <div className="mt-2 flex flex-wrap gap-1">
-                  {covChips(c.mods || {}).map((ch, i) => (
-                    <span key={i} className="pt10 rounded-full px-2 py-0.5 font-bold"
-                      style={{
-                        ...display,
-                        color: ch.good ? "#7FD1A0" : "#F08A8A",
-                        background: (ch.good ? "#7FD1A0" : "#F08A8A") + "1f",
-                        border: `1px solid ${(ch.good ? "#7FD1A0" : "#F08A8A")}55`,
-                      }}>
-                      {ch.t}
-                    </span>
-                  ))}
-                </div>
-              </button>
-            ))}
-          </div>
-          <div className="mt-3 flex gap-2">
-            <Btn full tone="ghost" onClick={declineCovenant}>Decline all</Btn>
-            <Btn full tone="ghost" onClick={deferCovOffer}>Later</Btn>
-          </div>
         </Modal>
       )}
 
