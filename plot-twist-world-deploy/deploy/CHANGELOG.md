@@ -4,6 +4,40 @@ Player-visible changes. Bumped together with `package.json`'s `version`,
 which is the single source of truth the corner badge and the new-version
 poll both read (see `vite.config.js`).
 
+## 1.23.0
+
+### Covenants — three offers on every finished build
+
+- **Every completed build now draws three cards.** Each one is a permanent
+  trade attached to that specific tile: Anchor Tenant earns 25% more rent
+  but defends 40% weaker, Fortified Block defends twice as hard for half
+  the rent, Brownfield builds fast and cheap on a tile that pays less,
+  Ground Lease pays 60% more for fourteen days and then nothing until you
+  redevelop. Thirteen cards in the pool; which three you're offered depends
+  on the level you just finished.
+- **Declining is free and always available**, and a covenant only ever
+  lands on a tile you picked it for. Nothing reaches over and changes a
+  tile you were quietly holding.
+- **Redeveloping clears a covenant**, so no card is a trap — and redevelop
+  now has a second job beyond the prestige loop.
+- **Covenants travel with the deed.** Buy a listed tile and you inherit its
+  terms, both halves, which is why market listings now show the card and
+  its effects up front instead of behind a tap.
+- **One card, Prime Frontage, is a straight bonus with no downside.** It's
+  the rarest thing in the pool by design — a draft where every option costs
+  something reads as a tax no matter how fair the numbers are.
+- **Heritage Listing tiles redevelop from Apartments** rather than Tower.
+  Capping out a level early is now a cheaper, faster prestige cycle instead
+  of a tile that can neither build nor reset.
+- Covenanted tiles carry a small violet dot on the map, and the tile sheet
+  always shows both sides of whatever it's signed to.
+
+*Server-side changes live in `supabase.sql` (new `covenant_defs` /
+`covenant_offers` tables plus hooks in `accrue_rent`, `upgrade_tile`,
+`rush_build`, `finish_builds`, `attack_tile`, `list_tile`,
+`redevelop_tile` and `repossess_stale_tiles`) and must be re-applied to the
+database for this release to do anything.*
+
 ## 1.22.1
 
 - **Your balance no longer looks stuck when you're starting out.** One

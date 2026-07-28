@@ -42,6 +42,17 @@ const VERSION_CHECK_MS = 5 * 60 * 1000;
 // commit, not after the fact.
 const CHANGELOG = [
   {
+    id: "1.23.0",
+    date: "Jul 28, 2026",
+    notes: [
+      "New: covenants. Every time a build finishes, three offers land on that tile and you pick one — or none. Each is a real trade: more rent for weaker defence, a fortress that earns half, cheap fast builds on a tile that pays less, a lease that pays big for two weeks and then nothing.",
+      "Declining is always free, and a covenant only ever lands on a tile you chose it for. Redeveloping clears one, so nothing you sign is permanent unless you want it to be.",
+      "Covenants stick to the deed, so they come with a tile you buy — market listings now show them up front, both halves of the deal.",
+      "One card is a straight bonus with no catch. It's rare on purpose.",
+      "Heritage Listing tiles redevelop from Apartments instead of Tower, so capping out early is a faster prestige loop rather than a dead end.",
+    ],
+  },
+  {
     id: "1.22.1",
     date: "Jul 27, 2026",
     notes: [
@@ -984,11 +995,90 @@ function hashQk(qk) {
 
 /* ── economy helpers ────────────────────────────────────────── */
 
+/* ── covenants ───────────────────────────────────────────────────
+   Two-sided permanent traits on individual tiles, drafted three-at-a-time
+   when a build completes. MIRRORS the covenant_defs seed in supabase.sql —
+   display only; the server is the sole authority on what a tile actually
+   earns, costs and defends at. Keep `mods` in step with that seed; if the
+   two disagree the player sees one number and gets another.
+   See COVENANTS-PLAN.md for the design and the four rules that keep a
+   permanent downside survivable. ── */
+const COVENANTS = {
+  prime_frontage: { name: "Prime Frontage",        mods: { rent: 1.15 } },
+  corner_lot:     { name: "Corner Lot",            mods: { rent: 1.25 }, cond: "block3" },
+  anchor_tenant:  { name: "Anchor Tenant",         mods: { rent: 1.25, def: 0.6 } },
+  heritage:       { name: "Heritage Listing",      mods: { rent: 1.2, max_level: 3 } },
+  ground_lease:   { name: "Ground Lease",          mods: { rent: 1.6, expires_days: 14, after: { rent: 0 } } },
+  fortified:      { name: "Fortified Block",       mods: { rent: 0.5, def: 2 } },
+  gated:          { name: "Gated Community",       mods: { rent: 0.85, def: 1.5, atk_cost: 2 } },
+  easement:       { name: "Conservation Easement", mods: { rent: 0.75, no_attack: true } },
+  brownfield:     { name: "Brownfield",            mods: { rent: 0.7, build_time: 0.5, build_cost: 0.75 } },
+  union_site:     { name: "Union Site",            mods: { rent: 1.1, build_time: 2, build_cost: 0.5 } },
+  absentee_deed:  { name: "Absentee Deed",         mods: { rent: 0.75, rent_offline: 2 } },
+  mixed_use:      { name: "Mixed Use",             mods: { rent: 1.2, no_list: true } },
+  freehold:       { name: "Freehold",              mods: { rent: 1.2, no_redevelop: true, no_decay: true } },
+};
+const NO_MODS = {};
+// Both sides of a covenant as short +/- chips, so the trade is visible at a
+// glance rather than only in prose. Key list mirrors covenant_defs' header
+// comment in supabase.sql — a mod with no chip here is invisible to the
+// player, so add one when adding a key.
+const covChips = (mods) => {
+  const out = [];
+  const pct = (v) => `${v > 1 ? "+" : "−"}${Math.round(Math.abs(v - 1) * 100)}%`;
+  if (mods.rent != null) out.push({ t: mods.rent === 0 ? "earns nothing" : `${pct(mods.rent)} rent`, good: mods.rent > 1 });
+  if (mods.rent_offline != null) out.push({ t: "full rate while away", good: true });
+  if (mods.def != null) out.push({ t: `${pct(mods.def)} defense`, good: mods.def > 1 });
+  if (mods.atk_cost != null) out.push({ t: `raiders pay ${mods.atk_cost}×`, good: true });
+  if (mods.no_attack) out.push({ t: "never attackable", good: true });
+  if (mods.max_level != null) out.push({ t: `builds stop at ${LVL[mods.max_level]}`, good: false });
+  if (mods.build_time != null) out.push({
+    t: mods.build_time < 1
+      ? `builds ${Math.round((1 - mods.build_time) * 100)}% faster`
+      : `builds ${Math.round((mods.build_time - 1) * 100)}% slower`,
+    good: mods.build_time < 1 });
+  if (mods.build_cost != null) out.push({
+    t: mods.build_cost < 1
+      ? `builds ${Math.round((1 - mods.build_cost) * 100)}% cheaper`
+      : `builds ${Math.round((mods.build_cost - 1) * 100)}% dearer`,
+    good: mods.build_cost < 1 });
+  if (mods.no_list) out.push({ t: "never sellable", good: false });
+  if (mods.no_redevelop) out.push({ t: "never redevelopable", good: false });
+  if (mods.no_decay) out.push({ t: "never repossessed", good: true });
+  if (mods.expires_days != null) out.push({ t: `${mods.expires_days} days, then dead`, good: false });
+  return out;
+};
+// Mirrors covenant_mods() in supabase.sql — same resolution ORDER (expiry
+// first, then the conditional gate), which matters: an expired ground_lease
+// resolves to its `after` object regardless of anything else.
+//
+// blockOk answers the one conditional card (corner_lot, "3+ tiles in this
+// block"). It's only ever knowable for the player's OWN tiles, which is
+// fine: corner_lot modifies `rent` only, and rent is never displayed for
+// somebody else's tile. Foreign tiles are read for `def`/`atk_cost`, and
+// no card carries both a cond and those keys.
+const covMods = (t, blockOk = false) => {
+  const c = t && t.cv ? COVENANTS[t.cv] : null;
+  if (!c) return NO_MODS;
+  if (c.mods.expires_days && t.cvAt &&
+      new Date(t.cvAt).getTime() + c.mods.expires_days * 86400000 <= Date.now())
+    return c.mods.after || NO_MODS;
+  if (c.cond === "block3" && !blockOk) return NO_MODS;
+  return c.mods;
+};
+// `cvm` is stamped onto owned-tile records by rebuildOwn() below, where the
+// whole portfolio is in hand to settle block3. Everywhere else falls back to
+// the un-conditioned resolve, so every existing call site keeps working
+// without threading a portfolio through it.
+const modsOf = (t) => (t && t.cvm) || covMods(t);
+
 // t.pr ("prestige") — see redevelop_tile in supabase.sql: a maxed-out tile
 // can reset to Vacant for a permanent +25% rent bonus per cycle, repeatable.
 // Rebuild cost scales with it too (upCost below), or it'd cost the same
 // every cycle and let a wealthy player farm unlimited rent for free.
-const rentOf = (t) => CLS[t.cls].rps * RAR[t.r].m * (1 + t.l) * (1 + 0.25 * (t.pr || 0));
+// The trailing factor is the tile's covenant (see COVENANTS above) — 1 when
+// it has none, which is every tile that predates the feature.
+const rentOf = (t) => CLS[t.cls].rps * RAR[t.r].m * (1 + t.l) * (1 + 0.25 * (t.pr || 0)) * (modsOf(t).rent ?? 1);
 // Cap on prestige's contribution to upgrade cost/build duration — MUST
 // match least(v_tile.prestige, 10) in upgrade_tile()/rush_build() in
 // supabase.sql exactly. Uncapped, this compounded into unbounded
@@ -996,7 +1086,13 @@ const rentOf = (t) => CLS[t.cls].rps * RAR[t.r].m * (1 + t.l) * (1 + 0.25 * (t.p
 // redevelop), which leaked into peak_net_worth and abandon_tile's refund.
 // The rent bonus itself (rentOf, redevelop_tile) stays uncapped.
 const PRESTIGE_COST_CAP = 10;
-const upCost = (t) => Math.round(CLS[t.cls].price * 0.8 * Math.pow(t.l + 1, 1.6) * (1 + 0.5 * Math.min(t.pr || 0, PRESTIGE_COST_CAP)));
+// covenant build_cost (brownfield 0.75, union_site 0.5) applies here AND is
+// re-applied inside rush_build server-side — that function recomputes this
+// formula rather than reading what was charged, so the two must agree.
+const upCost = (t) => Math.round(CLS[t.cls].price * 0.8 * Math.pow(t.l + 1, 1.6) * (1 + 0.5 * Math.min(t.pr || 0, PRESTIGE_COST_CAP)) * (modsOf(t).build_cost ?? 1));
+// the tile's effective build ceiling — 4 normally, lower under a covenant
+// that caps it (heritage_listing). Mirrors upgrade_tile's max_level gate.
+const maxLevelOf = (t) => modsOf(t).max_level ?? 4;
 
 // Build timers — base seconds per TARGET level, MUST match the CASE in
 // upgrade_tile()/rush_build() in supabase.sql exactly. Display/disabled-
@@ -1010,7 +1106,7 @@ const buildDurationSecs = (targetLevel, prestige, perkPct = 0) => BUILD_SECONDS[
 const buildSecsLeft = (t) => t.bu ? Math.max(0, Math.round((new Date(t.bu).getTime() - Date.now()) / 1000)) : 0;
 const buildProgressPct = (t, perkPct = 0) => {
   if (!t.bu) return 100;
-  const total = buildDurationSecs(t.l + 1, t.pr, perkPct);
+  const total = buildDurationSecs(t.l + 1, t.pr, perkPct) * (modsOf(t).build_time ?? 1);
   return Math.max(0, Math.min(100, Math.round((1 - buildSecsLeft(t) / Math.max(total, 1)) * 100)));
 };
 // mirrors rush_build()'s proportional-remaining-time pricing exactly.
@@ -1018,7 +1114,11 @@ const buildProgressPct = (t, perkPct = 0) => {
 // build_until was actually set, or the remaining-fraction math (and thus
 // this estimate) skews — see rush_build()'s own comment on this.
 const rushCostFor = (t, buildSpeedPct = 0, rushDiscountPct = 0) => {
-  const totalSecs = buildDurationSecs(t.l + 1, t.pr, buildSpeedPct);
+  // covenant build_time, matching rush_build's own reproduction of the
+  // effective duration — if this and the server disagree, the remaining
+  // fraction is measured against a different total and the quoted rush
+  // price is wrong in both directions.
+  const totalSecs = buildDurationSecs(t.l + 1, t.pr, buildSpeedPct) * (modsOf(t).build_time ?? 1);
   const frac = Math.min(1, buildSecsLeft(t) / Math.max(totalSecs, 1));
   return Math.ceil(upCost(t) * frac * (1 - (rushDiscountPct || 0) / 100));
 };
@@ -2051,6 +2151,20 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
   const spotlightRegion = useRef(null); // { qk, t0 } | null
   const rebuildOwn = useCallback(() => {
     ownMap.current = new Map(g.own.map((t) => [t.qk, t]));
+    // Settle each tile's covenant mods once, here, where the whole
+    // portfolio is in hand — corner_lot's "3+ tiles in this block" needs a
+    // per-block census, and rentOf() is called per tile on every economy
+    // tick. Counting inside rentOf would make that O(n^2) on a big
+    // portfolio; counting once here is O(n). Everything downstream reads
+    // the stamped `cvm` via modsOf().
+    const blockCount = new Map();
+    for (const t of g.own) {
+      const b = t.qk.slice(0, 12);
+      blockCount.set(b, (blockCount.get(b) || 0) + 1);
+    }
+    for (const t of g.own) {
+      t.cvm = t.cv ? covMods(t, (blockCount.get(t.qk.slice(0, 12)) || 0) >= 3) : NO_MODS;
+    }
     g.rps = g.own.reduce((s, t) => s + rentOf(t), 0);
   }, [g]);
 
@@ -2151,7 +2265,7 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
     // own tile_nicknames" policy already scopes it to this account, same
     // pattern as unlocked_regions/bank_ledger elsewhere in this file
     const [tilesRes, nickRes] = await Promise.all([
-      supabase.from("tiles").select("qk,cls,level,rarity,paid,list_price,prestige,build_until").eq("owner", g.uid),
+      supabase.from("tiles").select("qk,cls,level,rarity,paid,list_price,prestige,build_until,covenant,covenant_at").eq("owner", g.uid),
       supabase.from("tile_nicknames").select("qk,nickname"),
     ]);
     const { data, error } = tilesRes;
@@ -2161,6 +2275,7 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
       qk: t.qk, cls: t.cls, l: t.level, r: t.rarity, pd: t.paid, pr: t.prestige || 0,
       ...(t.list_price != null ? { p: t.list_price } : {}),
       ...(t.build_until != null ? { bu: t.build_until } : {}),
+      ...(t.covenant != null ? { cv: t.covenant, cvAt: t.covenant_at } : {}),
       ...(nicks.has(t.qk) ? { nick: nicks.get(t.qk) } : {}),
     }));
     rebuildOwn();
@@ -2222,7 +2337,7 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
       let tileRows = null, tilesErr = null;
       for (let attempt = 0; attempt < 3 && !tileRows; attempt++) {
         const res = await supabase
-          .from("tiles").select("qk,cls,level,rarity,paid,list_price,prestige,build_until").eq("owner", g.uid);
+          .from("tiles").select("qk,cls,level,rarity,paid,list_price,prestige,build_until,covenant,covenant_at").eq("owner", g.uid);
         if (!res.error) { tileRows = res.data || []; break; }
         tilesErr = res.error;
         await new Promise((r) => setTimeout(r, 500 * (attempt + 1)));
@@ -2232,6 +2347,7 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
           qk: t.qk, cls: t.cls, l: t.level, r: t.rarity, pd: t.paid, pr: t.prestige || 0,
           ...(t.list_price != null ? { p: t.list_price } : {}),
           ...(t.build_until != null ? { bu: t.build_until } : {}),
+          ...(t.covenant != null ? { cv: t.covenant, cvAt: t.covenant_at } : {}),
         }));
       } else {
         toast("Couldn't load your tiles — check your connection and reopen the app.");
@@ -2321,6 +2437,80 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
     setCollections({ loading: false, rows: data || [] });
   }, []);
 
+  /* ── covenants: the three-card draft a completed build earns ────────
+     Offers are rolled and stored SERVER-side (covenant_offer_roll in
+     supabase.sql), which is what makes them un-rerollable — refetching
+     returns the same three cards, and dismissing the modal doesn't lose
+     the offer, it just leaves it waiting.
+
+     covOfferQks is the authoritative "which of my tiles have one" set,
+     read straight from covenant_offers (RLS already scopes that table to
+     tiles you own, so an unfiltered select IS the personal list). Reading
+     the table rather than tracking completions client-side matters for the
+     timer path: the client completes a build optimistically the moment the
+     countdown hits zero, BEFORE accrue_rent/finish_builds has necessarily
+     run server-side, so at that instant the offer genuinely doesn't exist
+     yet. Polling the table sidesteps the race entirely and also picks up
+     offers earned on another device.
+
+     Declared here rather than down with the other tile actions because the
+     economy tick below lists refreshCovOffers in its dependency array —
+     that array is evaluated during render, so a later `const` would be in
+     its temporal dead zone and throw. ── */
+  const [covOffer, setCovOffer] = useState(null);   // { qk, cards: [{ code, name, descr, mods }] }
+  const [covTick, setCovTick] = useState(0);
+  const covOfferQks = useRef(new Set());
+
+  const refreshCovOffers = useCallback(async () => {
+    const { data, error } = await supabase.from("covenant_offers").select("qk");
+    if (error || !data) return;
+    covOfferQks.current = new Set(data.map((r) => r.qk));
+    setCovTick((n) => n + 1);
+  }, []);
+
+  const tryOpenCovOffer = useCallback(async (qk) => {
+    const { data, error } = await supabase.rpc("list_covenant_offer", { p_qk: qk });
+    if (error || !data || !data.length) { covOfferQks.current.delete(qk); return false; }
+    setCovOffer({ qk, cards: data });
+    return true;
+  }, []);
+
+  // auto-surface one waiting offer at a time. Re-runs when the modal closes
+  // (covOffer -> null) so a player who finished four builds while away is
+  // walked through all four, one decision per screen, rather than being
+  // handed a stack of them.
+  useEffect(() => {
+    if (covOffer) return;
+    const next = [...covOfferQks.current].find((qk) => ownMap.current.has(qk));
+    if (next) tryOpenCovOffer(next);
+  }, [covOffer, covTick, tryOpenCovOffer]);
+
+  const acceptCovenant = async (code) => {
+    if (!covOffer) return;
+    const qk = covOffer.qk;
+    const { data, error } = await supabase.rpc("accept_covenant", { p_qk: qk, p_code: code });
+    if (error || !data) { toast(error?.message || "Couldn't sign that covenant."); return; }
+    const t = ownMap.current.get(qk);
+    if (t) { t.cv = data.covenant; t.cvAt = data.covenant_at; }
+    const r = regions.current.get(regionOf(qk));
+    if (r && r.t[qk]) r.t[qk] = { ...r.t[qk], cv: data.covenant, cvAt: data.covenant_at };
+    covOfferQks.current.delete(qk);
+    setCovOffer(null);
+    rebuildOwn(); dirty.current = true; save();
+    toast(`Signed — ${COVENANTS[code]?.name || code}`);
+  };
+
+  // Declining is free and always available — the floor of this whole
+  // system is "nothing happened", never "you lost something".
+  const declineCovenant = async () => {
+    if (!covOffer) return;
+    const qk = covOffer.qk;
+    covOfferQks.current.delete(qk);
+    setCovOffer(null);
+    const { error } = await supabase.rpc("decline_covenant", { p_qk: qk });
+    if (error) toast(error.message || "Couldn't dismiss that offer.");
+  };
+
   /* ── economy tick: live optimistic display locally, reconciled against
      the real server balance roughly every 20s ── */
   useEffect(() => {
@@ -2334,17 +2524,23 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
       // confirm it (finish_builds will do the same thing lazily server-
       // side anyway — this is purely so the UI doesn't sit on a stale
       // "5s left" after time's actually up)
+      let finished = false;
       for (const t of g.own) {
         if (t.bu && buildSecsLeft(t) <= 0) {
           t.l += 1;
           delete t.bu;
           dirty.current = true;
+          finished = true;
           toast(`🔨 ${LVL[t.l]} finished building`);
         }
       }
+      // The offer for a locally-completed build doesn't exist server-side
+      // until accrue_rent runs finish_builds, so drive that first and read
+      // the offers back after it. syncRent() IS the accrue_rent call.
+      if (finished) syncRent().then(refreshCovOffers);
       n++;
       if (n % 8 === 0) checkAch();
-      if (n % 80 === 0) { syncRent(); collectBank(); collectBattles(); }
+      if (n % 80 === 0) { syncRent(); collectBank(); collectBattles(); refreshCovOffers(); }
       // contracts change far more slowly than money does — a minute is
       // plenty to keep the "claimable" nav dot honest without adding a
       // fourth RPC to the 20s reconcile above
@@ -2352,7 +2548,7 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
       force();
     }, 250);
     return () => clearInterval(iv);
-  }, [ready, g, checkAch, syncRent, collectBank, collectBattles, refreshContracts, refreshCollections, toast]);
+  }, [ready, g, checkAch, syncRent, collectBank, collectBattles, refreshContracts, refreshCollections, refreshCovOffers, toast]);
 
   /* Classification is fully vector-driven (see classifyFromVector above);
      there's no procedural mask/coastline-image fallback. */
@@ -2821,7 +3017,7 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
       // (owner, flip_royalty_to as of the flip feature), so PostgREST can no
       // longer infer which relationship an unqualified `profiles(username)`
       // embed means and rejects the whole query. Must stay qualified.
-      .select("qk,owner,cls,rarity,level,paid,list_price,prestige,attacks_received_count,attacks_received_date,build_until,owner_since,profiles!tiles_owner_fkey(username,peak_net_worth,is_npc)")
+      .select("qk,owner,cls,rarity,level,paid,list_price,prestige,attacks_received_count,attacks_received_date,build_until,owner_since,covenant,covenant_at,profiles!tiles_owner_fkey(username,peak_net_worth,is_npc)")
       .like("qk", `${prefix}%`);
     const t = {};
     if (error) {
@@ -2844,6 +3040,7 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
           cls: row.cls, pd: row.paid, ...(row.list_price != null ? { p: row.list_price } : {}),
           arc: row.attacks_received_date === todayUTC() ? (row.attacks_received_count || 0) : 0,
           ...(row.build_until != null ? { bu: row.build_until } : {}),
+          ...(row.covenant != null ? { cv: row.covenant, cvAt: row.covenant_at } : {}),
           ...(row.owner_since != null ? { os: row.owner_since } : {}),
         };
       }
@@ -3002,10 +3199,13 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
     const { data, error } = await supabase
       // see the matching comment in ensureRegion — must stay FK-qualified
       // now that tiles has two relationships into profiles.
-      .from("tiles").select("qk,cls,list_price,profiles!tiles_owner_fkey(username,peak_net_worth)")
+      // covenant is selected because it TRANSFERS with the deed — a listing
+      // that hides it is selling someone a trade they never agreed to, so
+      // disclosure here is a fairness requirement, not decoration.
+      .from("tiles").select("qk,cls,list_price,covenant,profiles!tiles_owner_fkey(username,peak_net_worth)")
       .not("list_price", "is", null).or(filter).order("updated_at", { ascending: false }).limit(40);
     if (error) { setMarket({ loading: false, rows: [] }); return; }
-    setMarket({ loading: false, rows: (data || []).map((r) => ({ qk: r.qk, cls: r.cls, p: r.list_price, n: r.profiles?.username, pnw: r.profiles?.peak_net_worth || 0 })) });
+    setMarket({ loading: false, rows: (data || []).map((r) => ({ qk: r.qk, cls: r.cls, p: r.list_price, n: r.profiles?.username, pnw: r.profiles?.peak_net_worth || 0, cv: r.covenant })) });
   }, []);
 
   useEffect(() => { if (tab === "market") refreshMarket(); }, [tab, refreshMarket]);
@@ -3394,16 +3594,25 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
     const base = lm ? lm.claimPrice : CLS[rec.cls].price;
     const region = qk ? regionOf(qk) : null;
     const siegeDiscount = region ? landmarkPerkPct(region, "siege_discount") : 0;
+    // the TARGET's covenant atk_cost (gated_community 2x) raises the base
+    // only — inside Math.max, so the wealth floor still binds exactly as
+    // it does server-side and no card can push a rich attacker under it
     return Math.max(
-      Math.round(base * 0.5 * (1 + 0.5 * (rec.l || 0)) * (1 - siegeDiscount / 100)),
+      Math.round(base * 0.5 * (1 + 0.5 * (rec.l || 0)) * (1 - siegeDiscount / 100) * (modsOf(rec).atk_cost ?? 1)),
       Math.round((g.peakNetWorth || 0) * 0.002)
     );
   };
   const defPowerFor = (rec, qk) => {
     const lm = qk ? landmarksByQk.current.get(qk) : undefined;
     const base = (1 + (rec.l || 0)) * RAR[rec.r || 0].m * (1 + 0.25 * (rec.pr || 0));
-    return lm ? base * lm.defenseMult : base;
+    // covenant def (fortified_block 2x, anchor_tenant 0.6x) — applied after
+    // the landmark multiplier, matching attack_tile's order
+    return (lm ? base * lm.defenseMult : base) * (modsOf(rec).def ?? 1);
   };
+  // covenant no_attack (conservation_easement) — the tile can never be
+  // targeted at all. Checked separately from the odds so the UI can say
+  // WHY rather than just greying the button out.
+  const untargetable = (rec) => !!modsOf(rec).no_attack;
   // win probability from the attacker's side, same clamp as attack_tile()
   const winProbFor = (attPower, defPower) => Math.max(0.05, Math.min(0.90, attPower / (attPower + defPower)));
 
@@ -3417,7 +3626,12 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
     const { data, error } = await supabase.rpc("buy_listed_tile", { p_qk: qk, p_expected_price: price });
     if (error || !data) { toast(error?.message || "Listing changed — trade cancelled."); return; }
     g.bal -= price;
-    g.own.push({ qk, l: data.level, r: data.rarity, pr: data.prestige || 0, cls: data.cls, pd: data.paid });
+    // the covenant travels with the deed — buy_listed_tile only moves
+    // `owner`, so whatever card the seller drafted is now the buyer's
+    // (both sides of it). That's the whole reason listings are worth
+    // reading rather than sorting by price.
+    g.own.push({ qk, l: data.level, r: data.rarity, pr: data.prestige || 0, cls: data.cls, pd: data.paid,
+      ...(data.covenant != null ? { cv: data.covenant, cvAt: data.covenant_at } : {}) });
     // patch the shared region cache immediately — same reasoning as
     // attack_tile's patch below: without this, recOf(qk) keeps returning
     // the stale seller/price until the next natural region resync (up to
@@ -3426,7 +3640,8 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
     // first click did nothing.
     const r = regions.current.get(regionOf(qk));
     if (r && r.t[qk]) {
-      r.t[qk] = { ...r.t[qk], o: g.uid, n: g.name, pnw: g.peakNetWorth, r: data.rarity, l: data.level, pr: data.prestige || 0, pd: data.paid };
+      r.t[qk] = { ...r.t[qk], o: g.uid, n: g.name, pnw: g.peakNetWorth, r: data.rarity, l: data.level, pr: data.prestige || 0, pd: data.paid,
+        ...(data.covenant != null ? { cv: data.covenant, cvAt: data.covenant_at } : {}) };
       delete r.t[qk].p;
     }
     // drop the row from the Market tab's own list so it can't be bought
@@ -3482,6 +3697,11 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
         r.t[qk] = { ...r.t[qk], o: g.uid, n: g.name, pnw: g.peakNetWorth, r: 0, l: 0, pr: 0, pd: CLS[targetCls].price, arc: (rec.arc || 0) + 1 };
         delete r.t[qk].p;
         delete r.t[qk].fp;
+        // a capture wipes the covenant along with level/rarity/prestige
+        // (see attack_tile) — the card was the previous owner's bargain
+        delete r.t[qk].cv;
+        delete r.t[qk].cvAt;
+        delete r.t[qk].cvm;
       } else {
         r.t[qk] = { ...r.t[qk], arc: (rec.arc || 0) + 1 };
       }
@@ -3540,7 +3760,9 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
   // here is display/UX only; the server enforces it for real.
   const upgrade = async (qk) => {
     const t = ownMap.current.get(qk);
-    if (!t || t.l >= MAX_LVL) return;
+    // maxLevelOf, not MAX_LVL: a covenant can cap this tile lower (see
+    // heritage_listing). Mirrors upgrade_tile's own max_level gate.
+    if (!t || t.l >= maxLevelOf(t)) return;
     if (t.bu) { toast("Already building — rush it or wait for it to finish."); return; }
     if (!g.devMode) {
       const activeBuilds = g.own.filter((x) => x.bu).length;
@@ -3562,6 +3784,9 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
       delete t.bu;
       checkAch();
       toast(`${LVL[t.l]} built`);
+      // dev_mode finishes instantly, so this is a real completion and the
+      // server has already rolled its covenant offer
+      refreshCovOffers();
     }
     rebuildOwn(); dirty.current = true; save();
   };
@@ -3586,6 +3811,9 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
     if (usingCredit) g.rushCredits -= 1; else g.bal -= cost;
     t.l = data.level;
     delete t.bu;
+    // a rushed build is still a completed build and still draws a card —
+    // rushing must never cost you the draft
+    refreshCovOffers();
     rebuildOwn(); checkAch(); dirty.current = true; save();
     toast(usingCredit ? `Rushed — ${LVL[t.l]} built with a rush credit` : `Rushed — ${LVL[t.l]} built for ₲${fmt(cost)}`);
   };
@@ -3605,7 +3833,7 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
     if (batchBusy) return;
     // already-building tiles aren't "eligible" here — starting a build is
     // all this does now, and a tile can only run one at a time
-    let pool = tiles.filter((t) => t.l < MAX_LVL && !t.bu);
+    let pool = tiles.filter((t) => t.l < maxLevelOf(t) && !t.bu);
     const totalEligible = pool.length;
     if (totalEligible === 0) { toast("Nothing here needs upgrading."); return; }
     let count = 0, spent = 0, slotLimited = false;
@@ -3638,13 +3866,27 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
 
   const redevelop = async (qk) => {
     const t = ownMap.current.get(qk);
-    if (!t || t.l < MAX_LVL) return;
+    // maxLevelOf, not MAX_LVL: a covenant-capped tile (heritage_listing)
+    // is "fully built" at its own ceiling and redevelops from there — see
+    // redevelop_tile. Gating on a literal 4 here would leave such a tile
+    // unable to build AND unable to reset, which is the trap the server
+    // side of this was just fixed to avoid.
+    if (!t || t.l < maxLevelOf(t)) return;
     const { data, error } = await supabase.rpc("redevelop_tile", { p_qk: qk });
     if (error || !data) { toast(error?.message || "Couldn't redevelop."); return; }
     t.l = data.level; t.pr = data.prestige;
+    // redevelop is the covenant escape hatch (see redevelop_tile) — the
+    // card and any pending offer go with the demolished building
+    const hadCov = t.cv;
+    delete t.cv; delete t.cvAt; delete t.cvm;
+    const rr = regions.current.get(regionOf(qk));
+    if (rr && rr.t[qk]) { const n = { ...rr.t[qk] }; delete n.cv; delete n.cvAt; delete n.cvm; rr.t[qk] = n; }
+    covOfferQks.current.delete(qk);
     if (!g.ach.redevelop1) { g.ach.redevelop1 = 1; toast("Unlocked — Redeveloper"); }
     rebuildOwn(); dirty.current = true; save();
-    toast(`Redeveloped — ★${t.pr} · +${t.pr * 25}% rent permanently`);
+    toast(hadCov
+      ? `Redeveloped — ★${t.pr} · +${t.pr * 25}% rent · ${COVENANTS[hadCov]?.name || "covenant"} cleared`
+      : `Redeveloped — ★${t.pr} · +${t.pr * 25}% rent permanently`);
   };
 
   const abandon = async (qk) => {
@@ -4117,6 +4359,16 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
             ctx.fillStyle = C.amber;
             ctx.beginPath(); ctx.arc(px + tilePx - 4, py + 4, 2.6, 0, 7); ctx.fill();
           }
+          // covenant marker — deliberately ONE neutral violet dot, not a
+          // good/bad colour split: most cards are both at once, and a map
+          // that pre-judges them would be lying about half the roster. It
+          // says "this deed has terms", and the panel says what they are.
+          // Bottom-left, clear of the listing dot (top-right) and the
+          // landmark emoji (centre).
+          if (rec.cv && tilePx > 13) {
+            ctx.fillStyle = "#C9A0FF";
+            ctx.beginPath(); ctx.arc(px + 4, py + tilePx - 4, 2.6, 0, 7); ctx.fill();
+          }
           // owner name label — only readable at all once tiles are large
           // enough to hold text, so gate to near the zoom ceiling (max
           // tilePx is N*64/N = 64, see zoomAt's clamp). Own tiles skip this
@@ -4486,7 +4738,7 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
   // a Build button that isn't rendered (landmarks can't be developed at
   // all, and a tile mid-build or already at Tower shows different controls).
   const tutHomeQk = (() => {
-    const buildable = g.own.find((t) => !t.bu && (t.l || 0) < MAX_LVL && !landmarksByQk.current.has(t.qk));
+    const buildable = g.own.find((t) => !t.bu && (t.l || 0) < maxLevelOf(t) && !landmarksByQk.current.has(t.qk));
     return (buildable || g.own[0])?.qk || null;
   })();
 
@@ -4926,7 +5178,7 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
     else if (assetSort === "district") sorted.sort((a, b) => (CLS[a.cls]?.name || "").localeCompare(CLS[b.cls]?.name || ""));
     return sorted;
   })();
-  const assetsUpgradable = tab !== "assets" ? [] : assetsFiltered.filter((t) => t.l < MAX_LVL);
+  const assetsUpgradable = tab !== "assets" ? [] : assetsFiltered.filter((t) => t.l < maxLevelOf(t));
   const assetsFilterActive = assetClsFilter !== "all" || assetRarityFilter !== -1 || !!assetQuery.trim();
 
   // shared row markup — used for both the Building section and the main
@@ -4944,6 +5196,8 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
           <span className="pt9 shrink-0" style={{ ...mono, color: C.dim }}>#{t.qk.slice(-6)}</span>
           <Chip color={RAR[t.r].color}>{RAR[t.r].name}</Chip>
           {t.pr > 0 && <Chip color={C.amber}>★{t.pr}</Chip>}
+          {t.cv && COVENANTS[t.cv] && <Chip color="#C9A0FF">{COVENANTS[t.cv].name}</Chip>}
+          {covOfferQks.current.has(t.qk) && <Chip color="#7FD1A0">offer</Chip>}
         </div>
         <span className="text-xs" style={{ ...mono, color: C.amber }}>₲{fmt1(rentOf(t))}/s</span>
       </button>
@@ -4954,7 +5208,7 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
       )}
       <div className="mt-2 flex items-center justify-between">
         <span className="pt11" style={{ ...mono, color: t.bu ? C.amber : C.dim }}>
-          {t.bu ? `Building ${LVL[t.l + 1]}… ${buildProgressPct(t)}% · ${hm(buildSecsLeft(t))} left` : `${LVL[t.l]} · Lv ${t.l}/${MAX_LVL}${t.p ? ` · listed ₲${fmt(t.p)}` : ""}`}
+          {t.bu ? `Building ${LVL[t.l + 1]}… ${buildProgressPct(t)}% · ${hm(buildSecsLeft(t))} left` : `${LVL[t.l]} · Lv ${t.l}/${maxLevelOf(t)}${t.p ? ` · listed ₲${fmt(t.p)}` : ""}`}
         </span>
         <div className="flex gap-1.5">
           {t.bu ? (
@@ -4963,15 +5217,18 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
             </Btn>
           ) : landmarksByQk.current.has(t.qk) ? (
             <span className="pt10 px-1" style={{ ...mono, color: C.dim }}>🏛️ landmark</span>
-          ) : t.l < MAX_LVL ? (
+          ) : t.l < maxLevelOf(t) ? (
             <Btn small onClick={() => upgrade(t.qk)} disabled={g.bal < upCost(t)}>₲{fmt(upCost(t))}</Btn>
+          ) : modsOf(t).no_redevelop ? (
+            <span className="pt10 px-1" style={{ ...mono, color: C.dim }}>held freehold</span>
           ) : (
             <Btn small onClick={() => redevelop(t.qk)}>Redevelop</Btn>
           )}
           {!t.bu && (t.p ? (
             <Btn small tone="ghost" onClick={() => unlist(t.qk)}>Unlist</Btn>
           ) : (
-            <Btn small tone="ghost" onClick={() => { setPriceDraft(String(Math.round((t.pd || CLS[t.cls].price) * 1.5))); setModal({ kind: "list", qk: t.qk }); }}>List</Btn>
+            <Btn small tone="ghost" disabled={!!modsOf(t).no_list}
+              onClick={() => { setPriceDraft(String(Math.round((t.pd || CLS[t.cls].price) * 1.5))); setModal({ kind: "list", qk: t.qk }); }}>List</Btn>
           ))}
         </div>
       </div>
@@ -5472,6 +5729,10 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
                     {selRec.npc
                       ? <Chip color="#8FA6C4">Company</Chip>
                       : <Chip color={C.amber}>{statusFor(selRec.pnw).name}</Chip>}
+                    {/* a rival's covenant is public — it's on the deed, and
+                        it's exactly what a would-be raider or buyer needs
+                        to know before committing money to this tile */}
+                    {selRec.cv && COVENANTS[selRec.cv] && <Chip color="#C9A0FF">{COVENANTS[selRec.cv].name}</Chip>}
                   </div>
                   {selRec.p ? (
                     <Btn full onClick={() => buyListed(sel)} disabled={g.bal < selRec.p}>
@@ -5481,7 +5742,19 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
                     <div className="py-2 text-center text-xs" style={{ ...mono, color: C.dim }}>Not for sale. Try making friends.</div>
                   )}
 
-                  {selLandmarkGraceLeft > 0 && !g.devMode ? (
+                  {untargetable(selRec) ? (
+                    /* conservation_easement — permanent, not a timer, and
+                       dev_mode doesn't bypass it either (see attack_tile):
+                       the owner pays 25% of the tile's rent for this. */
+                    <div className="mt-2 border-t pt-2 text-center" style={{ borderColor: C.hair }}>
+                      <div className="pt11 font-bold" style={{ ...mono, color: "#C9A0FF" }}>
+                        🛡️ {COVENANTS[selRec.cv]?.name}
+                      </div>
+                      <div className="pt10 mt-1" style={{ ...mono, color: C.dim }}>
+                        This tile can never be attacked by anyone.
+                      </div>
+                    </div>
+                  ) : selLandmarkGraceLeft > 0 && !g.devMode ? (
                     <div className="mt-2 border-t pt-2 text-center" style={{ borderColor: C.hair }}>
                       <div className="pt11 font-bold" style={{ ...mono, color: "#FFD700" }}>
                         🛡️ Protected — changed hands recently
@@ -5534,6 +5807,39 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
                     <span className="text-xs" style={{ ...mono, color: C.amber }}>₲{fmt1(rentOf(selMine))}/s</span>
                     {selMine.p && <Chip color={C.amber}>Listed ₲{fmt(selMine.p)}</Chip>}
                   </div>
+                  {/* Covenant strip — both sides always shown together, and
+                      the way out (redevelop) named, so a card is never a
+                      thing the player has to remember the terms of. */}
+                  {selMine.cv && COVENANTS[selMine.cv] && (
+                    <div className="mb-2 rounded-xl p-2.5" style={cardSty}>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Chip color="#C9A0FF">{COVENANTS[selMine.cv].name}</Chip>
+                        {covChips(modsOf(selMine)).map((ch, i) => (
+                          <span key={i} className="pt10 font-bold" style={{ ...mono, color: ch.good ? "#7FD1A0" : "#F08A8A" }}>{ch.t}</span>
+                        ))}
+                      </div>
+                      {(() => {
+                        const c = COVENANTS[selMine.cv];
+                        if (!c.mods.expires_days || !selMine.cvAt) return null;
+                        const endsAt = new Date(selMine.cvAt).getTime() + c.mods.expires_days * 86400000;
+                        const left = Math.max(0, Math.round((endsAt - Date.now()) / 1000));
+                        return (
+                          <div className="pt10 mt-1.5" style={{ ...mono, color: left > 0 ? C.dim : "#F08A8A" }}>
+                            {left > 0
+                              ? `${hm(left)} of premium rent left — then it earns nothing until you redevelop.`
+                              : "Lease expired — this tile earns nothing until you redevelop it."}
+                          </div>
+                        );
+                      })()}
+                    </div>
+                  )}
+                  {/* an offer the player dismissed with "Later" — the only
+                      way back to it, since the auto-popup has had its turn */}
+                  {covOfferQks.current.has(sel) && !covOffer && (
+                    <div className="mb-2">
+                      <Btn full tone="ghost" onClick={() => tryOpenCovOffer(sel)}>Covenant offered — review terms</Btn>
+                    </div>
+                  )}
                   {selLandmark && !selMine.bu ? (
                     <div className="flex flex-col gap-2">
                       <div className="rounded-xl p-3 text-center text-xs" style={{ ...cardSty, color: C.dim }}>
@@ -5548,7 +5854,7 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
                         <Btn tone="danger" onClick={() => abandon(sel)}>50%</Btn>
                       </div>
                     </div>
-                  ) : selMine.l < MAX_LVL ? (
+                  ) : selMine.l < maxLevelOf(selMine) ? (
                     selMine.bu ? (
                       <div className="flex flex-col gap-2">
                         <div data-tut="build-progress" className="rounded-xl p-2.5" style={cardSty}>
@@ -5580,7 +5886,7 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
                           point you're being told about a thing you have,
                           rather than given a reason to get there. */}
                       <div className="pt10 mb-2" style={{ ...mono, color: C.dim }}>
-                        At {LVL[MAX_LVL]}: redevelop for +25% rent, forever.
+                        At {LVL[maxLevelOf(selMine)]}: redevelop for +25% rent, forever.
                       </div>
                       <div className="flex gap-2">
                         <Btn full tut="build-btn" onClick={() => upgrade(sel)} disabled={g.bal < upCost(selMine)}>
@@ -5589,7 +5895,8 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
                         {selMine.p ? (
                           <Btn tone="ghost" onClick={() => unlist(sel)}>Unlist</Btn>
                         ) : (
-                          <Btn tone="ghost" onClick={() => { setPriceDraft(String(Math.round((selMine.pd || CLS[selCls].price) * 1.5))); setModal({ kind: "list", qk: sel }); }}>List…</Btn>
+                          <Btn tone="ghost" disabled={!!modsOf(selMine).no_list}
+                            onClick={() => { setPriceDraft(String(Math.round((selMine.pd || CLS[selCls].price) * 1.5))); setModal({ kind: "list", qk: sel }); }}>List…</Btn>
                         )}
                         <Btn tone="danger" onClick={() => abandon(sel)}>50%</Btn>
                       </div>
@@ -5597,15 +5904,32 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
                     )
                   ) : (
                     <div className="flex flex-col gap-2">
-                      <Btn full tut="redevelop-btn" onClick={() => redevelop(sel)}>Redevelop — +25% rent, keep tile</Btn>
+                      {/* a blocked action says WHY rather than just greying
+                          out — the player chose this trade and should be
+                          reminded of it at the moment it costs them */}
+                      {modsOf(selMine).no_redevelop ? (
+                        <div className="rounded-xl p-3 text-center text-xs" style={{ ...cardSty, color: C.dim }}>
+                          {COVENANTS[selMine.cv]?.name} — this tile can never be redeveloped.
+                        </div>
+                      ) : (
+                        <Btn full tut="redevelop-btn" onClick={() => redevelop(sel)}>
+                          Redevelop — +25% rent, keep tile{selMine.cv ? " · clears covenant" : ""}
+                        </Btn>
+                      )}
                       <div className="flex gap-2">
                         {selMine.p ? (
                           <Btn tone="ghost" onClick={() => unlist(sel)}>Unlist</Btn>
                         ) : (
-                          <Btn tone="ghost" onClick={() => { setPriceDraft(String(Math.round((selMine.pd || CLS[selCls].price) * 1.5))); setModal({ kind: "list", qk: sel }); }}>List…</Btn>
+                          <Btn tone="ghost" disabled={!!modsOf(selMine).no_list}
+                            onClick={() => { setPriceDraft(String(Math.round((selMine.pd || CLS[selCls].price) * 1.5))); setModal({ kind: "list", qk: sel }); }}>List…</Btn>
                         )}
                         <Btn tone="danger" onClick={() => abandon(sel)}>50%</Btn>
                       </div>
+                      {modsOf(selMine).no_list && !selMine.p && (
+                        <div className="pt10 text-center" style={{ ...mono, color: C.dim }}>
+                          {COVENANTS[selMine.cv]?.name} — can't be listed. Abandoning still works.
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>
@@ -5732,6 +6056,19 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
                     <span className="truncate text-sm font-bold" style={mono}>{coordLabel(e.qk)}</span>
                   </div>
                   <div className="pt11 mt-0.5" style={{ ...mono, color: C.dim }}>by {e.n || "a player"}{e.n === g.name ? " (you)" : ""} · {statusFor(e.pnw).name}</div>
+                  {/* the covenant comes WITH the deed — both sides of it —
+                      so it belongs on the listing, not behind a tap */}
+                  {e.cv && COVENANTS[e.cv] && (
+                    <div className="mt-1 flex flex-wrap items-center gap-1">
+                      <span className="pt10 rounded-full px-2 py-0.5 font-bold"
+                        style={{ ...display, color: "#C9A0FF", background: "#C9A0FF1f", border: "1px solid #C9A0FF55" }}>
+                        {COVENANTS[e.cv].name}
+                      </span>
+                      {covChips(COVENANTS[e.cv].mods).map((ch, i) => (
+                        <span key={i} className="pt10 font-bold" style={{ ...mono, color: ch.good ? "#7FD1A0" : "#F08A8A" }}>{ch.t}</span>
+                      ))}
+                    </div>
+                  )}
                 </button>
                 <div className="flex shrink-0 items-center gap-2">
                   <span className="text-sm font-bold" style={{ ...mono, color: C.amber }}>₲{fmt(e.p)}</span>
@@ -6424,6 +6761,50 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
               <Btn full tone="ghost" onClick={closeModal}>Close</Btn>
             </>
           )}
+        </Modal>
+      )}
+
+      {/* Covenant draft — three cards on a completed build, pick one or
+          none. Gated behind !modal so it queues politely behind the
+          welcome/daily popups rather than stacking on top of them; the
+          auto-open effect re-fires when those close. Backdrop click just
+          hides it (the offer is stored server-side and comes back) —
+          "Decline" is the only thing that actually gives it up. */}
+      {covOffer && !modal && (
+        <Modal onClose={() => setCovOffer(null)}>
+          <Eyebrow>Covenant offered · {coordLabel(covOffer.qk)}</Eyebrow>
+          <div className="mb-1 mt-2 text-sm font-bold" style={display}>The building's finished. Someone wants terms.</div>
+          <div className="mb-3 text-xs" style={{ color: C.dim }}>
+            Sign one, or none — declining costs nothing. A covenant sticks to the
+            deed (it travels if you sell), and redeveloping clears it.
+          </div>
+          <div className="flex flex-col gap-2">
+            {covOffer.cards.map((c) => (
+              <button key={c.code} onClick={() => acceptCovenant(c.code)}
+                className="rounded-xl p-3 text-left transition-all duration-150 hover:brightness-110 active:scale-[0.98] focus-visible:outline focus-visible:outline-2"
+                style={{ background: `${C.panel}b3`, border: `1px solid ${C.hairLit}`, outlineColor: C.amber }}>
+                <div className="text-sm font-bold" style={{ ...display, color: C.amber }}>{c.name}</div>
+                <div className="mt-1 text-xs" style={{ color: C.text }}>{c.descr}</div>
+                <div className="mt-2 flex flex-wrap gap-1">
+                  {covChips(c.mods || {}).map((ch, i) => (
+                    <span key={i} className="pt10 rounded-full px-2 py-0.5 font-bold"
+                      style={{
+                        ...display,
+                        color: ch.good ? "#7FD1A0" : "#F08A8A",
+                        background: (ch.good ? "#7FD1A0" : "#F08A8A") + "1f",
+                        border: `1px solid ${(ch.good ? "#7FD1A0" : "#F08A8A")}55`,
+                      }}>
+                      {ch.t}
+                    </span>
+                  ))}
+                </div>
+              </button>
+            ))}
+          </div>
+          <div className="mt-3 flex gap-2">
+            <Btn full tone="ghost" onClick={declineCovenant}>Decline all</Btn>
+            <Btn full tone="ghost" onClick={() => setCovOffer(null)}>Later</Btn>
+          </div>
         </Modal>
       )}
 
