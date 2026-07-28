@@ -4,6 +4,35 @@ Player-visible changes. Bumped together with `package.json`'s `version`,
 which is the single source of truth the corner badge and the new-version
 poll both read (see `vite.config.js`).
 
+## 1.26.0
+
+### Covenants are drafted at redevelopment, and last your whole tenure
+
+- **Offers now come from redeveloping**, not from finishing a building. One
+  offer per tile, at the moment you've maxed it out and chosen to reset —
+  rather than a decision arriving every few seconds during a rush-heavy
+  upgrade session. Only a tile without a covenant is offered one, so it's
+  once per tile per owner.
+- **The full 13-card pool is eligible.** A freshly redeveloped tile is
+  Vacant with the whole ladder ahead of it, so the build-modifying cards
+  (Brownfield, Union Site) and the ceiling card (Heritage Listing) are all
+  live again — they were previously restricted to early build levels.
+- **What you sign is permanent.** It survives every rebuild after it, for
+  as long as the tile is yours.
+- **It ends when the tile stops being yours** — sold on the market,
+  abandoned for the 50% refund, taken in a raid, or repossessed for
+  inactivity. Whoever holds it next starts clean and drafts their own.
+- **The paid release is gone.** With covenants scoped to a tenure rather
+  than running with the land, giving the tile up already ends one, and the
+  failure mode the release existed to prevent — a permanently ruined tile
+  that outlives its owner — can't happen.
+
+This supersedes the "runs with the land" model from 1.25.0 entirely; the
+`tile_covenants` table and `release_covenant` are dropped.
+
+*Server-side changes live in `supabase.sql` and must be re-applied to the
+database for this release to do anything.*
+
 ## 1.25.0
 
 ### Covenants run with the land
