@@ -4,6 +4,26 @@ Player-visible changes. Bumped together with `package.json`'s `version`,
 which is the single source of truth the corner badge and the new-version
 poll both read (see `vite.config.js`).
 
+## 1.32.1
+
+### Energy alerts fire for both refills
+
+- **The `energy-reset-push` pg_cron job was still on `0 0 * * *`.** The
+  split refill (energy in two tranches, 00:00 and 12:00 UTC) shipped
+  without moving it, so the noon half was never announced — every client
+  surface said energy arrives in two halves while the push only ever
+  reported one. Now `0 0,12 * * *`.
+- `send-energy-alerts` works out which tranche it's announcing from the
+  **UTC hour**, the same `>= 12` test `reset_daily_energy` uses to decide
+  what to grant, so the two can't drift. `{"tranche": 1 | 2}` in the body
+  overrides it for manual testing; the cron keeps sending `{}`.
+- Push copy names the half that landed; the settings blurb says two
+  pushes a day at 00:00 and 12:00 UTC instead of "one push a day".
+
+**Deploy note:** needs both a re-paste of `supabase.sql` (to reschedule
+the job) and `supabase functions deploy send-energy-alerts
+--no-verify-jwt` (for the copy). Neither ships with the Pages build.
+
 ## 1.32.0
 
 ### Covenants: one offer, one answer

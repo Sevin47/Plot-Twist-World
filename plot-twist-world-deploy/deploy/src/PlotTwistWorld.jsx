@@ -43,6 +43,14 @@ const VERSION_CHECK_MS = 5 * 60 * 1000;
 // commit, not after the fact.
 const CHANGELOG = [
   {
+    id: "1.32.1",
+    date: "Jul 29, 2026",
+    notes: [
+      "Fixed: energy alerts only ever fired for the midnight refill. Energy has arrived in two halves — 00:00 and 12:00 UTC — since the split refill shipped, but the notification was still on the old once-a-day schedule, so the noon half went unannounced.",
+      "You now get a push for both, and each one says which half just landed.",
+    ],
+  },
+  {
     id: "1.32.0",
     date: "Jul 29, 2026",
     notes: [
@@ -2236,7 +2244,7 @@ export default function PlotTwistWorld() {
               </div>
               <div className="pt10 mt-2" style={{ ...mono, color: C.dim }}>
                 Reduce motion follows your device by default — this overrides it just for Plot Twist.
-                {pushSupported() && " Energy alerts send one push a day, right when your daily claim energy resets. Attack alerts send one push whenever someone captures one of your tiles."}
+                {pushSupported() && " Energy alerts send two pushes a day, at 00:00 and 12:00 UTC — one for each half of your claim energy. Attack alerts send one push whenever someone captures one of your tiles."}
                 {" "}Deleting your account removes your wallet, tiles and username permanently — this can't be undone.
                 {pushErr && <div style={{ color: "#F08A8A" }}>{pushErr}</div>}
                 {deleteErr && <div style={{ color: "#F08A8A" }}>{deleteErr}</div>}
