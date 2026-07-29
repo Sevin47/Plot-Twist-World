@@ -4,6 +4,25 @@ Player-visible changes. Bumped together with `package.json`'s `version`,
 which is the single source of truth the corner badge and the new-version
 poll both read (see `vite.config.js`).
 
+## 1.27.1
+
+### A failed sign-in says so
+
+- **Linking a Google account that already owns a world is now reported.**
+  It was always correctly refused, but silently: `linkIdentity()` leaves
+  the page, so the refusal arrives as `error_code=identity_already_exists`
+  in the URL on the way back, not as a rejected promise. 1.27.0 only
+  checked the return value, so the player landed back on the map with no
+  explanation. The choice — use the world you already have, or link a
+  different account — is now put in front of them.
+- **Abandoning a guest world now deletes it.** Choosing "use my old world"
+  used to sign out and leave the anonymous account behind: unreachable
+  forever, still holding its home tile, still counting toward monthly
+  active users.
+- **No more 403 in the console after deleting an account.** The sign-out
+  that follows deletion was asking the server to invalidate a session for
+  a user the server had just deleted. It's local-only now.
+
 ## 1.27.0
 
 ### Play first, sign in later

@@ -71,14 +71,71 @@ export function linkGoogle() {
 }
 
 export function linkErrorIsIdentityTaken(err) {
-  const msg = (err?.message || "").toLowerCase();
+  const msg = `${err?.code || ""} ${err?.message || ""}`.toLowerCase();
   return msg.includes("already") && (msg.includes("identity") || msg.includes("linked") || msg.includes("exists"));
+}
+
+/* ── OAuth failures come back in the URL, not in a return value ────────
+   linkIdentity() and signInWithOAuth() both leave the page. Anything that
+   goes wrong at the provider or at Supabase's callback therefore can't be
+   a rejected promise — it arrives as query/fragment params on the trip
+   BACK, e.g.
+
+     #error=server_error
+     &error_code=identity_already_exists
+     &error_description=Identity+is+already+linked+to+another+user
+
+   which is exactly the "you already have a world under that Google
+   account" case. Checking only linkIdentity()'s return value catches the
+   pre-redirect failures (manual linking disabled, no config) and silently
+   misses every real one — the player just lands back on the map with
+   nothing said, which is what shipped in 1.27.0.
+
+   Captured at module scope, synchronously, because supabase-js scrubs the
+   fragment itself once its own async URL-session detection runs, and that
+   is a race we would lose about half the time. Module bodies all evaluate
+   before any microtask, so this always reads first. */
+const urlAuthError = (() => {
+  if (typeof window === "undefined") return null;
+  try {
+    const hash = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+    const query = new URLSearchParams(window.location.search);
+    const pick = (k) => hash.get(k) || query.get(k) || "";
+    const code = pick("error_code"), desc = pick("error_description"), kind = pick("error");
+    if (!code && !desc && !kind) return null;
+    // Scrub it ourselves rather than trusting supabase-js to: on a
+    // query-param (PKCE) error it doesn't, and a refresh would then
+    // replay the modal forever. There are never tokens alongside an
+    // error, so nothing is lost.
+    try {
+      window.history.replaceState(null, "", window.location.pathname);
+    } catch { /* ignore */ }
+    // Logged because the scrub above destroys the only evidence: without
+    // this, a report of "sign-in just did nothing" has nothing to go on.
+    console.warn("auth redirect returned an error", code, desc || kind);
+    return { code, message: desc || kind };
+  } catch { return null; }
+})();
+
+// One-shot: the boot effect reads it, and a later re-render doesn't.
+let urlAuthErrorTaken = false;
+export function takeUrlAuthError() {
+  if (urlAuthErrorTaken) return null;
+  urlAuthErrorTaken = true;
+  return urlAuthError;
 }
 
 export const isGuestSession = (session) => !!session?.user?.is_anonymous;
 
-export function signOut() {
-  return supabase ? supabase.auth.signOut() : Promise.resolve();
+// scope "local" clears this browser's session without calling the server.
+// That is the right (and only working) choice after the delete-account
+// edge function has run: the user row is already gone, so a default
+// global logout POSTs a token for a user that no longer exists and comes
+// back 403 — noise in the console for an operation that had in fact
+// succeeded.
+export function signOut(scope) {
+  if (!supabase) return Promise.resolve();
+  return supabase.auth.signOut(scope ? { scope } : undefined);
 }
 
 export async function getSession() {

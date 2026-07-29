@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback, useReducer } from "react";
 import { supabase, MULTIPLAYER } from "./storage.js";
-import { signInWithGoogle, signOut, onAuthStateChange, playAsGuest, linkGoogle, linkErrorIsIdentityTaken, isGuestSession } from "./auth.js";
+import { signInWithGoogle, signOut, onAuthStateChange, playAsGuest, linkGoogle, linkErrorIsIdentityTaken, isGuestSession, takeUrlAuthError } from "./auth.js";
 import { pushSupported, getPushPrefs, setPushPrefs } from "./push.js";
 import { CAPTCHA_ON, captchaMessage } from "./captcha.js";
 // Inlined rather than referenced by URL: Vite's separate-chunk worker
@@ -42,6 +42,14 @@ const VERSION_CHECK_MS = 5 * 60 * 1000;
 // player-visible change ships with a version bump + entry in the same
 // commit, not after the fact.
 const CHANGELOG = [
+  {
+    id: "1.27.1",
+    date: "Jul 29, 2026",
+    notes: [
+      "Signing in with a Google account that already has a world of its own now says so, instead of quietly dropping you back on the map as though nothing happened. Two worlds still can't be merged — but you can now choose between them.",
+      "Choosing your old world properly deletes the guest one you're leaving, rather than stranding it somewhere unreachable.",
+    ],
+  },
   {
     id: "1.27.0",
     date: "Jul 28, 2026",
@@ -1539,6 +1547,14 @@ export default function PlotTwistWorld() {
   // "taken" when the Google account they picked already owns a different
   // world — the one link failure with no automatic resolution.
   const [linkErr, setLinkErr] = useState("");
+  // A failed link/sign-in reports itself on the trip BACK from Google, in
+  // the URL, not as a rejected promise — see takeUrlAuthError. Read once,
+  // on mount, before anything else can scrub it.
+  useEffect(() => {
+    const e = takeUrlAuthError();
+    if (!e) return;
+    setLinkErr(linkErrorIsIdentityTaken(e) ? "taken" : (e.message || "Sign-in didn't complete — try again."));
+  }, []);
   const [nameDraft, setNameDraft] = useState("");
   const [nameErr, setNameErr] = useState("");
   const [nameBusy, setNameBusy] = useState(false);
@@ -1576,7 +1592,9 @@ export default function PlotTwistWorld() {
     try {
       const { error } = await supabase.functions.invoke("delete-account");
       if (error) throw error;
-      await signOut();
+      // Local scope: the account this token belongs to no longer exists,
+      // so a server-side logout is both pointless and a guaranteed 403.
+      await signOut("local");
     } catch (e) {
       setDeleteErr(e.message || "Couldn't delete account — try again");
       setDeleteBusy(false);
@@ -1815,8 +1833,17 @@ export default function PlotTwistWorld() {
   // The escape hatch for the "taken" case: their Google account already
   // has a world, so this guest one can't be merged into it and is
   // abandoned. Never called without an explicit confirmation.
+  //
+  // Abandoned means deleted, not orphaned. Signing out alone would leave
+  // an anonymous auth user nobody can ever reach again — counting toward
+  // Supabase's MAU billing forever, still holding its home tile against
+  // the shared land supply. Best-effort: if the edge function fails we
+  // still get them into their real world, which is what they asked for.
   const abandonGuestForGoogle = async () => {
-    await signOut();
+    if (isGuestSession(session)) {
+      try { await supabase.functions.invoke("delete-account"); } catch { /* best effort */ }
+    }
+    await signOut("local");
     signInWithGoogle();
   };
 
@@ -1865,6 +1892,17 @@ export default function PlotTwistWorld() {
           <Btn full tone="ghost" onClick={() => window.open(`${import.meta.env.BASE_URL}guide.html`, "_blank", "noopener,noreferrer")}>Wiki</Btn>
         </div>
         {guestErr && <div className="pt10 mx-auto mt-3 max-w-xs" style={{ ...mono, color: "#F08A8A" }}>{guestErr}</div>}
+        {/* A sign-in that failed at Google's end lands back HERE, with no
+            session and so no modal to put it in — the two states that can
+            show linkErr (pause menu, Game) both require one. Without this
+            line the trip out and back looks like nothing happened. */}
+        {linkErr && (
+          <div className="pt10 mx-auto mt-3 max-w-xs leading-relaxed" style={{ ...mono, color: "#F08A8A" }}>
+            {linkErr === "taken"
+              ? "That Google account already has a world — sign in with it to pick up where you left off."
+              : linkErr}
+          </div>
+        )}
         <div className="pt9 mx-auto mt-10 max-w-xs leading-relaxed" style={{ ...mono, color: C.dim }}>
           Play now claims a real tile on the real map, no account needed — sign in with Google afterwards to keep it (and pocket a bonus for doing so). Already have a world? Sign in. ₲ Geobux are virtual and worth nothing.
         </div>
