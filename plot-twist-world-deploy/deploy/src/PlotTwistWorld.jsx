@@ -43,6 +43,13 @@ const VERSION_CHECK_MS = 5 * 60 * 1000;
 // commit, not after the fact.
 const CHANGELOG = [
   {
+    id: "1.28.0",
+    date: "Jul 29, 2026",
+    notes: [
+      "The tutorial now explains rushing — what it does, that your first one is free, and where the button is. Previously the game handed out free rushes without ever saying what a rush was.",
+    ],
+  },
+  {
     id: "1.27.1",
     date: "Jul 29, 2026",
     notes: [
@@ -584,6 +591,24 @@ const TUT_STEPS = [
     side: "above-sheet",
     title: "Building takes real time",
     text: (ctx) => `Five minutes for a Cottage, and it runs while you're away. You can have ${ctx.slots} going at once.`,
+  },
+  {
+    // Deliberately a beat, not an action. Rushing is the game's main money
+    // sink and the free credit is meant to be spent at the first timer that
+    // actually BINDS — the 30-minute Duplex — not burned on the 5-minute
+    // Cottage a script told them to skip. But the credit (and the one paid
+    // for signing in) is meaningless if the word "rush" has never been
+    // defined, so: name it, point at the real button, and leave the choice
+    // alone. The button sits inside the cutout, so anyone impatient enough
+    // can use it right here.
+    id: "rush",
+    kind: "beat",
+    anchor: { dom: "rush-btn" },
+    side: "above-sheet",
+    title: "Or skip the wait",
+    text: (ctx) => (ctx.g.rushCredits
+      ? `Rush finishes a build instantly. You have ${ctx.g.rushCredits} free — after that they cost ₲.`
+      : "Rush finishes a build instantly, for ₲. The bigger the build, the steeper the fee."),
   },
   {
     id: "zoomout",
@@ -6310,7 +6335,7 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
                         <div className="flex gap-2">
                           {/* a contract-earned rush credit pays for any build
                               regardless of size — see rush_build in supabase.sql */}
-                          <Btn full tone="ghost" onClick={() => rushBuild(sel)} disabled={!g.rushCredits && g.bal < rushCostFor(selMine, landmarkPerkPct(regionOf(sel), "build_speed"), landmarkPerkPct(regionOf(sel), "rush_discount"))}>
+                          <Btn full tone="ghost" tut="rush-btn" onClick={() => rushBuild(sel)} disabled={!g.rushCredits && g.bal < rushCostFor(selMine, landmarkPerkPct(regionOf(sel), "build_speed"), landmarkPerkPct(regionOf(sel), "rush_discount"))}>
                             {g.rushCredits
                               ? `Rush — free (${g.rushCredits} credit${g.rushCredits === 1 ? "" : "s"})`
                               : `Rush — ₲${fmt(rushCostFor(selMine, landmarkPerkPct(regionOf(sel), "build_speed"), landmarkPerkPct(regionOf(sel), "rush_discount")))}`}

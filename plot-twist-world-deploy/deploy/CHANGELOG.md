@@ -4,6 +4,29 @@ Player-visible changes. Bumped together with `package.json`'s `version`,
 which is the single source of truth the corner badge and the new-version
 poll both read (see `vite.config.js`).
 
+## 1.28.0
+
+### The tutorial names the thing it was giving away
+
+- **New tour step: rushing.** It sits right after the build timer, points
+  at the real Rush button on the tile you just started building, and says
+  what rushing does and that your first one is free. The game was handing
+  new players a free rush credit — and, since 1.27.0, a second one for
+  signing in — while never once defining the word.
+- It's an **explanation step, not an action step**: the credit is meant to
+  be spent on the first timer that actually hurts (the 30-minute Duplex),
+  not burned on the 5-minute Cottage because a script said to. The button
+  is live inside the spotlight, so anyone impatient can still use it there.
+
+### Behind the scenes
+
+- **Abandoned guest accounts are now cleaned up.** A guest who never
+  claimed a tile and hasn't been seen for a week is deleted, along with
+  anonymous accounts that never finished signing up at all. Guests who own
+  land are untouched — their tile decays on the same 30-day inactivity
+  timer as everyone else's first, and only then are they reaped. No Google
+  account is ever deleted without its owner asking.
+
 ## 1.27.1
 
 ### A failed sign-in says so
