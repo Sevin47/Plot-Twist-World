@@ -43,6 +43,17 @@ const VERSION_CHECK_MS = 5 * 60 * 1000;
 // commit, not after the fact.
 const CHANGELOG = [
   {
+    id: "1.32.0",
+    date: "Jul 29, 2026",
+    notes: [
+      "Declining a covenant is now permanent. The offer you get on a tile's first redevelop is the only one that tile will ever make while you hold it — turn it down and redeveloping again won't produce a fresh set of cards.",
+      "That was the point of the change: declining used to cost nothing and the next redevelop dealt three new cards, so the sensible play was to keep re-rolling until a no-downside card turned up, and no card with a real trade was ever worth signing.",
+      "Nine new covenants — Transit Hub, Flood Plain, Night Market, Company Town, Land Bank, Co-op Board, Civic Trust, Bunker Lot and Holdout Parcel.",
+      "And rarely — about one offer in fourteen — a deal. Six of them exist, they're gold in the offer, and their numbers go where nothing else in the game goes: double rent on a tile that barely defends, a tile no one can ever touch that can never be rebuilt, 150% more rent for thirty days and half rent forever after.",
+      "A covenant still survives every rebuild and still ends only when the tile stops being yours — and a tile you sell, abandon or lose gives its new owner a clean slate and their own one-time offer.",
+    ],
+  },
+  {
     id: "1.31.0",
     date: "Jul 29, 2026",
     notes: [
@@ -1190,6 +1201,25 @@ const COVENANTS = {
   absentee_deed:  { name: "Absentee Deed",         mods: { rent: 0.75, rent_offline: 2 } },
   mixed_use:      { name: "Mixed Use",             mods: { rent: 1.2, no_list: true } },
   freehold:       { name: "Freehold",              mods: { rent: 1.2, no_redevelop: true, no_decay: true } },
+  transit_hub:    { name: "Transit Hub",           mods: { rent: 1.35, build_time: 1.5 } },
+  flood_plain:    { name: "Flood Plain",           mods: { rent: 1.45, def: 0.5 } },
+  night_market:   { name: "Night Market",          mods: { rent: 1.3, atk_cost: 0.5 } },
+  company_town:   { name: "Company Town",          mods: { rent: 1.4, def: 0.7, no_list: true } },
+  land_bank:      { name: "Land Bank",             mods: { rent: 0.65, build_cost: 0.6, build_time: 0.6 } },
+  co_op_board:    { name: "Co-op Board",           mods: { rent: 1.15, no_list: true, no_decay: true } },
+  civic_trust:    { name: "Civic Trust",           mods: { rent: 1.25, def: 1.25 }, cond: "block3" },
+  bunker_lot:     { name: "Bunker Lot",            mods: { def: 1.75, build_cost: 1.5 } },
+  holdout_parcel: { name: "Holdout Parcel",        mods: { rent: 0.9, no_attack: true, no_redevelop: true } },
+  // RARE — the deals. Excluded from the ordinary pool server-side and
+  // gated at ~7% of offers (covenant_offer_roll), which is why their
+  // numbers sit outside the band every card above is tuned inside. `rare`
+  // is display only; the server decides what actually gets offered.
+  sovereign_charter: { rare: true, name: "Sovereign Charter", mods: { rent: 1.9, no_attack: true, no_decay: true, no_redevelop: true } },
+  black_ledger:      { rare: true, name: "The Black Ledger",  mods: { rent: 2.5, expires_days: 30, after: { rent: 0.5 } } },
+  midas_clause:      { rare: true, name: "Midas Clause",      mods: { rent: 2, def: 0.25, atk_cost: 0.5 } },
+  iron_covenant:     { rare: true, name: "Iron Covenant",     mods: { rent: 0.9, def: 4, atk_cost: 3 } },
+  founders_pact:     { rare: true, name: "Founder's Pact",    mods: { rent: 1.5, build_cost: 0.4, build_time: 0.4, no_list: true } },
+  ghost_tenancy:     { rare: true, name: "Ghost Tenancy",     mods: { rent: 1.4, rent_offline: 2, max_level: 3 } },
 };
 const NO_MODS = {};
 // Both sides of a covenant as short +/- chips, so the trade is visible at a
@@ -1202,7 +1232,10 @@ const covChips = (mods) => {
   if (mods.rent != null) out.push({ t: mods.rent === 0 ? "earns nothing" : `${pct(mods.rent)} rent`, good: mods.rent > 1 });
   if (mods.rent_offline != null) out.push({ t: "full rate while away", good: true });
   if (mods.def != null) out.push({ t: `${pct(mods.def)} defense`, good: mods.def > 1 });
-  if (mods.atk_cost != null) out.push({ t: `raiders pay ${mods.atk_cost}×`, good: true });
+  // atk_cost cuts BOTH ways: >1 prices raiders out (gated), <1 invites them
+  // in (night_market, midas_clause). The chip has to colour on the number,
+  // not on the key, or a downside card reads as a bonus.
+  if (mods.atk_cost != null) out.push({ t: `raiders pay ${mods.atk_cost}×`, good: mods.atk_cost > 1 });
   if (mods.no_attack) out.push({ t: "never attackable", good: true });
   if (mods.max_level != null) out.push({ t: `builds stop at ${LVL[mods.max_level]}`, good: false });
   if (mods.build_time != null) out.push({
@@ -1218,7 +1251,9 @@ const covChips = (mods) => {
   if (mods.no_list) out.push({ t: "never sellable", good: false });
   if (mods.no_redevelop) out.push({ t: "never redevelopable", good: false });
   if (mods.no_decay) out.push({ t: "never repossessed", good: true });
-  if (mods.expires_days != null) out.push({ t: `${mods.expires_days} days, then dead`, good: false });
+  if (mods.expires_days != null) out.push({
+    t: `${mods.expires_days} days, then ${mods.after?.rent ? `${Math.round(mods.after.rent * 100)}% rent` : "dead"}`,
+    good: false });
   return out;
 };
 // Mirrors covenant_mods() in supabase.sql — same resolution ORDER (expiry
@@ -2667,7 +2702,7 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
     // own tile_nicknames" policy already scopes it to this account, same
     // pattern as unlocked_regions/bank_ledger elsewhere in this file
     const [tilesRes, nickRes] = await Promise.all([
-      supabase.from("tiles").select("qk,cls,level,rarity,paid,list_price,prestige,build_until,build_secs,covenant,covenant_at").eq("owner", g.uid),
+      supabase.from("tiles").select("qk,cls,level,rarity,paid,list_price,prestige,build_until,build_secs,covenant,covenant_at,covenant_declined").eq("owner", g.uid),
       supabase.from("tile_nicknames").select("qk,nickname"),
     ]);
     const { data, error } = tilesRes;
@@ -2679,6 +2714,11 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
       ...(t.build_until != null ? { bu: t.build_until } : {}),
       ...(t.build_secs != null ? { bs: t.build_secs } : {}),
       ...(t.covenant != null ? { cv: t.covenant, cvAt: t.covenant_at } : {}),
+      // cvNo: this tenure already turned an offer down, so no redevelop
+      // will ever offer again (decline_covenant in supabase.sql). Display
+      // only — the server enforces it — but without it the sheet would
+      // just silently stop offering and read as a bug.
+      ...(t.covenant_declined ? { cvNo: 1 } : {}),
       ...(nicks.has(t.qk) ? { nick: nicks.get(t.qk) } : {}),
     }));
     rebuildOwn();
@@ -2740,7 +2780,7 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
       let tileRows = null, tilesErr = null;
       for (let attempt = 0; attempt < 3 && !tileRows; attempt++) {
         const res = await supabase
-          .from("tiles").select("qk,cls,level,rarity,paid,list_price,prestige,build_until,build_secs,covenant,covenant_at").eq("owner", g.uid);
+          .from("tiles").select("qk,cls,level,rarity,paid,list_price,prestige,build_until,build_secs,covenant,covenant_at,covenant_declined").eq("owner", g.uid);
         if (!res.error) { tileRows = res.data || []; break; }
         tilesErr = res.error;
         await new Promise((r) => setTimeout(r, 500 * (attempt + 1)));
@@ -2752,6 +2792,7 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
           ...(t.build_until != null ? { bu: t.build_until } : {}),
           ...(t.build_secs != null ? { bs: t.build_secs } : {}),
           ...(t.covenant != null ? { cv: t.covenant, cvAt: t.covenant_at } : {}),
+          ...(t.covenant_declined ? { cvNo: 1 } : {}),
         }));
       } else {
         toast("Couldn't load your tiles — check your connection and reopen the app.");
@@ -2846,8 +2887,12 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
      supabase.sql), which is what makes them un-rerollable — refetching
      returns the same three cards.
 
-     REDEVELOP IS THE OFFER POINT, and once per tile per tenure (only when
-     it has no covenant yet). This started on every build completion, which
+     REDEVELOP IS THE OFFER POINT, and strictly once per tile per tenure:
+     only when the tile has no covenant AND its owner hasn't already turned
+     one down. Declining used to leave the tile eligible again, which made
+     "decline" a reroll button — redevelop, re-draw, repeat until a card
+     with no downside turned up — so no card that costs anything was ever
+     worth signing. This started on every build completion, which
      is fine at the pace the build timers set — but rushing is DESIGNED to
      collapse those timers (it's the game's main money sink), so an active
      player doing a rush-upgrade-rush bender hit a completion every few
@@ -2938,14 +2983,30 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
     toast(`Signed — ${COVENANTS[code]?.name || code}`);
   };
 
-  // Declining is free and always available — the floor of this whole
-  // system is "nothing happened", never "you lost something".
+  // Declining is free — the floor of this whole system is still "nothing
+  // happened", never "you lost something" — but it is FINAL for this
+  // tenure: no later redevelop re-offers on this tile (decline_covenant +
+  // redevelop_tile in supabase.sql). It used to be a free reroll, which
+  // meant nobody ever had to weigh a card with a real cost; they could
+  // redevelop again and re-draw until a pure upside showed up.
+  //
+  // Two taps, therefore. Everything else permanent in this sheet asks
+  // twice, and this is the one button whose consequence is invisible
+  // afterwards — a tile that will simply never be asked again.
+  const [covDeclineArm, setCovDeclineArm] = useState(false);
+  useEffect(() => { setCovDeclineArm(false); }, [sel, covOffer?.qk]);
+
   const declineCovenant = async () => {
     if (!covOffer) return;
+    if (!covDeclineArm) { setCovDeclineArm(true); return; }
     const qk = covOffer.qk;
     covOfferQks.current.delete(qk);
     covLoadedFor.current = null;
     setCovOffer(null);
+    setCovDeclineArm(false);
+    const t = ownMap.current.get(qk);
+    if (t) t.cvNo = 1;
+    rebuildOwn(); dirty.current = true;
     const { error } = await supabase.rpc("decline_covenant", { p_qk: qk });
     if (error) toast(error.message || "Couldn't dismiss that offer.");
   };
@@ -6542,7 +6603,7 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
                   {selMine.cv && COVENANTS[selMine.cv] && (
                     <div className="mb-2 rounded-xl p-2.5" style={cardSty}>
                       <div className="flex flex-wrap items-center gap-2">
-                        <Chip color="#C9A0FF">{COVENANTS[selMine.cv].name}</Chip>
+                        <Chip color={COVENANTS[selMine.cv].rare ? "#FFD98A" : "#C9A0FF"}>{COVENANTS[selMine.cv].name}</Chip>
                         {covChips(modsOf(selMine)).map((ch, i) => (
                           <span key={i} className="pt10 font-bold" style={{ ...mono, color: ch.good ? "#7FD1A0" : "#F08A8A" }}>{ch.t}</span>
                         ))}
@@ -6552,11 +6613,16 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
                         if (!c.mods.expires_days || !selMine.cvAt) return null;
                         const endsAt = new Date(selMine.cvAt).getTime() + c.mods.expires_days * 86400000;
                         const left = Math.max(0, Math.round((endsAt - Date.now()) / 1000));
+                        // after.rent is 0 for ground_lease and 0.5 for the
+                        // rare Black Ledger, so the wording is read off the
+                        // card rather than hardcoded to "nothing"
+                        const after = c.mods.after?.rent || 0;
+                        const tail = after ? `${Math.round(after * 100)}% rent` : "nothing";
                         return (
                           <div className="pt10 mt-1.5" style={{ ...mono, color: left > 0 ? C.dim : "#F08A8A" }}>
                             {left > 0
-                              ? `${hm(left)} of premium rent left — then it earns nothing until released.`
-                              : "Lease expired — this tile earns nothing until the covenant is released."}
+                              ? `${hm(left)} of premium rent left — then it earns ${tail} for the rest of your tenure.`
+                              : `Term expired — this tile earns ${tail} for as long as you hold it.`}
                           </div>
                         );
                       })()}
@@ -6579,19 +6645,29 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
                   {covOffer && covOffer.qk === sel && (
                     <div data-tut="covenant-offer" className="mb-2 rounded-xl p-2.5" style={cardSty}>
                       <div className="mb-1.5 flex items-center justify-between gap-2">
-                        <Eyebrow>Covenant offered</Eyebrow>
+                        <Eyebrow>{covOffer.cards.some((c) => c.tier === "rare") ? "Covenant offered — rare deal" : "Covenant offered"}</Eyebrow>
+                        {/* two taps: declining is free but PERMANENT for this
+                            tenure, and it's the only button here whose
+                            consequence is invisible afterwards */}
                         <button onClick={declineCovenant} className="pt10 font-bold focus-visible:outline focus-visible:outline-2"
-                          style={{ ...mono, color: C.dim, outlineColor: C.amber }}>Decline all</button>
+                          style={{ ...mono, color: covDeclineArm ? "#F08A8A" : C.dim, outlineColor: C.amber }}>
+                          {covDeclineArm ? "Tap again — permanent" : "Decline all"}
+                        </button>
                       </div>
                       <div className="pt10 mb-2" style={{ ...mono, color: C.dim }}>
-                        Sign one or none — declining is free. What you sign is permanent for as long as you hold this tile and survives every rebuild; it ends only if you sell, abandon or lose the tile.
+                        Sign one or none — but this is a one-time offer. Decline and this tile is never offered a covenant again while you hold it. What you sign is permanent for as long as you hold the tile and survives every rebuild; it ends only if you sell, abandon or lose the tile.
                       </div>
                       <div className="flex flex-col gap-1.5">
                         {covOffer.cards.map((c) => (
                           <button key={c.code} onClick={() => acceptCovenant(c.code)}
                             className="rounded-lg p-2 text-left transition-all duration-150 hover:brightness-110 active:scale-[0.98] focus-visible:outline focus-visible:outline-2"
-                            style={{ background: `${C.panel}b3`, border: `1px solid ${C.hairLit}`, outlineColor: C.amber }}>
-                            <div className="pt11 font-bold" style={{ ...display, color: C.amber }}>{c.name}</div>
+                            style={c.tier === "rare"
+                              ? { background: "#FFD98A14", border: "1px solid #FFD98A88", outlineColor: C.amber }
+                              : { background: `${C.panel}b3`, border: `1px solid ${C.hairLit}`, outlineColor: C.amber }}>
+                            {c.tier === "rare" && (
+                              <div className="pt10 mb-0.5 font-bold" style={{ ...mono, color: "#FFD98A", letterSpacing: "0.08em" }}>RARE DEAL</div>
+                            )}
+                            <div className="pt11 font-bold" style={{ ...display, color: c.tier === "rare" ? "#FFD98A" : C.amber }}>{c.name}</div>
                             <div className="pt10 mt-0.5" style={{ color: C.text }}>{c.descr}</div>
                             <div className="mt-1 flex flex-wrap gap-1">
                               {covChips(c.mods || {}).map((ch, i) => (
@@ -6701,8 +6777,16 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
                         </div>
                       ) : (
                         <Btn full tut="redevelop-btn" onClick={() => redevelop(sel)}>
-                          Redevelop — +25% rent, keep tile{selMine.cv ? " · clears covenant" : ""}
+                          Redevelop — +25% rent, keep tile{selMine.cv ? " · keeps covenant" : ""}
                         </Btn>
+                      )}
+                      {/* the offer is once per tenure and this tile has spent
+                          it, so say so here rather than letting a redevelop
+                          quietly produce no cards and read as a bug */}
+                      {!selMine.cv && selMine.cvNo && (
+                        <div className="pt10 text-center" style={{ ...mono, color: C.dim }}>
+                          You declined this tile's covenant — that was the one offer it gets while you hold it.
+                        </div>
                       )}
                       <div className="flex gap-2">
                         {selMine.p ? (

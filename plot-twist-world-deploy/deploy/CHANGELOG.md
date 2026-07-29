@@ -4,6 +4,46 @@ Player-visible changes. Bumped together with `package.json`'s `version`,
 which is the single source of truth the corner badge and the new-version
 poll both read (see `vite.config.js`).
 
+## 1.32.0
+
+### Covenants: one offer, one answer
+
+- **Declining a covenant is now permanent for your tenure on that tile.**
+  A tile's first redevelop offers three cards; turn them all down and no
+  later redevelop offers again while you hold it. Backed by
+  `tiles.covenant_declined`, set in `decline_covenant` and read by
+  `redevelop_tile`.
+- **Why:** declining was free *and* consequence-free, so the next
+  redevelop dealt three fresh cards. That made "decline" a reroll button
+  — keep going until Prime Frontage shows up — and drained every card
+  with a real cost out of the game. The refusal is now itself the
+  permanent decision, which is what makes "sign one or none" a choice.
+- The flag clears with the covenant on every tenure change (sale, raid
+  capture, abandon/repossess + reclaim), so a new owner gets their own
+  one-time offer.
+- Declining is a **two-tap** button in the sheet, and a tile that spent
+  its offer says so above Redevelop.
+
+### Nine new covenants, and six rare deals
+
+- New standard cards: Transit Hub, Flood Plain, Night Market, Company
+  Town, Land Bank, Co-op Board, Civic Trust, Bunker Lot, Holdout Parcel.
+- **New `tier` on `covenant_defs`.** Rare cards are excluded from the
+  ordinary pool and reached through a single gate in
+  `covenant_offer_roll` (~7% of offers swap one standard card for a
+  deal), so their frequency is one tunable number rather than an
+  emergent property of the weight table.
+- The deals — Sovereign Charter, The Black Ledger, Midas Clause, Iron
+  Covenant, Founder's Pact, Ghost Tenancy — sit deliberately outside the
+  standard pool's tuning band on both sides. They still obey all four
+  covenant rules: offered not imposed, free to decline, a real tradeoff,
+  and every one names the build it's bad for.
+- Rare cards render gold in the offer and sort first.
+- `atk_cost` chips now colour on the number, not the key — below 1 it
+  invites raiders in (Night Market, Midas Clause) and reads as a
+  downside. Expiry chips read their `after` rent off the card rather
+  than hardcoding "dead".
+
 ## 1.29.0
 
 ### Assets, by region
