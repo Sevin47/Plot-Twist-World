@@ -43,6 +43,14 @@ const VERSION_CHECK_MS = 5 * 60 * 1000;
 // commit, not after the fact.
 const CHANGELOG = [
   {
+    id: "1.31.0",
+    date: "Jul 29, 2026",
+    notes: [
+      "New: Rush all, on the Building section in Assets — finishes every build you have running, one after another, and shows what it'll cost before you commit.",
+      "If you're holding rush credits it spends them on your most expensive builds first, so a credit never gets burned on a five-minute Cottage. Once they're gone it works up from the cheapest, so you finish as many as your ₲ allows.",
+    ],
+  },
+  {
     id: "1.30.0",
     date: "Jul 29, 2026",
     notes: [
@@ -3976,6 +3984,18 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
     return dflt;
   };
 
+  // What rushing THIS tile costs right now, with every regional modifier
+  // that applies to it already folded in. One definition so the single
+  // Rush button, the batch, and the batch's price estimate can't drift
+  // apart — they were three copies of the same five arguments.
+  const rushCostOf = (t) => rushCostFor(
+    t,
+    landmarkPerkPct(regionOf(t.qk), "build_speed"),
+    landmarkPerkPct(regionOf(t.qk), "rush_discount"),
+    projectFactor(regionOf(t.qk), "build_time"),
+    projectFactor(regionOf(t.qk), "rush_cost"),
+  );
+
   const loadProjPanel = useCallback(async (region) => {
     if (!region) return;
     const { data, error } = await supabase.rpc("list_region_projects", { p_region: region });
@@ -4359,13 +4379,7 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
     // is the authority; this is only so the local balance doesn't visibly
     // drop and then snap back on the next syncRent()
     const usingCredit = (g.rushCredits || 0) > 0;
-    const cost = usingCredit ? 0 : rushCostFor(
-      t,
-      landmarkPerkPct(regionOf(qk), "build_speed"),
-      landmarkPerkPct(regionOf(qk), "rush_discount"),
-      projectFactor(regionOf(qk), "build_time"),
-      projectFactor(regionOf(qk), "rush_cost"),
-    );
+    const cost = usingCredit ? 0 : rushCostOf(t);
     if (!usingCredit && g.bal < cost) { toast("Not enough ₲ to rush this build."); return; }
     const { data, error } = await supabase.rpc("rush_build", { p_qk: qk });
     if (error || !data) { toast(error?.message || "Couldn't rush this build."); return; }
@@ -4391,13 +4405,14 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
   // not a background auto-upgrade bot.
   const upgradeAll = async (tiles) => {
     if (batchBusy) return;
+    const kind = "upgrade";
     // already-building tiles aren't "eligible" here — starting a build is
     // all this does now, and a tile can only run one at a time
     let pool = tiles.filter((t) => t.l < maxLevelOf(t) && !t.bu);
     const totalEligible = pool.length;
     if (totalEligible === 0) { toast("Nothing here needs upgrading."); return; }
     let count = 0, spent = 0, slotLimited = false;
-    setBatchBusy({ done: 0, total: totalEligible });
+    setBatchBusy({ kind, done: 0, total: totalEligible });
     while (pool.length) {
       if (!g.devMode) {
         const activeBuilds = g.own.filter((x) => x.bu).length;
@@ -4414,7 +4429,7 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
       if (data.build_until) t.bu = data.build_until; else t.l = data.level;
       spent += cost; count++;
       pool = pool.filter((x) => x !== t); // one build per tile at a time either way
-      setBatchBusy({ done: count, total: totalEligible });
+      setBatchBusy({ kind, done: count, total: totalEligible });
       force();
     }
     setBatchBusy(null);
@@ -4422,6 +4437,58 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
     toast(count > 0
       ? `Started ${count} build${count === 1 ? "" : "s"} for ₲${fmt(spent)}${slotLimited ? " — builder slots full, queue the rest once one finishes" : ""}`
       : slotLimited ? "No free builder slots — wait for a build to finish or rush one." : "Not enough ₲ to upgrade anything here.");
+  };
+
+  // Batch rush over the Building section. Same shape as upgradeAll above —
+  // sequential, visibly one at a time, stops on the first server-side
+  // rejection rather than retry-looping — and scoped to exactly what that
+  // section shows, which is every build in progress (the Assets filters
+  // deliberately don't apply to it, so neither do they here).
+  //
+  // The ORDER is the one real difference, and it's the whole reason this
+  // couldn't just reuse upgradeAll's cheapest-first rule. rush_build spends
+  // a contract rush credit before ₲, and a credit covers the whole cost
+  // regardless of size — so a cheapest-first batch would burn hard-earned
+  // credits on 5-minute Cottages, which is precisely the opposite of why
+  // contract rewards are paid in tempo instead of money. So: most expensive
+  // first while credits last (a credit is worth most on the biggest build),
+  // then cheapest first once they're gone, which is upgradeAll's logic and
+  // maximises how many builds finish for the ₲ that's left.
+  const rushAll = async (tiles) => {
+    if (batchBusy) return;
+    const kind = "rush";
+    let pool = tiles.filter((t) => t.bu && buildSecsLeft(t) > 0);
+    const totalEligible = pool.length;
+    if (totalEligible === 0) { toast("Nothing is building right now."); return; }
+    let count = 0, spent = 0, credits = 0;
+    setBatchBusy({ kind, done: 0, total: totalEligible });
+    while (pool.length) {
+      const useCredit = (g.rushCredits || 0) > 0;
+      pool.sort((a, b) => useCredit ? rushCostOf(b) - rushCostOf(a) : rushCostOf(a) - rushCostOf(b));
+      const t = pool[0];
+      const cost = useCredit ? 0 : rushCostOf(t);
+      // sorted cheapest-first in this branch, so the cheapest remaining
+      // being unaffordable means nothing else in the pool is affordable
+      if (!useCredit && g.bal < cost) break;
+      const { data, error } = await supabase.rpc("rush_build", { p_qk: t.qk });
+      if (error || !data) break;
+      if (useCredit) { g.rushCredits -= 1; credits++; } else { g.bal -= cost; spent += cost; }
+      t.l = data.level;
+      delete t.bu; delete t.bs;
+      count++;
+      pool = pool.filter((x) => x !== t);
+      setBatchBusy({ kind, done: count, total: totalEligible });
+      force();
+    }
+    setBatchBusy(null);
+    rebuildOwn(); checkAch(); dirty.current = true; save();
+    if (count === 0) { toast("Not enough ₲ to rush anything here."); return; }
+    const paid = [
+      credits ? `${credits} credit${credits === 1 ? "" : "s"}` : "",
+      spent ? `₲${fmt(spent)}` : "",
+    ].filter(Boolean).join(" + ");
+    toast(`Rushed ${count} build${count === 1 ? "" : "s"} for ${paid}`
+      + (spent ? ` · ₲${fmt(Math.floor(spent * LEVY_PCT / 100))} to region funds` : ""));
   };
 
   const redevelop = async (qk) => {
@@ -5745,6 +5812,13 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
   // with zero drift. Confirmed live: this exact symptom, reproduced from
   // a bug-report recording of Upgrade All.
   const assetsBuilding = tab !== "assets" ? [] : g.own.filter((t) => t.bu).sort((a, b) => new Date(a.bu).getTime() - new Date(b.bu).getTime());
+  // What "Rush all" would cost right now, mirroring rushAll's own ordering
+  // rule so the quote and the charge agree: rush credits cover the most
+  // expensive builds, ₲ pays for whatever is left. Recomputed on the 250ms
+  // economy tick, which is fine — builder slots cap this list at single
+  // digits, and the price genuinely does fall as the timers run down.
+  const rushAllCost = tab !== "assets" || !assetsBuilding.length ? 0
+    : assetsBuilding.map(rushCostOf).sort((a, b) => b - a).slice(g.rushCredits || 0).reduce((s, c) => s + c, 0);
   const assetsFiltered = tab !== "assets" ? g.own : (() => {
     const q = assetQuery.trim().toLowerCase();
     let list = g.own.filter((t) => !t.bu);
@@ -6703,7 +6777,7 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
                   </div>
                   {assetsUpgradable.length > 0 && (
                     <Btn small tone="ghost" full onClick={() => upgradeAll(assetsFiltered)} disabled={!!batchBusy}>
-                      {batchBusy ? `Upgrading… ${batchBusy.done}/${batchBusy.total}` : `Upgrade all — ${assetsUpgradable.length} eligible${assetsFilterActive ? " (filtered)" : ""}`}
+                      {batchBusy?.kind === "upgrade" ? `Upgrading… ${batchBusy.done}/${batchBusy.total}` : `Upgrade all — ${assetsUpgradable.length} eligible${assetsFilterActive ? " (filtered)" : ""}`}
                     </Btn>
                   )}
                 </div>
@@ -6742,6 +6816,20 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
                   <div className="mb-2 flex items-center gap-2">
                     <span className="pt10 trk font-bold uppercase" style={{ ...display, color: C.amber }}>🔨 Building · {assetsBuilding.length}</span>
                     <div className="h-px flex-1" style={{ background: C.hair }} />
+                    {/* sits with the thing it acts on rather than in the
+                        toolbar with Upgrade all — it only ever applies to
+                        this section, and it costs no space when nothing is
+                        building because the whole section is hidden */}
+                    <button onClick={() => rushAll(assetsBuilding)}
+                      disabled={!!batchBusy || (!g.rushCredits && g.bal < rushAllCost)}
+                      className="pt11 shrink-0 font-bold focus-visible:outline focus-visible:outline-2 disabled:opacity-40"
+                      style={{ ...mono, color: C.amber, outlineColor: C.amber }}>
+                      {batchBusy?.kind === "rush"
+                        ? `Rushing… ${batchBusy.done}/${batchBusy.total}`
+                        : g.rushCredits
+                          ? `Rush all — ${g.rushCredits} credit${g.rushCredits === 1 ? "" : "s"}${rushAllCost ? ` + ₲${fmt(rushAllCost)}` : ""}`
+                          : `Rush all — ₲${fmt(rushAllCost)}`}
+                    </button>
                   </div>
                   {assetsBuilding.map(renderAssetRow)}
                   {assetsFiltered.length > 0 && (
