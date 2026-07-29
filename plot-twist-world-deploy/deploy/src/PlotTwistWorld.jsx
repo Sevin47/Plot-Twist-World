@@ -43,6 +43,17 @@ const VERSION_CHECK_MS = 5 * 60 * 1000;
 // commit, not after the fact.
 const CHANGELOG = [
   {
+    id: "1.30.0",
+    date: "Jul 29, 2026",
+    notes: [
+      "New: region projects. Every region can now build shared infrastructure — a Metro Line that finishes builds 25% faster, a Contractors' Guild that makes rushing 40% cheaper, Civic Fortifications that help every tile there hold off raids, or a Free Port that drops the duty on trades between locals.",
+      "It doesn't cost you anything extra. A tenth of what you already spend claiming, building and rushing now goes to that region's fund instead of just disappearing — same prices, same buttons.",
+      "A region can run two projects at once, and they stay built for as long as the fund can maintain them. Pick which one your money backs, or leave it and it follows whatever the region is closest to finishing.",
+      "Selling a tile now costs the seller a 5% duty — the one genuinely new cost, and the reason Free Port is worth building.",
+      "A region whose players drift away stops being able to pay upkeep, and its projects pause until the fund recovers. Nothing is lost — progress waits.",
+    ],
+  },
+  {
     id: "1.29.0",
     date: "Jul 29, 2026",
     notes: [
@@ -827,6 +838,33 @@ function distToSegSq(px, py, ax, ay, bx, by) {
   return ex * ex + ey * ey;
 }
 const REGION_LEN = 8;         // shared-storage shard prefix (~150km regions)
+// ── Region projects (see the REGION PROJECTS section in supabase.sql and
+//    PROJECTS-PLAN.md). A levy on transactions funds shared infrastructure
+//    per region; two slots, permanent while the fund can maintain them.
+//
+//    All of these MUST match the project_*() constant functions in
+//    supabase.sql exactly — display/estimate only here, the server is the
+//    sole authority on every real charge and every real perk.
+//
+//    The levy on claims/builds/rushes is a CARVE-OUT of money the game
+//    already destroyed, so no price the player sees changed when this
+//    shipped. Only the market duty is a genuinely new cost, and only Free
+//    Port waives it.
+const LEVY_PCT = 10;              // claim / build / rush, carved out of the existing charge
+const MARKET_DUTY_PCT = 5;        // market sale, off the seller's proceeds — the one new cost
+const PROJECT_COST = 120000;      // flat, every project, every region, forever
+const UPKEEP_PER_TILE_DAY = 40;   // per active project, per tile owned in the region
+const PROJECT_SLOTS = 2;
+// MUST match the project_defs seed rows in supabase.sql. perkValue's unit
+// depends on perkType: build_time/rush_cost/defense are multipliers,
+// levy_waiver has no value (its effect is the waiver itself).
+const PROJECT_DEFS = {
+  metro: { name: "Metro Line",           perkType: "build_time",  perkValue: 0.75 },
+  guild: { name: "Contractors' Guild",   perkType: "rush_cost",   perkValue: 0.60 },
+  works: { name: "Civic Fortifications", perkType: "defense",     perkValue: 1.35 },
+  port:  { name: "Free Port",            perkType: "levy_waiver", perkValue: 0    },
+};
+
 const REGION_PREVIEW_COUNT = 6; // HQ territory grid rows shown before "Show all" — keeps the tab from growing unbounded as players unlock more regions
 const ACTIVITY_PREVIEW_COUNT = 8; // Recent activity rows shown before "Show all" — same collapse pattern as regions above
 
@@ -1231,23 +1269,31 @@ const BUILD_SECONDS = { 1: 300, 2: 1800, 3: 7200, 4: 28800 };
 // just omit it and get the un-perked formula.
 const buildDurationSecs = (targetLevel, prestige, perkPct = 0) => BUILD_SECONDS[targetLevel] * (1 + 0.25 * Math.min(prestige || 0, PRESTIGE_COST_CAP)) * (1 - (perkPct || 0) / 100);
 const buildSecsLeft = (t) => t.bu ? Math.max(0, Math.round((new Date(t.bu).getTime() - Date.now()) / 1000)) : 0;
-const buildProgressPct = (t, perkPct = 0) => {
+// The effective total duration of the build currently running on this
+// tile. Prefers `bs` — the value the server stamped on the tile when it
+// set build_until (tiles.build_secs) — because that is precisely what
+// rush_build prices against. Using it keeps the rush quote and the
+// progress bar in step with the server even when a region's Metro Line
+// completes or goes dormant partway through a build, which the formula
+// below cannot represent. The formula is a fallback for builds that
+// predate the column, matching rush_build's own fallback branch.
+const effectiveBuildSecs = (t, buildSpeedPct = 0, regionFactor = 1) =>
+  t.bs != null
+    ? t.bs
+    : buildDurationSecs(t.l + 1, t.pr, buildSpeedPct) * (modsOf(t).build_time ?? 1) * (regionFactor || 1);
+const buildProgressPct = (t, perkPct = 0, regionFactor = 1) => {
   if (!t.bu) return 100;
-  const total = buildDurationSecs(t.l + 1, t.pr, perkPct) * (modsOf(t).build_time ?? 1);
+  const total = effectiveBuildSecs(t, perkPct, regionFactor);
   return Math.max(0, Math.min(100, Math.round((1 - buildSecsLeft(t) / Math.max(total, 1)) * 100)));
 };
 // mirrors rush_build()'s proportional-remaining-time pricing exactly.
-// buildSpeedPct must match whatever build_speed perk was in effect when
-// build_until was actually set, or the remaining-fraction math (and thus
-// this estimate) skews — see rush_build()'s own comment on this.
-const rushCostFor = (t, buildSpeedPct = 0, rushDiscountPct = 0) => {
-  // covenant build_time, matching rush_build's own reproduction of the
-  // effective duration — if this and the server disagree, the remaining
-  // fraction is measured against a different total and the quoted rush
-  // price is wrong in both directions.
-  const totalSecs = buildDurationSecs(t.l + 1, t.pr, buildSpeedPct) * (modsOf(t).build_time ?? 1);
+// rushFactor is the region Contractors' Guild multiplier, applied to the
+// final price the same way rush_build applies it — after the landmark
+// rush_discount, on a different factor, so the two never double-count.
+const rushCostFor = (t, buildSpeedPct = 0, rushDiscountPct = 0, regionFactor = 1, rushFactor = 1) => {
+  const totalSecs = effectiveBuildSecs(t, buildSpeedPct, regionFactor);
   const frac = Math.min(1, buildSecsLeft(t) / Math.max(totalSecs, 1));
-  return Math.ceil(upCost(t) * frac * (1 - (rushDiscountPct || 0) / 100));
+  return Math.ceil(upCost(t) * frac * (1 - (rushDiscountPct || 0) / 100) * (rushFactor || 1));
 };
 
 function rollRarity() {
@@ -2432,6 +2478,18 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
   const [assetClsFilter, setAssetClsFilter] = useState("all");
   const [assetRarityFilter, setAssetRarityFilter] = useState(-1);
   const [regionsExpanded, setRegionsExpanded] = useState(false); // HQ territory list starts collapsed once it outgrows the grid preview
+  // Region projects. `regionProj` is the CHEAP world-wide view — one select
+  // over region_projects for every unlocked region at once, keyed by region
+  // — and it drives both the territory-grid chips and the point-of-use perk
+  // annotations on the build/rush buttons. Doing that with the full
+  // list_region_projects RPC would be one round-trip per region, which is
+  // why the panel payload is fetched separately and only for one region.
+  const [regionProj, setRegionProj] = useState({});   // region -> { built: [codes], dormant: n, arrears: bool }
+  const [projPanel, setProjPanel] = useState(null);   // full list_region_projects payload for projRegion
+  const [projRegion, setProjRegion] = useState("");   // which region the projects card is showing
+  const [projBusy, setProjBusy] = useState(false);
+  const [demolishArm, setDemolishArm] = useState(""); // code the player has tapped Demolish on once — second tap confirms
+  const [projErr, setProjErr] = useState(false);
   const [activityExpanded, setActivityExpanded] = useState(false); // Recent activity list starts collapsed once it outgrows the preview
   const [assetSort, setAssetSort] = useState("rent");
   // Assets list is grouped by region. This holds ONLY explicit per-region
@@ -2601,7 +2659,7 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
     // own tile_nicknames" policy already scopes it to this account, same
     // pattern as unlocked_regions/bank_ledger elsewhere in this file
     const [tilesRes, nickRes] = await Promise.all([
-      supabase.from("tiles").select("qk,cls,level,rarity,paid,list_price,prestige,build_until,covenant,covenant_at").eq("owner", g.uid),
+      supabase.from("tiles").select("qk,cls,level,rarity,paid,list_price,prestige,build_until,build_secs,covenant,covenant_at").eq("owner", g.uid),
       supabase.from("tile_nicknames").select("qk,nickname"),
     ]);
     const { data, error } = tilesRes;
@@ -2611,6 +2669,7 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
       qk: t.qk, cls: t.cls, l: t.level, r: t.rarity, pd: t.paid, pr: t.prestige || 0,
       ...(t.list_price != null ? { p: t.list_price } : {}),
       ...(t.build_until != null ? { bu: t.build_until } : {}),
+      ...(t.build_secs != null ? { bs: t.build_secs } : {}),
       ...(t.covenant != null ? { cv: t.covenant, cvAt: t.covenant_at } : {}),
       ...(nicks.has(t.qk) ? { nick: nicks.get(t.qk) } : {}),
     }));
@@ -2673,7 +2732,7 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
       let tileRows = null, tilesErr = null;
       for (let attempt = 0; attempt < 3 && !tileRows; attempt++) {
         const res = await supabase
-          .from("tiles").select("qk,cls,level,rarity,paid,list_price,prestige,build_until,covenant,covenant_at").eq("owner", g.uid);
+          .from("tiles").select("qk,cls,level,rarity,paid,list_price,prestige,build_until,build_secs,covenant,covenant_at").eq("owner", g.uid);
         if (!res.error) { tileRows = res.data || []; break; }
         tilesErr = res.error;
         await new Promise((r) => setTimeout(r, 500 * (attempt + 1)));
@@ -2683,6 +2742,7 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
           qk: t.qk, cls: t.cls, l: t.level, r: t.rarity, pd: t.paid, pr: t.prestige || 0,
           ...(t.list_price != null ? { p: t.list_price } : {}),
           ...(t.build_until != null ? { bu: t.build_until } : {}),
+          ...(t.build_secs != null ? { bs: t.build_secs } : {}),
           ...(t.covenant != null ? { cv: t.covenant, cvAt: t.covenant_at } : {}),
         }));
       } else {
@@ -3382,7 +3442,7 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
       // (owner, flip_royalty_to as of the flip feature), so PostgREST can no
       // longer infer which relationship an unqualified `profiles(username)`
       // embed means and rejects the whole query. Must stay qualified.
-      .select("qk,owner,cls,rarity,level,paid,list_price,prestige,attacks_received_count,attacks_received_date,build_until,owner_since,covenant,covenant_at,profiles!tiles_owner_fkey(username,peak_net_worth,is_npc)")
+      .select("qk,owner,cls,rarity,level,paid,list_price,prestige,attacks_received_count,attacks_received_date,build_until,build_secs,owner_since,covenant,covenant_at,profiles!tiles_owner_fkey(username,peak_net_worth,is_npc)")
       .like("qk", `${prefix}%`);
     const t = {};
     if (error) {
@@ -3405,6 +3465,7 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
           cls: row.cls, pd: row.paid, ...(row.list_price != null ? { p: row.list_price } : {}),
           arc: row.attacks_received_date === todayUTC() ? (row.attacks_received_count || 0) : 0,
           ...(row.build_until != null ? { bu: row.build_until } : {}),
+          ...(row.build_secs != null ? { bs: row.build_secs } : {}),
           ...(row.covenant != null ? { cv: row.covenant, cvAt: row.covenant_at } : {}),
           ...(row.owner_since != null ? { os: row.owner_since } : {}),
         };
@@ -3445,7 +3506,7 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
         // spot; a live "pending" read here would get baked into g.own as a
         // real district, silently zeroing that tile's rent (pending has
         // rps 0) even though the account genuinely owns a real, priced tile.
-        g.own.push({ qk, l: rec.l || 0, r: rec.r || 0, pr: rec.pr || 0, cls: rec.cls, pd: rec.pd || 0, ...(rec.p != null ? { p: rec.p } : {}), ...(rec.bu != null ? { bu: rec.bu } : {}) });
+        g.own.push({ qk, l: rec.l || 0, r: rec.r || 0, pr: rec.pr || 0, cls: rec.cls, pd: rec.pd || 0, ...(rec.p != null ? { p: rec.p } : {}), ...(rec.bu != null ? { bu: rec.bu } : {}), ...(rec.bs != null ? { bs: rec.bs } : {}) });
         changed = true;
       } else if (mine) {
         if (rec.o !== g.uid) { g.own.splice(g.own.findIndex((t2) => t2.qk === qk), 1); changed = true; }
@@ -3874,6 +3935,100 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
   };
   const myLandmarkPieces = (landmarkId) => g.own.filter((t) => landmarksByQk.current.get(t.qk)?.landmarkId === landmarkId).length;
 
+  /* ── Region projects (see supabase.sql's REGION PROJECTS section).
+     Two fetch paths, deliberately: this cheap one covers every unlocked
+     region in a single pair of selects and feeds the territory chips and
+     the perk annotations on build/rush; the panel RPC below is one region
+     at a time and only when the player is actually looking at it. Both
+     tables are world-readable by RLS — a region's state is public
+     information, so you can see what a region has built before deciding
+     to move there. ── */
+  const refreshRegionProj = useCallback(async () => {
+    const regions = [...unlockedRegions.current];
+    if (!regions.length) { setRegionProj({}); return; }
+    const [projRes, fundRes] = await Promise.all([
+      supabase.from("region_projects").select("region,code,state").in("region", regions),
+      supabase.from("region_funds").select("region,arrears_since").in("region", regions),
+    ]);
+    if (projRes.error) return;
+    const out = {};
+    for (const r of projRes.data || []) {
+      const e = (out[r.region] ||= { built: [], dormant: 0, arrears: false });
+      if (r.state === "active") e.built.push(r.code);
+      else if (r.state === "dormant") e.dormant += 1;
+    }
+    for (const f of fundRes.data || []) {
+      if (f.arrears_since) (out[f.region] ||= { built: [], dormant: 0, arrears: false }).arrears = true;
+    }
+    setRegionProj(out);
+  }, []);
+
+  // Is a given project running in a given region? Dormant deliberately
+  // counts as absent — that's the whole point of dormancy.
+  const projectBuilt = (region, code) => !!regionProj[region]?.built.includes(code);
+  // The multiplier an active project of this type contributes in this
+  // region, or the neutral default. Mirrors project_perk() in supabase.sql.
+  const projectFactor = (region, perkType, dflt = 1) => {
+    for (const code of regionProj[region]?.built || []) {
+      const def = PROJECT_DEFS[code];
+      if (def && def.perkType === perkType) return def.perkValue;
+    }
+    return dflt;
+  };
+
+  const loadProjPanel = useCallback(async (region) => {
+    if (!region) return;
+    const { data, error } = await supabase.rpc("list_region_projects", { p_region: region });
+    // A failed fetch here used to leave the card on "Loading…" forever,
+    // which reads as a hang rather than a problem — the same silent-failure
+    // shape the region tile fetch was fixed for. Say so instead.
+    if (error) { console.error("list_region_projects failed", error); setProjErr(true); return; }
+    setProjErr(false);
+    setProjPanel(data || null);
+  }, []);
+
+  const pledgeTo = async (region, code) => {
+    if (projBusy) return;
+    setProjBusy(true);
+    // toggling your current pick off returns you to follow-the-leader
+    const next = projPanel?.pledge === code ? null : code;
+    const { error } = await supabase.rpc("set_pledge", { p_region: region, p_code: next });
+    setProjBusy(false);
+    if (error) { toast(error.message || "Couldn't set that pledge."); return; }
+    toast(next ? `Backing ${PROJECT_DEFS[next]?.name || next}` : "Following the region's lead again");
+    loadProjPanel(region);
+  };
+
+  const demolishProject = async (region, code) => {
+    if (projBusy) return;
+    setProjBusy(true);
+    const { error } = await supabase.rpc("demolish_project", { p_region: region, p_code: code });
+    setProjBusy(false);
+    if (error) { toast(error.message || "Couldn't demolish that."); return; }
+    toast(`${PROJECT_DEFS[code]?.name || code} demolished — the slot is free`);
+    loadProjPanel(region);
+    refreshRegionProj();
+  };
+
+  // These effects live HERE, below the callbacks they name, rather than up
+  // with the other tab-driven effects — a useEffect earlier in the body
+  // would evaluate its dependency array against consts that haven't been
+  // initialised yet on the first render and throw.
+  //
+  // The cheap world-wide view has to be fresh on the MAP too, not just the
+  // World tab, because it drives the perk annotations on the build and
+  // rush buttons — hence the load-time refresh alongside the tab one.
+  useEffect(() => { if (ready) refreshRegionProj(); }, [ready, refreshRegionProj]);
+  useEffect(() => { if (tab === "world") refreshRegionProj(); }, [tab, refreshRegionProj]);
+  // The panel follows whichever region the picker is on, defaulting to
+  // home the first time the World tab is opened.
+  useEffect(() => {
+    if (tab !== "world") return;
+    const r = projRegion || homeRegionRef.current || [...unlockedRegions.current][0] || "";
+    if (r && r !== projRegion) { setProjRegion(r); return; }
+    if (r) loadProjPanel(r);
+  }, [tab, projRegion, loadProjPanel]);
+
   /* ── actions: every one of these is a security-definer RPC call — price,
      rarity, balance and ownership are all decided server-side (see
      supabase.sql). The client applies the same debit optimistically for a
@@ -4178,7 +4333,10 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
     g.bal -= cost; t.pd = data.paid;
     if (data.build_until) {
       t.bu = data.build_until;
-      toast(`Building ${LVL[t.l + 1]}…`);
+      // levy receipt — naming the amount is what makes the levy read as
+      // a contribution rather than a silent deduction. It is carved OUT of
+      // the cost above, never added to it.
+      toast(`Building ${LVL[t.l + 1]}… · ₲${fmt(Math.floor(cost * LEVY_PCT / 100))} to the region fund`);
     } else {
       t.l = data.level;
       delete t.bu;
@@ -4201,7 +4359,13 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
     // is the authority; this is only so the local balance doesn't visibly
     // drop and then snap back on the next syncRent()
     const usingCredit = (g.rushCredits || 0) > 0;
-    const cost = usingCredit ? 0 : rushCostFor(t);
+    const cost = usingCredit ? 0 : rushCostFor(
+      t,
+      landmarkPerkPct(regionOf(qk), "build_speed"),
+      landmarkPerkPct(regionOf(qk), "rush_discount"),
+      projectFactor(regionOf(qk), "build_time"),
+      projectFactor(regionOf(qk), "rush_cost"),
+    );
     if (!usingCredit && g.bal < cost) { toast("Not enough ₲ to rush this build."); return; }
     const { data, error } = await supabase.rpc("rush_build", { p_qk: qk });
     if (error || !data) { toast(error?.message || "Couldn't rush this build."); return; }
@@ -4209,7 +4373,9 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
     t.l = data.level;
     delete t.bu;
     rebuildOwn(); checkAch(); dirty.current = true; save();
-    toast(usingCredit ? `Rushed — ${LVL[t.l]} built with a rush credit` : `Rushed — ${LVL[t.l]} built for ₲${fmt(cost)}`);
+    toast(usingCredit
+      ? `Rushed — ${LVL[t.l]} built with a rush credit`
+      : `Rushed — ${LVL[t.l]} built for ₲${fmt(cost)} · ₲${fmt(Math.floor(cost * LEVY_PCT / 100))} to the region fund`);
   };
 
   // Manual, sequential batch upgrade over a given tile set (the Assets
@@ -6391,19 +6557,24 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
                         <div data-tut="build-progress" className="rounded-xl p-2.5" style={cardSty}>
                           <div className="mb-1.5 flex items-center justify-between text-sm">
                             <span style={{ ...mono, color: C.dim }}>Building {LVL[selMine.l + 1]}…</span>
-                            <span className="font-bold" style={{ ...mono, fontVariantNumeric: "tabular-nums" }}>{buildProgressPct(selMine, landmarkPerkPct(regionOf(sel), "build_speed"))}% · {hm(buildSecsLeft(selMine))} left</span>
+                            <span className="font-bold" style={{ ...mono, fontVariantNumeric: "tabular-nums" }}>{buildProgressPct(selMine, landmarkPerkPct(regionOf(sel), "build_speed"), projectFactor(regionOf(sel), "build_time"))}% · {hm(buildSecsLeft(selMine))} left</span>
                           </div>
                           <div className="h-1.5 w-full overflow-hidden rounded-full" style={{ background: C.hair }}>
-                            <div className="h-full rounded-full" style={{ width: `${buildProgressPct(selMine, landmarkPerkPct(regionOf(sel), "build_speed"))}%`, background: C.amber, transition: "width 1s linear" }} />
+                            <div className="h-full rounded-full" style={{ width: `${buildProgressPct(selMine, landmarkPerkPct(regionOf(sel), "build_speed"), projectFactor(regionOf(sel), "build_time"))}%`, background: C.amber, transition: "width 1s linear" }} />
                           </div>
                         </div>
+                        {projectBuilt(regionOf(sel), "guild") && (
+                          <div className="pt10" style={{ ...mono, color: C.amber }}>
+                            Contractors' Guild · rushing here costs {Math.round((1 - PROJECT_DEFS.guild.perkValue) * 100)}% less
+                          </div>
+                        )}
                         <div className="flex gap-2">
                           {/* a contract-earned rush credit pays for any build
                               regardless of size — see rush_build in supabase.sql */}
-                          <Btn full tone="ghost" tut="rush-btn" onClick={() => rushBuild(sel)} disabled={!g.rushCredits && g.bal < rushCostFor(selMine, landmarkPerkPct(regionOf(sel), "build_speed"), landmarkPerkPct(regionOf(sel), "rush_discount"))}>
+                          <Btn full tone="ghost" tut="rush-btn" onClick={() => rushBuild(sel)} disabled={!g.rushCredits && g.bal < rushCostFor(selMine, landmarkPerkPct(regionOf(sel), "build_speed"), landmarkPerkPct(regionOf(sel), "rush_discount"), projectFactor(regionOf(sel), "build_time"), projectFactor(regionOf(sel), "rush_cost"))}>
                             {g.rushCredits
                               ? `Rush — free (${g.rushCredits} credit${g.rushCredits === 1 ? "" : "s"})`
-                              : `Rush — ₲${fmt(rushCostFor(selMine, landmarkPerkPct(regionOf(sel), "build_speed"), landmarkPerkPct(regionOf(sel), "rush_discount")))}`}
+                              : `Rush — ₲${fmt(rushCostFor(selMine, landmarkPerkPct(regionOf(sel), "build_speed"), landmarkPerkPct(regionOf(sel), "rush_discount"), projectFactor(regionOf(sel), "build_time"), projectFactor(regionOf(sel), "rush_cost")))}`}
                           </Btn>
                           <Btn tone="danger" onClick={() => abandon(sel)}>50%</Btn>
                         </div>
@@ -6419,6 +6590,18 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
                       <div className="pt10 mb-2" style={{ ...mono, color: C.dim }}>
                         At {LVL[maxLevelOf(selMine)]}: redevelop for +25% rent, forever.
                       </div>
+                      {/* Point of use: a region project is explained where it
+                          changes a number, not in a menu the player has to go
+                          looking for. This is the primary surface for the
+                          whole feature — see PROJECTS-PLAN.md. */}
+                      {projectBuilt(regionOf(sel), "metro") && (() => {
+                        const base = buildDurationSecs(selMine.l + 1, selMine.pr, landmarkPerkPct(regionOf(sel), "build_speed")) * (modsOf(selMine).build_time ?? 1);
+                        return (
+                          <div className="pt10 mb-2" style={{ ...mono, color: C.amber }}>
+                            Metro Line · this build takes {hm(Math.round(base * PROJECT_DEFS.metro.perkValue))} instead of {hm(Math.round(base))}
+                          </div>
+                        );
+                      })()}
                       <div className="flex gap-2">
                         <Btn full tut="build-btn" onClick={() => upgrade(sel)} disabled={g.bal < upCost(selMine)}>
                           Build {LVL[selMine.l + 1]} — ₲{fmt(upCost(selMine))}
@@ -6885,6 +7068,14 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
                     .slice(0, regionsExpanded ? undefined : REGION_PREVIEW_COUNT)
                     .map((region) => {
                       const isHome = region === homeRegionRef.current;
+                      // one compact chip carries the whole region-projects
+                      // state: how many are running, or a dim "!" when the
+                      // fund is behind and they're about to pause. Costs no
+                      // new rows, and makes arrears visible at a glance
+                      // across every region at once.
+                      const rp = regionProj[region];
+                      const troubled = !!(rp && (rp.arrears || rp.dormant));
+                      const showChip = !!(rp && (rp.built.length || troubled));
                       return (
                         <button key={region}
                           className="flex items-center justify-between gap-1 rounded-lg px-2 py-1.5 text-left transition-colors hover:bg-white/5 active:bg-white/10 focus-visible:outline focus-visible:outline-2"
@@ -6892,6 +7083,7 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
                           onClick={() => visitRegion(region)}>
                           <span className="min-w-0 truncate text-sm font-bold" style={display}>{regionLabel(region)}</span>
                           <span className="flex shrink-0 items-center gap-1">
+                            {showChip && <Chip color={troubled ? C.dim : C.friend}>⚙{troubled ? "!" : rp.built.length}</Chip>}
                             {isHome && <Chip color={C.amber}>Home</Chip>}
                             <span aria-hidden style={{ color: C.dim }}>›</span>
                           </span>
@@ -6904,6 +7096,117 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
                 The fine deed grid only shows/interacts within unlocked regions — next region costs ₲{fmt(nextUnlockCost())}, doubling each time. Tap a region to see its bounds, then zoom in from there.
               </div>
             </div>
+
+            {/* zone: region projects — ONE card for whichever region the
+                picker is on, never one card per region. The levy on
+                claims/builds/rushes is a carve-out of money the game
+                already destroyed, so nothing here made anything cost more;
+                the only new charge is the market duty, which Free Port
+                waives. See PROJECTS-PLAN.md. */}
+            {unlockedRegions.current.size > 0 && (
+              <div className="mb-3 rounded-xl p-3" style={cardSty}>
+                <div className="mb-2 flex items-center justify-between gap-2">
+                  <Eyebrow>Region projects</Eyebrow>
+                  <select value={projRegion}
+                    onChange={(e) => { setProjRegion(e.target.value); setProjPanel(null); setProjErr(false); setDemolishArm(""); }}
+                    className="pt11 min-w-0 max-w-[60%] shrink truncate rounded px-1.5 py-1 font-bold focus-visible:outline focus-visible:outline-2"
+                    style={{ ...mono, ...inputSty }}>
+                    {[...unlockedRegions.current].map((r) => (
+                      <option key={r} value={r}>{regionLabel(r)}</option>
+                    ))}
+                  </select>
+                </div>
+
+                {projErr ? (
+                  <div className="pt10" style={{ ...mono, color: C.dim }}>Couldn't load this region's projects — check your connection and reopen this tab.</div>
+                ) : !projPanel ? (
+                  <div className="pt10" style={{ ...mono, color: C.dim }}>Loading…</div>
+                ) : (() => {
+                  const cost = projPanel.cost || PROJECT_COST;
+                  const leaderCode = (projPanel.projects || []).find((p) => p.state === "pledging")?.code;
+                  const dormMs = projPanel.dormantAt ? new Date(projPanel.dormantAt).getTime() - Date.now() : 0;
+                  // banner keys on the projects themselves as well as the
+                  // fund's arrears flag — dormancy must never be a state
+                  // the player can only infer from a number being smaller
+                  // than they expected
+                  const anyDormant = (projPanel.projects || []).some((p) => p.state === "dormant");
+                  return (
+                    <>
+                      <div className="pt10 mb-2" style={{ ...mono, color: C.dim }}>
+                        Fund ₲{fmt(projPanel.balance)} · upkeep ₲{fmt(projPanel.upkeepPerDay)}/day · {projPanel.slotsUsed}/{projPanel.slots} slots
+                      </div>
+
+                      {/* dormancy is the one state a player must never
+                          discover silently */}
+                      {(projPanel.arrearsSince || anyDormant) && (
+                        <div className="pt10 mb-2 rounded-lg px-2 py-1.5" style={{ ...mono, color: C.amber, border: `1px solid ${C.hairLit}` }}>
+                          {anyDormant || dormMs <= 0
+                            ? "Fund empty — projects here are paused. They restart on their own once it recovers."
+                            : `Fund empty. Projects pause in ${hm(Math.round(dormMs / 1000))} unless this region picks up.`}
+                        </div>
+                      )}
+
+                      {(projPanel.projects || []).map((p, idx) => {
+                        const built = p.state === "active";
+                        const dormant = p.state === "dormant";
+                        const pct = Math.max(0, Math.min(100, Math.round((p.progress / Math.max(cost, 1)) * 100)));
+                        const backing = projPanel.pledge === p.code || (!projPanel.pledge && p.code === leaderCode);
+                        return (
+                          <div key={p.code} className="py-1.5" style={{ borderTop: idx ? `1px solid ${C.hair}` : "none" }}>
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="min-w-0 truncate text-sm font-bold" style={{ ...display, color: dormant ? C.dim : C.text }}>
+                                {p.name}{dormant ? " · paused" : ""}
+                              </span>
+                              {(built || dormant) ? (
+                                <button
+                                  className="pt11 shrink-0 font-bold focus-visible:outline focus-visible:outline-2"
+                                  style={{ ...mono, color: demolishArm === p.code ? "#F0784E" : C.dim, outlineColor: C.amber }}
+                                  disabled={projBusy}
+                                  onClick={() => {
+                                    if (demolishArm === p.code) { setDemolishArm(""); demolishProject(projRegion, p.code); }
+                                    else setDemolishArm(p.code);
+                                  }}>
+                                  {demolishArm === p.code ? "Confirm — no refund" : "Demolish"}
+                                </button>
+                              ) : (
+                                <button
+                                  className="pt11 shrink-0 font-bold focus-visible:outline focus-visible:outline-2"
+                                  style={{ ...mono, color: backing ? C.amber : C.dim, outlineColor: C.amber }}
+                                  disabled={projBusy}
+                                  onClick={() => pledgeTo(projRegion, p.code)}>
+                                  {projPanel.pledge === p.code ? "Backing" : backing ? "Backing (default)" : "Back this"}
+                                </button>
+                              )}
+                            </div>
+                            <div className="pt10 mt-0.5" style={{ ...mono, color: C.dim }}>{p.blurb}</div>
+                            {!built && !dormant && (
+                              <>
+                                <div className="mt-1.5 h-1.5 w-full overflow-hidden rounded-full" style={{ background: C.hair }}>
+                                  <div className="h-full rounded-full" style={{ width: `${pct}%`, background: backing ? C.amber : C.dim }} />
+                                </div>
+                                <div className="pt10 mt-1" style={{ ...mono, color: C.dim }}>
+                                  ₲{fmt(p.progress)} / ₲{fmt(cost)}
+                                  {p.ready ? " · shovel-ready, waiting on a free slot or funds" : ""}
+                                </div>
+                              </>
+                            )}
+                          </div>
+                        );
+                      })}
+
+                      {(projPanel.top || []).length > 0 && (
+                        <div className="pt10 mt-2" style={{ ...mono, color: C.dim }}>
+                          Top backers: {projPanel.top.map((t) => `${t.name} ₲${fmt(t.amount)}`).join(" · ")}
+                        </div>
+                      )}
+                      <div className="pt10 mt-2" style={{ ...display, color: C.dim }}>
+                        {projPanel.levyPct}% of what you spend claiming, building and rushing here goes to this region's fund — it isn't added to the price, it comes out of it. Selling costs the seller a {projPanel.dutyPct}% duty. You've put in ₲{fmt(projPanel.contributed)}.
+                      </div>
+                    </>
+                  );
+                })()}
+              </div>
+            )}
 
             {/* zone: landmarks — only shows landmarks you actually own at
                 least one piece of; browsing unowned ones happens by just
