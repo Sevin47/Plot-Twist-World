@@ -43,6 +43,16 @@ const VERSION_CHECK_MS = 5 * 60 * 1000;
 // commit, not after the fact.
 const CHANGELOG = [
   {
+    id: "1.32.2",
+    date: "Jul 29, 2026",
+    notes: [
+      "The Wiki is current again. It had drifted a long way behind the game — it was still describing four tabs, a five-step tutorial, and offers on every build completion, and it didn't mention covenants at all.",
+      "New sections: Covenants (every card, both tiers, and how the one-time offer works), Region projects, Playing as a guest, Notifications, and the Live feed.",
+      "Updated throughout: the six tabs and pause menu, Assets grouped by region, Rush all, the 5% market duty, what a covenant does to a raid, which covenants block repossession, and two new starter strategies.",
+      "Formula reference now covers covenant modifiers, the region levy and upkeep, project effects, and the rare-deal odds. Version history filled in the 23 releases it was missing.",
+    ],
+  },
+  {
     id: "1.32.1",
     date: "Jul 29, 2026",
     notes: [

@@ -234,7 +234,7 @@
       <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.4"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
       <input id="navFilter" type="text" placeholder="Filter pages…" oninput="ptwFilterNav(this.value)" />
     </div>
-    <div class="verchip">v1.9.0</div>
+    <div class="verchip">v1.32.1</div>
   </div>
 
   <div class="shell">
@@ -254,11 +254,13 @@
         <a class="navlink" href="#buildings">Buildings &amp; construction</a>
         <a class="navlink" href="#nicknames">Naming your tiles</a>
         <a class="navlink" href="#redevelop">Redeveloping (prestige)</a>
+        <a class="navlink" href="#covenants">Covenants</a>
         <a class="navlink" href="#letting-go">Abandoning a tile</a>
       </div>
       <div class="navgroup">
         <div class="navgroup-label">Territory</div>
         <a class="navlink" href="#regions">Regions &amp; unlocking</a>
+        <a class="navlink" href="#projects">Region projects</a>
         <a class="navlink" href="#landmarks">Landmarks</a>
       </div>
       <div class="navgroup">
@@ -270,7 +272,8 @@
         <div class="navgroup-label">Economy &amp; People</div>
         <a class="navlink" href="#market">The open market</a>
         <a class="navlink" href="#status">Status ranks</a>
-        <a class="navlink" href="#leaderboard">Leaderboard</a>
+        <a class="navlink" href="#leaderboard">World register</a>
+        <a class="navlink" href="#live-feed">Live feed</a>
         <a class="navlink" href="#world-claimed">World land claimed</a>
       </div>
       <div class="navgroup">
@@ -282,9 +285,11 @@
       </div>
       <div class="navgroup">
         <div class="navgroup-label">Playing Over Time</div>
-        <a class="navlink" href="#tutorial">Tutorial</a>
+        <a class="navlink" href="#guest">Playing as a guest</a>
+        <a class="navlink" href="#tutorial">Tutorial &amp; tips</a>
         <a class="navlink" href="#streak">Daily streak</a>
         <a class="navlink" href="#offline">Offline earnings</a>
+        <a class="navlink" href="#notifications">Notifications</a>
         <a class="navlink" href="#boosts">Boosts</a>
         <a class="navlink" href="#contracts">Contracts</a>
         <a class="navlink" href="#collections">Collections</a>
@@ -324,8 +329,12 @@
             <tr><th>Rarity tiers</th><td>4</td></tr>
             <tr><th>Max building level</th><td>4 (Tower)</td></tr>
             <tr><th>Landmarks</th><td>24 (216 tiles)</td></tr>
+            <tr><th>Covenants</th><td>28 (22 + 6 rare)</td></tr>
+            <tr><th>Region projects</th><td>4</td></tr>
+            <tr><th>Contracts</th><td>26 (16 daily · 10 weekly)</td></tr>
+            <tr><th>Collections</th><td>13</td></tr>
             <tr><th>Achievements</th><td>13</td></tr>
-            <tr><th>Current version</th><td>1.9.0</td></tr>
+            <tr><th>Current version</th><td>1.32.1</td></tr>
           </table>
         </div>
         <h2>What is this?</h2>
@@ -352,22 +361,27 @@
           <li><a href="#buildings">Buildings &amp; construction</a></li>
           <li><a href="#nicknames">Naming your tiles</a></li>
           <li><a href="#redevelop">Redeveloping (prestige)</a></li>
+          <li><a href="#covenants">Covenants</a></li>
           <li><a href="#letting-go">Abandoning a tile</a></li>
           <li><a href="#regions">Regions &amp; unlocking</a></li>
+          <li><a href="#projects">Region projects</a></li>
           <li><a href="#landmarks">Landmarks</a></li>
           <li><a href="#pvp">PvP &amp; attacks</a></li>
           <li><a href="#companies">Company landlords</a></li>
           <li><a href="#market">The open market</a></li>
           <li><a href="#status">Status ranks</a></li>
-          <li><a href="#leaderboard">Leaderboard</a></li>
+          <li><a href="#leaderboard">World register</a></li>
+          <li><a href="#live-feed">Live feed</a></li>
           <li><a href="#world-claimed">World land claimed</a></li>
           <li><a href="#friends">Friends</a></li>
           <li><a href="#dms">Direct messages</a></li>
           <li><a href="#region-chat">Region chat</a></li>
           <li><a href="#safety">Reporting &amp; blocking</a></li>
-          <li><a href="#tutorial">Tutorial</a></li>
+          <li><a href="#guest">Playing as a guest</a></li>
+          <li><a href="#tutorial">Tutorial &amp; tips</a></li>
           <li><a href="#streak">Daily streak</a></li>
           <li><a href="#offline">Offline earnings</a></li>
+          <li><a href="#notifications">Notifications</a></li>
           <li><a href="#boosts">Boosts</a></li>
           <li><a href="#contracts">Contracts</a></li>
           <li><a href="#collections">Collections</a></li>
@@ -384,24 +398,30 @@
         <h2>Getting started</h2>
         <p class="section-desc">From opening the app for the first time to owning your first tile.</p>
         <div class="stepgrid">
-          <div class="step"><div class="step-n">01</div><div class="step-t">Sign in with Google</div><div class="step-d">One account per player, tied to your Google sign-in. There's no separate "new game" — this is it, permanently.</div></div>
-          <div class="step"><div class="step-n">02</div><div class="step-t">Pick a username</div><div class="step-d">2–16 letters, numbers, or underscores. Permanent for the account, and what other players see on your deeds, listings, chat, and the leaderboard.</div></div>
+          <div class="step"><div class="step-n">01</div><div class="step-t">Press Play now — or sign in</div><div class="step-d">You don't need an account to start. <strong>Play now</strong> drops you straight into a guest world in this browser. Signing in with Google instead gives you a permanent account that follows you across devices. Either way you get a real tile on the real map. See <a href="#guest">Playing as a guest</a>.</div></div>
+          <div class="step"><div class="step-n">02</div><div class="step-t">Pick a username</div><div class="step-d">2–16 letters, numbers, or underscores. Permanent for the account, and what other players see on your deeds, listings, chat, and the <a href="#leaderboard">World register</a>.</div></div>
           <div class="step"><div class="step-n">03</div><div class="step-t">Choose your starting area</div><div class="step-d">A basemap-only screen — pan and zoom the real map to find your home turf, then drop the pin.</div></div>
-          <div class="step"><div class="step-n">04</div><div class="step-t">Claim it &amp; learn the ropes</div><div class="step-d">Confirming rolls your first tile's rarity, claims it free, and sets that region as your permanent home. A short interactive tutorial follows, covering the basics live on your own deed.</div></div>
+          <div class="step"><div class="step-n">04</div><div class="step-t">Claim it &amp; learn the ropes</div><div class="step-d">Confirming rolls your first tile's rarity, claims it free, and sets that region as your permanent home. An eight-step interactive tutorial follows, covering the core loop live on your own deed — and new accounts start with a free <a href="#contracts">rush credit</a>, so your first build timer is on the house.</div></div>
         </div>
-        <p>From there you're in the full game: the map, the four tabs (Map / Assets / Market / HQ), and the whole economy described below.</p>
+        <p>From there you're in the full game: the map, the six tabs along the bottom, and the whole economy described below.</p>
       </section>
 
       <section id="interface">
         <h2>The interface</h2>
-        <p class="section-desc">Four tabs along the bottom, plus a persistent header.</p>
+        <p class="section-desc">Six tabs along the bottom, a persistent header, and a pause menu behind <strong>Menu</strong> at top-left.</p>
         <div class="cardgrid">
-          <div class="card"><div class="card-t">Map</div><div class="card-d">The world itself — pan, zoom, buy, build, attack, and chat with whoever shares your region.</div></div>
-          <div class="card"><div class="card-t">Assets</div><div class="card-d">Every tile you own, filterable and sortable. Tiles under construction get their own dedicated section up top, sorted soonest-to-finish, separate from the rest of your portfolio.</div></div>
+          <div class="card"><div class="card-t">Map</div><div class="card-d">The world itself — pan, zoom, buy, build, attack, chat with whoever shares your region, and watch the <a href="#live-feed">live feed</a> of land changing hands.</div></div>
+          <div class="card"><div class="card-t">Assets</div><div class="card-d">Every tile you own, <strong>grouped under a collapsible header per region</strong> showing that region's tile count and combined rent. Home region opens by default, the rest start collapsed, biggest earner first. Searching or filtering opens every group. Tiles under construction sit in their own section up top, soonest-to-finish first.</div></div>
           <div class="card"><div class="card-t">Market</div><div class="card-d">Player listings inside territory you've unlocked. See <a href="#market">The open market</a>.</div></div>
-          <div class="card"><div class="card-t">HQ</div><div class="card-d">Your account: territory, the world register (leaderboard), Friends, activity log, and account settings.</div></div>
+          <div class="card"><div class="card-t">Profile</div><div class="card-d">You: status, achievements, <a href="#contracts">contracts</a> and <a href="#collections">collections</a>. A dot appears here whenever something is ready to claim.</div></div>
+          <div class="card"><div class="card-t">World</div><div class="card-d">Your territory and region unlocks, <a href="#projects">region projects</a>, <a href="#landmarks">landmarks</a>, and the recent activity log.</div></div>
+          <div class="card"><div class="card-t">Social</div><div class="card-d"><a href="#friends">Friends</a>, <a href="#dms">direct messages</a>, and your blocked list.</div></div>
         </div>
         <p>The header shows your balance, income rate, status rank, energy remaining, attacks remaining, and how many tiles are currently under construction — the whole account state at a glance, on every tab.</p>
+        <div class="callout">
+          <span class="callout-label">The pause menu</span>
+          <strong>Menu</strong> at top-left holds the things you don't need mid-session: the <a href="#leaderboard">World register</a>, this Wiki, Settings (reduce motion, <a href="#notifications">alert toggles</a>), Replay tutorial, Sign out, and Delete account &amp; data.
+        </div>
       </section>
 
       <section id="reading-the-map">
@@ -505,11 +525,13 @@
         </div>
         <p>Rent scales directly with level: a Tower earns 5× the tile's base rent (level counts as <code>1 + level</code>). Starting an upgrade begins a real countdown — the tile keeps earning its current rent while it builds, then jumps to the new rent the moment it finishes.</p>
         <h3>Builder slots</h3>
-        <p>How many tiles can be under construction <em>at once</em> is capped by your <a href="#status">status rank</a> — 2 slots at Squatter, rising to 6 at Mogul. Starting an upgrade on a tile beyond your slot count while all your slots are full simply isn't possible until one finishes.</p>
+        <p>How many tiles can be under construction <em>at once</em> is capped by your <a href="#status">status rank</a> — 2 slots at Squatter, rising to 6 at Mogul — plus any permanent slots from <a href="#collections">collections</a> (up to +5 more). Starting an upgrade while all your slots are full simply isn't possible until one finishes.</p>
         <h3>Rushing a build</h3>
-        <p>Impatient? Rushing pays the <strong>remaining fraction</strong> of the full upgrade cost to finish instantly — rush a build that's 90% done and you're only paying for the last 10%, not the whole thing again. See <a href="#formulas">Formula reference</a> for the exact math.</p>
-        <h3>Upgrade All</h3>
-        <p>From the Assets tab, Upgrade All starts a build on every eligible, affordable tile (cheapest first) until your builder slots or balance run out. Anything it starts appears in the dedicated Building section at the top of Assets, so you can see exactly what it did.</p>
+        <p>Impatient? Rushing pays the <strong>remaining fraction</strong> of the full upgrade cost to finish instantly — rush a build that's 90% done and you're only paying for the last 10%, not the whole thing again. Rushing is the game's main money sink, and both a <a href="#landmarks">landmark</a> perk and the <a href="#projects">Contractors' Guild</a> project discount it. See <a href="#formulas">Formula reference</a> for the exact math.</p>
+        <h3>Upgrade All &amp; Rush all</h3>
+        <p>From the Assets tab, <strong>Upgrade All</strong> starts a build on every eligible, affordable tile (cheapest first) until your builder slots or balance run out.</p>
+        <p><strong>Rush all</strong>, on the Building section, finishes every build you have running, one after another, and shows the total cost before you commit. If you're holding <a href="#contracts">rush credits</a> it spends them on your <em>most expensive</em> builds first, so a credit is never burned on a five-minute Cottage; once they're gone it works up from the cheapest, finishing as many as your ₲ allows.</p>
+        <p>Anything either button starts or finishes appears in the dedicated Building section at the top of Assets, so you can see exactly what it did.</p>
       </section>
 
       <section id="nicknames">
@@ -532,6 +554,85 @@
           The reset itself costs nothing. What gets more expensive is climbing back to Tower afterward: each redevelop cycle raises both the ₲ cost and the time to rebuild through all four levels again. That penalty caps out after 10 cycles — the rent bonus keeps growing forever, but cost and build time stop climbing.
         </div>
         <p>Redevelop keeps the tile — you still own it, you're just resetting the building to earn a permanent multiplier. There is no way to cash a tile out for a lump sum in the current version; see the note in <a href="#market">The open market</a>.</p>
+        <div class="callout">
+          <span class="callout-label">Redevelop is also the covenant moment</span>
+          The <em>first</em> time you redevelop a given tile, you're offered three <a href="#covenants">covenants</a> — permanent two-sided terms on that one tile. It's a once-per-tile offer and declining it is final, so it's worth reading before you tap. A covenant you sign <strong>survives every later redevelop</strong>; a tile that already carries one is never offered another.
+        </div>
+        <p>A covenant can also change <em>when</em> you're allowed to redevelop: Heritage Listing and Ghost Tenancy cap the tile at Apartments, so it becomes redevelopable a level early — a faster, cheaper prestige loop that skips the 8-hour Tower build. Freehold, Holdout Parcel and Sovereign Charter go the other way and block redeveloping entirely.</p>
+      </section>
+
+      <section id="covenants">
+        <h2>Covenants</h2>
+        <p class="section-desc">Permanent, two-sided terms on a single tile — the one system in the game that can make a specific tile <em>worse</em> in exchange for making it better at something else.</p>
+        <p>Rent is otherwise a straight sum over everything you own, which means owning more is unconditionally better and no purchase is ever really a decision. Covenants are the answer to that: each one is a trade, and each one is bad for some plan you might have had.</p>
+
+        <h3>How you get one</h3>
+        <ul>
+          <li><strong>Offered on redevelop</strong>, and only on redevelop — three cards, drawn at random, in the tile's own sheet. Nothing interrupts you; the offer waits, and a violet dot on Assets counts how many tiles have one pending.</li>
+          <li><strong>Once per tile, per owner.</strong> A tile that already carries a covenant is never offered another, and neither is one whose owner turned an offer down.</li>
+          <li><strong>Declining is free but final.</strong> You can take one or none — but "none" is itself the permanent answer for as long as you hold that tile. It asks twice before it commits.</li>
+        </ul>
+        <div class="callout">
+          <span class="callout-label">Why declining is permanent</span>
+          It didn't used to be, and that was a mistake: declining cost nothing and the next redevelop dealt three fresh cards, so the correct play was to keep re-rolling until a no-downside card appeared. That made every card with a real cost worthless and turned a decision into a grind. Now the refusal is the decision, and both sides of it are real.
+        </div>
+
+        <h3>How long one lasts</h3>
+        <p>A covenant is permanent for <strong>your tenure</strong> on that tile. It survives every rebuild and every redevelop cycle, forever, for as long as the tile is yours. It ends the moment the tile stops being yours — sold on the market, captured in a raid, abandoned for the refund, or repossessed for inactivity. The next owner gets clean ground and their own one-time offer.</p>
+        <p>Because a covenant rides with the deed while it's held, <a href="#market">market listings show it up front</a>, both halves of the deal — and so does a rival's tile before you raid it.</p>
+
+        <h3>The standard cards</h3>
+        <p>Twenty-two of them. Which cards can appear depends on the tile: ones that modify future builds or cap the ceiling only show up when there are builds left to matter.</p>
+        <div class="table-wrap">
+          <table class="wikitable">
+            <thead><tr><th>Covenant</th><th>Upside</th><th>Cost</th></tr></thead>
+            <tbody>
+              <tr><td>Prime Frontage</td><td>+15% rent</td><td>None — the one deliberate no-catch card, and the rarest of the standard pool</td></tr>
+              <tr><td>Corner Lot</td><td>+25% rent while you own 3+ tiles in the block</td><td>Conditional — worth nothing until the block is yours</td></tr>
+              <tr><td>Anchor Tenant</td><td>+25% rent</td><td>−40% defense</td></tr>
+              <tr><td>Heritage Listing</td><td>+20% rent, redevelops from Apartments</td><td>Can never be built to Tower</td></tr>
+              <tr><td>Ground Lease</td><td>+60% rent for 14 days</td><td>Then earns nothing for the rest of your tenure</td></tr>
+              <tr><td>Fortified Block</td><td>×2 defense</td><td>Half rent</td></tr>
+              <tr><td>Gated Community</td><td>+50% defense, raiders pay ×2</td><td>−15% rent</td></tr>
+              <tr><td>Conservation Easement</td><td>Can never be attacked</td><td>−25% rent</td></tr>
+              <tr><td>Brownfield</td><td>Builds 50% faster and 25% cheaper</td><td>−30% rent</td></tr>
+              <tr><td>Union Site</td><td>Builds cost half, +10% rent</td><td>Builds take twice as long</td></tr>
+              <tr><td>Absentee Deed</td><td>Full rent rate while you're away</td><td>−25% rent while you're playing</td></tr>
+              <tr><td>Mixed Use</td><td>+20% rent</td><td>Can never be listed on the market</td></tr>
+              <tr><td>Freehold</td><td>+20% rent, never repossessed</td><td>Can never be redeveloped</td></tr>
+              <tr><td>Transit Hub</td><td>+35% rent</td><td>Builds take 50% longer</td></tr>
+              <tr><td>Flood Plain</td><td>+45% rent</td><td>Defends at half strength</td></tr>
+              <tr><td>Night Market</td><td>+30% rent</td><td>Raiders pay half the usual cost to hit it</td></tr>
+              <tr><td>Company Town</td><td>+40% rent</td><td>−30% defense, never listable</td></tr>
+              <tr><td>Land Bank</td><td>Builds 40% cheaper and 40% faster</td><td>−35% rent</td></tr>
+              <tr><td>Co-op Board</td><td>+15% rent, never repossessed</td><td>Can never be listed</td></tr>
+              <tr><td>Civic Trust</td><td>+25% rent with 3+ tiles in the block, +25% defense</td><td>Conditional on the block</td></tr>
+              <tr><td>Bunker Lot</td><td>+75% defense</td><td>Builds cost 50% more</td></tr>
+              <tr><td>Holdout Parcel</td><td>Can never be attacked</td><td>−10% rent, can never be redeveloped</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>The rare deals</h3>
+        <p>About <strong>one offer in fourteen</strong> replaces one of the three cards with a <em>deal</em> — a sixth pool of much bigger, much more lopsided terms, shown in gold. Their numbers sit deliberately outside the band every card above is tuned inside, on both sides.</p>
+        <div class="table-wrap">
+          <table class="wikitable">
+            <thead><tr><th>Rare deal</th><th>Upside</th><th>Cost</th></tr></thead>
+            <tbody>
+              <tr><td>Sovereign Charter</td><td>+90% rent, can never be attacked or repossessed</td><td>Frozen forever — can never be redeveloped</td></tr>
+              <tr><td>The Black Ledger</td><td>+150% rent for 30 days</td><td>Then half rent for the rest of your tenure</td></tr>
+              <tr><td>Midas Clause</td><td>Double rent</td><td>Quarter defense, and raiders pay half to hit it</td></tr>
+              <tr><td>Iron Covenant</td><td>×4 defense, raiders pay ×3</td><td>−10% rent</td></tr>
+              <tr><td>Founder's Pact</td><td>+50% rent, builds 60% cheaper and 60% faster</td><td>Can never be listed</td></tr>
+              <tr><td>Ghost Tenancy</td><td>+40% rent <em>and</em> full rate while away</td><td>Can never be built past Apartments</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="trivia">
+          <span class="trivia-label">Did you know</span>
+          The Black Ledger is the trap on purpose. 2.5× is the largest rent number in the game and it lasts a month — and then the tile is a half-rent millstone for as long as you hold it, with no exit but giving the tile up. It says so on the card. Signing it anyway is a legitimate strategy if you intend to sell before the term ends, since a covenant ends with your tenure.
+        </div>
+        <p>Since the offer only ever comes once per tile, a deal you decline is a deal you don't see again on that tile — but the floor is still "nothing happened": an ordinary tile with no terms on it is a perfectly good tile.</p>
       </section>
 
       <section id="letting-go">
@@ -557,6 +658,42 @@
           </table>
         </div>
         <p>This is the real strategic choice in the early game: spend on unlocking a second city, or spend on building up what you already have. An unlocked region governs where you can <em>buy</em> — reach a tile before unlocking and you'll be prompted to unlock the whole region to claim it.</p>
+      </section>
+
+      <section id="projects">
+        <h2>Region projects</h2>
+        <p class="section-desc">Shared infrastructure that a whole region builds together — funded by a cut of what everyone there already spends, not by a new charge.</p>
+        <p>Every region has a fund. <strong>10% of what you spend claiming, building and rushing in that region</strong> is carved out of the existing price and goes to the fund instead of disappearing. Same prices, same buttons — the levy is a redirection, not a surcharge. When the fund reaches a project's cost, the project is built and everyone holding land in that region benefits, you included.</p>
+        <div class="table-wrap">
+          <table class="wikitable">
+            <thead><tr><th>Project</th><th>Effect on every tile in the region</th></tr></thead>
+            <tbody>
+              <tr><td>Metro Line</td><td>Builds finish <strong>25% faster</strong></td></tr>
+              <tr><td>Contractors' Guild</td><td>Rushing costs <strong>40% less</strong></td></tr>
+              <tr><td>Civic Fortifications</td><td><strong>+35% defense</strong> against raids</td></tr>
+              <tr><td>Free Port</td><td>Waives the <strong>market duty</strong> on sales between landlords in the region</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="table-wrap">
+          <table class="wikitable">
+            <thead><tr><th>Numbers</th><th class="num">Value</th></tr></thead>
+            <tbody>
+              <tr><td>Cost to build a project</td><td class="num">₲120,000</td></tr>
+              <tr><td>Levy on claims, builds and rushes</td><td class="num">10%</td></tr>
+              <tr><td>Projects a region can run at once</td><td class="num">2</td></tr>
+              <tr><td>Upkeep, per active project</td><td class="num">₲40 / day per tile you own there</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <h3>Upkeep and pausing</h3>
+        <p>A built project keeps running for as long as the fund can pay its upkeep. If a region's players drift away, the fund stops keeping up and its projects <strong>pause</strong> until it recovers — nothing is lost and no progress is destroyed, it just waits. A busy region sustains two projects comfortably; a near-empty one won't sustain one.</p>
+        <h3>Choosing what gets built</h3>
+        <p>You can back a specific project with your region's fund, or leave it alone and the fund follows whatever the region is closest to finishing. In a region where you're the only landlord, that makes the choice entirely yours; in a busy one it's a genuine negotiation with the neighbours — and region chat is where it happens.</p>
+        <div class="trivia">
+          <span class="trivia-label">Did you know</span>
+          The 5% market duty on sales (see <a href="#market">The open market</a>) is the only genuinely <em>new</em> cost that arrived with projects — everything else was already being spent. It exists so Free Port has something to waive, which gives a trading-heavy region a project worth arguing for over Metro Line.
+        </div>
       </section>
 
       <section id="landmarks">
@@ -601,7 +738,15 @@
           <span class="trivia-label">Did you know</span>
           The wealth floor (0.2% of peak net worth) means a brand-new account's attacks are priced almost entirely by the base formula — the floor only starts to bite once your peak net worth climbs into real money. Punching up is always cheap; punching down gets expensive as you get rich.
         </div>
-        <p>Winning a raid and capturing a tile unlocks the <strong>Conqueror</strong> achievement. New players and accounts less than 72 hours old can't be attacked at all.</p>
+        <h3>What the defender can change</h3>
+        <p>Defense isn't only level and rarity. Before you commit to a target, check what's on it — a rival's <a href="#covenants">covenant</a> is public, and it's printed on the tile's sheet:</p>
+        <ul>
+          <li><strong>Untargetable outright</strong> — Conservation Easement, Holdout Parcel and Sovereign Charter mean the tile can never be attacked by anyone, at any cost.</li>
+          <li><strong>Defense multipliers</strong> — Iron Covenant (×4), Fortified Block (×2), Bunker Lot (+75%), Gated Community (+50%), Civic Trust (+25%) … or the other way: Midas Clause (quarter), Flood Plain (half), Anchor Tenant (−40%), Company Town (−30%).</li>
+          <li><strong>Attack cost</strong> — Gated Community doubles what you pay and Iron Covenant triples it, while Night Market and Midas Clause <em>halve</em> it. A high-rent tile with cheap raiding on it is the softest target in the game.</li>
+          <li><strong>Region projects</strong> — <a href="#projects">Civic Fortifications</a> adds 35% defense to every tile in the region, including tiles with no covenant at all.</li>
+        </ul>
+        <p>Winning a raid and capturing a tile unlocks the <strong>Conqueror</strong> achievement. New players and accounts less than 72 hours old can't be attacked at all. Capturing a tile clears whatever covenant was on it — that was the loser's bargain, and the winner takes clean ground.</p>
       </section>
 
       <section id="companies">
@@ -655,9 +800,14 @@
         <p class="section-desc">A live, player-driven trading post.</p>
         <p>Any tile you own can be listed at any price you choose. Sales pay you instantly, even while you're offline — the buyer gets exactly what you listed: your level, rarity, and prestige, unchanged.</p>
         <div class="callout">
+          <span class="callout-label">5% duty on sales</span>
+          Selling costs the <strong>seller</strong> a 5% duty on the proceeds. It's the one genuinely new charge that arrived with <a href="#projects">region projects</a> — and a region that has built <strong>Free Port</strong> waives it entirely on sales between landlords there, which is what makes that project worth arguing for.
+        </div>
+        <div class="callout">
           <span class="callout-label">Only your unlocked territory</span>
           The Market only shows — and only lets you buy — tiles inside regions you've already unlocked, the same boundary the map's fog draws for browsing. Unlock a new region to trade there too.
         </div>
+        <p>Listings show a tile's <a href="#covenants">covenant</a> up front, both halves of it — but a covenant ends with the seller's tenure, so what you're buying is clean ground plus whatever level, rarity and prestige is on it. The covenant on the listing tells you what the tile has been living under, not what you'll inherit. Some covenants (Mixed Use, Company Town, Co-op Board, Founder's Pact) forbid listing altogether; abandoning still works on those.</p>
         <div class="removed">
           <span class="removed-label">Removed feature</span>
           An earlier version of the game let players "flip" a maxed-out tile for an instant, formula-priced payout instead of listing it. It was cut — <a href="#letting-go">Abandoning</a> already covers "I want out now," and listing already covers "I want to sell on my own terms," so flip didn't carry its own weight as a third option. If you're reading an older guide or screenshot that mentions flipping, it no longer exists.
@@ -694,9 +844,20 @@
       </section>
 
       <section id="leaderboard">
-        <h2>Leaderboard</h2>
-        <p class="section-desc">The top 10 players by current net worth (balance + total invested across all owned tiles), visible to everyone from HQ.</p>
-        <p>Unlike status rank, the leaderboard reflects your <strong>current</strong> standing, not your peak — it moves up or down as players buy, sell, and build. Your status rank badge shows next to your name here too.</p>
+        <h2>World register</h2>
+        <p class="section-desc">The top 10 landlords by current net worth (balance + total invested across all owned tiles) — on the pause menu, the way most games put their leaderboard on the title screen.</p>
+        <p>Unlike status rank, the register reflects your <strong>current</strong> standing, not your peak — it moves up or down as players buy, sell, and build. Your status rank badge shows next to your name, every name on it is tappable for that landlord's stats card, and <a href="#companies">company landlords</a> never appear on it.</p>
+      </section>
+
+      <section id="live-feed">
+        <h2>Live feed</h2>
+        <p class="section-desc">A running list on the map of every tile that changes hands anywhere in the world, the moment it happens.</p>
+        <p>Claimed, bought off the market, or captured in a raid — each entry shows who took it, what kind of land it was, and what it cost them. Your own show up as "You". Tap an entry to fly straight to that tile.</p>
+        <p>Fold the panel away with its "Live feed" header and it stays folded next time, showing a count of what you missed while it was closed.</p>
+        <div class="callout">
+          <span class="callout-label">What it deliberately leaves out</span>
+          <a href="#companies">Company landlords</a>' land grabs stay out of the feed, and so do attacks that were <em>repelled</em> — a successfully defended tile never changed hands, so reporting it would be noise. Only real transfers between real landlords appear.
+        </div>
       </section>
 
       <section id="world-claimed">
@@ -746,10 +907,37 @@
         <p>Reports are private — only visible to the game's operator, never to other players, including the person you reported. Up to 10 reports may be filed per day.</p>
       </section>
 
+      <section id="guest">
+        <h2>Playing as a guest</h2>
+        <p class="section-desc">You can play without an account. Press <strong>Play now</strong>, pick your spot, and the map is yours — no sign-in, no email, nothing to fill in first.</p>
+        <p>A guest world is not a demo. Your tile is a real tile on the real map, with a real district, a real rarity roll, and real rent accruing while you're away. It sits in the same world everyone else is playing in.</p>
+        <div class="table-wrap">
+          <table class="wikitable">
+            <thead><tr><th>As a guest you get</th><th>Needs a signed-in account</th></tr></thead>
+            <tbody>
+              <tr><td>Your home tile and region</td><td>The <a href="#market">market</a></td></tr>
+              <tr><td>The full <a href="#tutorial">tutorial</a></td><td><a href="#pvp">Raids</a></td></tr>
+              <tr><td>Building, rushing, redeveloping, rent</td><td>Unlocking new <a href="#regions">regions</a></td></tr>
+              <tr><td><a href="#streak">Daily streak</a>, <a href="#contracts">contracts</a>, <a href="#collections">collections</a></td><td><a href="#friends">Friends</a> and <a href="#dms">messages</a></td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p>Signing in with Google whenever you're ready brings everything with you — same tile, same ₲, same streak, now on every device you sign into. Doing it earns <strong>+₲1,000 and a free rush</strong>.</p>
+        <div class="callout">
+          <span class="callout-label">One catch worth knowing</span>
+          A guest world lives in <em>that browser alone</em>. There's no account to sign back into, so clearing your history or site data before you sign in means it's gone — permanently, with nothing recoverable. If you're enjoying it, sign in.
+        </div>
+        <p>If you sign in with a Google account that already has a world of its own, the game says so rather than quietly dropping you back on the map. Two worlds can't be merged, but you can choose between them — and choosing your older world properly deletes the guest one you're leaving.</p>
+        <p>Play now is captcha-protected against bots. It's invisible; you'll usually never see it.</p>
+      </section>
+
       <section id="tutorial">
-        <h2>Tutorial</h2>
-        <p class="section-desc">A short, five-step interactive walkthrough for brand-new accounts.</p>
-        <p>It starts automatically right after your first claim, once the welcome animations settle, and covers the core loop live on your own tile: what you just claimed, starting a build, zooming out to see your territory, and what energy is for. Two of the five steps advance automatically once you actually do the thing they're teaching, not just by clicking Next. It can be skipped at any point, and replayed any time from HQ's account section if you want a refresher.</p>
+        <h2>Tutorial &amp; tips</h2>
+        <p class="section-desc">An eight-step interactive walkthrough for brand-new accounts, plus one-shot tips that appear the first time something actually matters.</p>
+        <p>The tutorial starts automatically right after your first claim, once the welcome animations settle, and covers the core loop live on your own tile. <strong>Every step dims the screen around the real thing it's talking about</strong> — the actual button, counter or tile, including your own land on the map, which stays lit while you pan and zoom.</p>
+        <p>Steps that teach an <em>action</em> wait for you to do it rather than offering a Next button; sit on one for 20 seconds and it offers to skip itself. "Skip tour" is always available, the tour ends on your portfolio rather than the map, and finishing it on one device counts on all of them. Replay it any time from the pause menu. Completing it unlocks the <strong>Oriented</strong> achievement.</p>
+        <h3>Tips</h3>
+        <p>Separate from the tour, short tips fire once each the first time they're relevant: rent collecting itself, unlocking territory, running out of <a href="#buying-land">energy</a>, rewards waiting to be claimed, your first raid, what <a href="#redevelop">redeveloping</a> does (one level before you can do it), and the <a href="#covenants">covenant</a> offer. Any tile you can still build on also says what happens at Tower, so redeveloping isn't something you find by accident.</p>
       </section>
 
       <section id="streak">
@@ -769,6 +957,25 @@
         <div class="trivia">
           <span class="trivia-label">Did you know</span>
           Boosts don't apply retroactively to offline time — the 2× multiplier only counts while you were actively syncing (within 2 minutes of your last check-in). Popping a boost right before closing the tab doesn't boost the hours you're away.
+        </div>
+      </section>
+
+      <section id="notifications">
+        <h2>Notifications</h2>
+        <p class="section-desc">Two opt-in push alerts, both off by default, both toggled from Settings on the pause menu.</p>
+        <div class="table-wrap">
+          <table class="wikitable">
+            <thead><tr><th>Alert</th><th>When it fires</th></tr></thead>
+            <tbody>
+              <tr><td><strong>Energy alerts</strong></td><td>Twice a day, at <strong>00:00 and 12:00 UTC</strong> — once for each half of your daily <a href="#buying-land">energy</a>. Each one says which half just landed.</td></tr>
+              <tr><td><strong>Attack alerts</strong></td><td>Whenever someone <a href="#pvp">captures</a> one of your tiles. Independent of energy alerts — either can be on without the other.</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p>Both are browser push notifications, so they need permission from your browser the first time you switch one on, and they work on mobile only if you've installed the game to your home screen. Turning a toggle off removes the registration entirely rather than silencing it.</p>
+        <div class="callout">
+          <span class="callout-label">Nothing is time-sensitive</span>
+          These exist so you can <em>choose</em> to be told, not because the game punishes you for missing a window. Unclaimed energy halves are handed over whenever you next open the game, finished <a href="#contracts">contracts</a> pay out whether or not you were there, and a captured tile is reported in your activity log either way.
         </div>
       </section>
 
@@ -925,6 +1132,7 @@
       <section id="inactivity">
         <h2>Inactivity &amp; repossession</h2>
         <p>If an account goes untouched for <strong>30+ days</strong>, its tiles are gradually returned to the world a few at a time, with a <strong>30% refund</strong> credited to that account and a notification waiting on next login. This keeps abandoned land from sitting locked forever in a world where every tile is one-of-one — it's not a punishment, just how a shared, finite world stays healthy. Repossessed tiles go back to genuinely unclaimed status — anyone can buy them fresh, no adjacency or region-unlock shortcuts.</p>
+        <p>Three <a href="#covenants">covenants</a> make a tile immune to this entirely: <strong>Freehold</strong>, <strong>Co-op Board</strong> and the rare <strong>Sovereign Charter</strong>. A tile carrying one of those is never repossessed no matter how long the account sits idle — which is most of what you're buying with Freehold's inability to be redeveloped.</p>
       </section>
 
       <section id="strategies">
@@ -950,6 +1158,14 @@
           <div class="strat">
             <div class="strat-head"><span class="strat-t">Treat Landmarks as a Late-Game Project</span><span class="strat-tag">Best for: established accounts</span></div>
             <div class="strat-d">A flat ₲1,000,000 per tile with no rarity roll and a 48-hour attack grace period is not a starter buy. Landmark perks are account-shaping utility (build speed, cheaper sieges, cheaper rushes, more energy), not raw income, and they only get meaningful once you own several tiles of the same landmark. Save them for once your economy can absorb a seven-figure purchase without blinking.</div>
+          </div>
+          <div class="strat">
+            <div class="strat-head"><span class="strat-t">Decide Your Covenant Policy Before You Redevelop</span><span class="strat-tag">Best for: anyone reaching Tower</span></div>
+            <div class="strat-d">The <a href="#covenants">covenant</a> offer comes once per tile and declining is permanent, so "I'll see what shows up next cycle" isn't a plan any more. Work out what the tile is <em>for</em> first. A deep-interior tile nobody can reach is a rent tile — Transit Hub, Flood Plain and Company Town hand you 35–45% more rent for defense you were never going to need. A frontier tile with hostile neighbours wants Gated Community or Fortified Block, and the rent cost is the price of keeping it. A tile you intend to sell should stay clean, or at least avoid the never-listable cards. Signing nothing is a perfectly respectable answer for a tile you have no plan for.</div>
+          </div>
+          <div class="strat">
+            <div class="strat-head"><span class="strat-t">Concentrate to Build Projects</span><span class="strat-tag">Best for: mid-game</span></div>
+            <div class="strat-d">A <a href="#projects">region project</a> costs ₲120,000 from the region fund, filled by 10% of what everyone spends there. In a region where you're the only serious landlord, that fund is effectively your own money coming back as infrastructure — so spreading thinly across five regions means five funds that never reach ₲120,000, while concentrating means Metro Line and Contractors' Guild paying you back on every build and rush from then on. Upkeep scales with how many tiles you hold there, so this rewards depth over sprawl.</div>
           </div>
           <div class="strat">
             <div class="strat-head"><span class="strat-t">Make Friends on Day One</span><span class="strat-tag">Best for: everyone, costs nothing</span></div>
@@ -1010,6 +1226,36 @@ else:                                   rent × 0.5 × min(elapsed seconds, 8 ho
         <h4>Landmark perks</h4>
         <div class="formula">build_speed / siege_discount / rush_discount: −2% per tile owned, capped at 30% (region-scoped)
 energy_boost:                                    +2 energy/day per tile owned (account-wide, uncapped)</div>
+
+        <h4>Covenant modifiers</h4>
+        <p>A <a href="#covenants">covenant</a> applies as a multiplier on the relevant formula above, on that one tile — <code>rent</code>, <code>def</code>, <code>atk_cost</code>, <code>build_time</code> and <code>build_cost</code> each multiply the corresponding line, and <code>max_level</code> lowers what counts as "fully built" for that tile.</p>
+        <div class="formula">tile_rent    = rent_formula × covenant_rent
+defense      = defense_formula × covenant_def × region_project_defense
+attack_cost  = attack_cost_formula × covenant_atk_cost   (defender's covenant)
+build_secs   = build_formula × covenant_build_time × region_project_build_time
+upgrade_cost = upgrade_formula × covenant_build_cost
+
+Ground Lease / The Black Ledger: after `expires_days` from signing,
+the card's `after` terms REPLACE its terms entirely (0% and 50% rent).</div>
+
+        <h4>Region levy, upkeep &amp; market duty</h4>
+        <div class="formula">region_fund   += 10% of each claim / build / rush spent in that region
+project_cost   = ₲120,000 per project (2 active per region)
+upkeep         = ₲40 per day, per active project, per tile you own there
+market_duty    = 5% of sale proceeds, paid by the seller (waived by Free Port)</div>
+
+        <h4>Region project effects</h4>
+        <div class="formula">Metro Line:           build_time × 0.75
+Contractors' Guild:   rush_cost  × 0.60
+Civic Fortifications: defense    × 1.35
+Free Port:            market_duty waived within the region</div>
+
+        <h4>Covenant offer odds</h4>
+        <div class="formula">offered once per tile per tenure, on the first redevelop only
+(and only if the tile has no covenant and you haven't declined one)
+
+~7% of offers: 1 rare deal + 2 standard cards
+otherwise:     3 standard cards, weighted-random from the eligible pool</div>
       </section>
 
       <section id="cheatsheet">
@@ -1022,7 +1268,10 @@ energy_boost:                                    +2 energy/day per tile owned (a
               <tr><td>Rarity odds</td><td>Common 70% · Uncommon 20% · Rare 8% · Legendary 2%</td></tr>
               <tr><td>Building levels</td><td>Vacant → Cottage (5m) → Duplex (30m) → Apartments (2h) → Tower (8h)</td></tr>
               <tr><td>Redevelop bonus</td><td>+25% rent per cycle, free, permanent, uncapped; cost/time penalty caps at 10 cycles</td></tr>
+              <tr><td>Covenants</td><td>28 cards (22 standard · 6 rare). Offered once per tile per tenure, on the first redevelop. Declining is permanent. ~7% of offers include a rare deal</td></tr>
               <tr><td>Region unlock cost</td><td>₲1,000 → ₲2,000 → ₲4,000 → doubling each time</td></tr>
+              <tr><td>Region projects</td><td>₲120,000 each, 2 per region, funded by a 10% levy on claims/builds/rushes; upkeep ₲40/day per project per tile owned</td></tr>
+              <tr><td>Market duty</td><td>5% of proceeds, paid by the seller; waived in a Free Port region</td></tr>
               <tr><td>Daily energy</td><td>10–24/day by status rank, in two halves at 00:00 and 12:00 UTC, no banking</td></tr>
               <tr><td>Builder slots</td><td>2–6 by status rank</td></tr>
               <tr><td>Daily attacks / per-tile defense</td><td>6–20/day by status rank · 2 absorbed/day per tile, flat</td></tr>
@@ -1032,6 +1281,7 @@ energy_boost:                                    +2 energy/day per tile owned (a
               <tr><td>Daily streak cap</td><td>₲1,050/day at 7+ consecutive days</td></tr>
               <tr><td>Offline earnings</td><td>Half rate after 2 min away, capped at 8 hours</td></tr>
               <tr><td>Boost</td><td>2× rent, 5 min, 30-min cooldown, active-play only</td></tr>
+              <tr><td>Notifications</td><td>Energy alerts at 00:00 &amp; 12:00 UTC · attack alerts on capture · both opt-in</td></tr>
               <tr><td>Abandon refund</td><td>50% of invested</td></tr>
               <tr><td>Inactivity threshold</td><td>30 days → 30% refund, tile returns to the world</td></tr>
               <tr><td>Friend requests / DMs / region chat limits</td><td>20/day · 20/min (200 kept per chat) · 10/min (100 kept per region)</td></tr>
@@ -1044,8 +1294,68 @@ energy_boost:                                    +2 energy/day per tile owned (a
 
       <section id="version-history">
         <h2>Version history</h2>
-        <p class="section-desc">The game auto-detects new deploys and prompts a refresh; a "What's new" popup and version badge live in the header. This wiki reflects <strong>v1.9.0</strong>. Recent highlights:</p>
+        <p class="section-desc">The game auto-detects new deploys and prompts a refresh; a "What's new" popup and version badge live in the header. This wiki reflects <strong>v1.32.1</strong>. Recent highlights:</p>
         <div class="verhist">
+          <div class="verentry"><span class="vertag">v1.32.1</span><span class="verdate">Jul 29, 2026</span>
+            <ul>
+              <li><a href="#notifications">Energy alerts</a> now fire for <em>both</em> daily refills. They had been stuck on the old once-a-day schedule since energy split into two halves, so the noon refill went unannounced.</li>
+            </ul>
+          </div>
+          <div class="verentry"><span class="vertag">v1.32.0</span><span class="verdate">Jul 29, 2026</span>
+            <ul>
+              <li><strong>Declining a <a href="#covenants">covenant</a> is now permanent.</strong> The offer on a tile's first redevelop is the only one it makes while you hold it — no more re-rolling for a better card.</li>
+              <li>Nine new covenants: Transit Hub, Flood Plain, Night Market, Company Town, Land Bank, Co-op Board, Civic Trust, Bunker Lot, Holdout Parcel.</li>
+              <li>Six <strong>rare deals</strong>, gold in the offer and about one offer in fourteen — numbers that go where nothing else in the game goes, in both directions.</li>
+            </ul>
+          </div>
+          <div class="verentry"><span class="vertag">v1.31.0</span><span class="verdate">Jul 29, 2026</span>
+            <ul><li><a href="#buildings">Rush all</a> on the Assets Building section — finishes every running build, spending rush credits on the most expensive ones first.</li></ul>
+          </div>
+          <div class="verentry"><span class="vertag">v1.30.0</span><span class="verdate">Jul 29, 2026</span>
+            <ul>
+              <li>New: <a href="#projects">region projects</a> — Metro Line, Contractors' Guild, Civic Fortifications and Free Port, funded by a 10% levy carved out of what you already spend.</li>
+              <li>Selling now costs the seller a <strong>5% duty</strong> — the one new cost, and the reason Free Port is worth building.</li>
+            </ul>
+          </div>
+          <div class="verentry"><span class="vertag">v1.29.0</span><span class="verdate">Jul 29, 2026</span>
+            <ul><li>Assets is grouped by region, with per-region tile counts and combined rent. Home region open by default, biggest earner first.</li></ul>
+          </div>
+          <div class="verentry"><span class="vertag">v1.27.0 – v1.28.0</span><span class="verdate">Jul 28–29, 2026</span>
+            <ul>
+              <li><strong>Play without an account.</strong> <a href="#guest">Guest worlds</a> get a real tile on the real map; signing in later brings everything with you and pays +₲1,000 and a free rush.</li>
+              <li>The tutorial now explains rushing, which the game had been handing out for free without ever defining.</li>
+            </ul>
+          </div>
+          <div class="verentry"><span class="vertag">v1.23.0 – v1.26.0</span><span class="verdate">Jul 28, 2026</span>
+            <ul>
+              <li>New: <a href="#covenants">covenants</a> — permanent two-sided terms drafted three at a time.</li>
+              <li>Moved the offer from every build completion to <strong>redevelop</strong>: rushing collapses build timers by design, so completions arrived seconds apart and permanent decisions came faster than anyone could weigh them.</li>
+              <li>Settled the lifetime rule: a covenant lasts your whole tenure, survives every rebuild, and ends when the tile changes hands. The paid release was removed — giving the tile up is the way out.</li>
+            </ul>
+          </div>
+          <div class="verentry"><span class="vertag">v1.20.0 – v1.22.1</span><span class="verdate">Jul 27, 2026</span>
+            <ul>
+              <li>New: the <a href="#live-feed">live feed</a> — every tile that changes hands worldwide, as it happens.</li>
+              <li>Tutorial rebuilt: eight steps that dim the screen around the real thing they're pointing at, plus one-shot <a href="#tutorial">tips</a>. New accounts start with a free rush credit.</li>
+            </ul>
+          </div>
+          <div class="verentry"><span class="vertag">v1.16.0 – v1.19.2</span><span class="verdate">Jul 27, 2026</span>
+            <ul>
+              <li>New: <a href="#contracts">Contracts</a> (three daily, one weekly) paying ₲, bonus energy and rush credits.</li>
+              <li>New: <a href="#collections">Collections</a> — 13 sets rewarding <em>which</em> tiles you own, paying permanent energy and builder slots.</li>
+              <li>New: <a href="#companies">company landlords</a>, filling quiet map so borders, raids and trading still work.</li>
+              <li><a href="#buying-land">Energy</a> now arrives in two halves, at 00:00 and 12:00 UTC, with the counter showing the next refill instead of midnight.</li>
+            </ul>
+          </div>
+          <div class="verentry"><span class="vertag">v1.14.13 – v1.15.3</span><span class="verdate">Jul 23, 2026</span>
+            <ul>
+              <li>HQ split into <strong>Profile / World / Social</strong> tabs; the <a href="#leaderboard">World register</a>, Wiki, Settings and account actions moved to the pause menu.</li>
+              <li>Standardised on "region" everywhere, and dropped the "parody idle game" framing.</li>
+            </ul>
+          </div>
+          <div class="verentry"><span class="vertag">v1.10.0 – v1.14.x</span><span class="verdate">Jul 21–23, 2026</span>
+            <ul><li>Steady polish: collapsible map legend, version numbers in "What's new", tappable register entries, market listings clearing immediately after purchase.</li></ul>
+          </div>
           <div class="verentry"><span class="vertag">v1.9.0</span><span class="verdate">Jul 21, 2026</span>
             <ul>
               <li>Tiles can now be given a private nickname — visible only to you, cleared automatically if the tile is ever sold or captured.</li>
@@ -1098,8 +1408,9 @@ energy_boost:                                    +2 energy/day per tile owned (a
 
       <div class="catfooter">
         <b>Categories:</b>
-        <span class="cattag">Game mechanics</span><span class="cattag">Economy</span><span class="cattag">PvP</span>
-        <span class="cattag">Social</span><span class="cattag">Strategy</span><span class="cattag">Reference</span>
+        <span class="cattag">Game mechanics</span><span class="cattag">Economy</span><span class="cattag">Covenants</span>
+        <span class="cattag">PvP</span><span class="cattag">Regions</span><span class="cattag">Social</span>
+        <span class="cattag">Strategy</span><span class="cattag">Reference</span>
       </div>
     </main>
   </div>

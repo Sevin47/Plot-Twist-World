@@ -4,6 +4,35 @@ Player-visible changes. Bumped together with `package.json`'s `version`,
 which is the single source of truth the corner badge and the new-version
 poll both read (see `vite.config.js`).
 
+## 1.32.2
+
+### The Wiki, brought back up to date
+
+`public/guide.html` had drifted 23 releases behind the game. Its version
+chip still said v1.9.0, it described four tabs and a five-step tutorial,
+and the entire covenant system — shipped over 1.23.0–1.32.0 — was absent.
+
+**New sections:** Covenants (all 28 cards across both tiers, the
+once-per-tenure offer, why declining is permanent), Region projects,
+Playing as a guest, Notifications, Live feed.
+
+**Rewritten or corrected:** Getting started (guest play is now the
+default entry path), The interface (six tabs + pause menu, Assets grouped
+by region), Buildings (Rush all, collection builder slots), Redeveloping
+(the covenant moment, and which cards move the ceiling), PvP (what a
+defender's covenant does to defense and attack cost), The open market
+(5% duty, Free Port waiver, unlistable covenants), World register (moved
+to the pause menu), Inactivity (the three no-decay covenants), Tutorial
+(eight steps and the one-shot tips).
+
+**Reference:** formula reference gained covenant modifiers, the region
+levy/upkeep/duty numbers, project effects and the rare-deal odds; cheat
+sheet and infobox gained covenants, projects, duty and notifications;
+version history filled in 1.10.0 → 1.32.1.
+
+Verified: 40 sections, 40 nav links, zero broken anchors, no horizontal
+overflow, sidebar filter resolves the new sections.
+
 ## 1.32.1
 
 ### Energy alerts fire for both refills
