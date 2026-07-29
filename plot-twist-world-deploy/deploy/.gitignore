@@ -7,3 +7,18 @@ dist
 supabase/.temp
 supabase/.branches
 scripts/*.geojson
+
+# supabase.sql is deliberately UNTRACKED and was purged from history
+# (2026-07-29). It's the whole server: covenant weights, the rare-deal
+# gate, contract and NPC internals — every tuning number that isn't
+# already mirrored in the client for display. This repo is public, so
+# tracking it published the economy to anyone willing to read it.
+#
+# The file still lives at its usual path on disk and is still applied by
+# re-pasting into the Supabase SQL Editor; nothing about that changed.
+# It is NOT backed up by this repo any more — keep a copy somewhere that
+# isn't this working tree.
+#
+# Numbers the client mirrors (rollRarity's thresholds, covenant `mods`,
+# class prices) ship in the bundle regardless and are not secret.
+supabase.sql
