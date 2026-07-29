@@ -4,6 +4,34 @@ Player-visible changes. Bumped together with `package.json`'s `version`,
 which is the single source of truth the corner badge and the new-version
 poll both read (see `vite.config.js`).
 
+## 1.29.0
+
+### Assets, by region
+
+- **The portfolio list now nests under one collapsible header per region.**
+  Each header carries the region's name, its tile count and its combined
+  rent per second, so "what do I actually own in Lisbon" is a glance
+  rather than a scroll through coordinate labels that all look alike.
+- **Home region opens by default, everything else starts collapsed**,
+  ordered biggest-earner-first behind it. A player with tiles in only one
+  region never sees a closed group — collapsing the only group would just
+  make the tab look empty. `Expand all` / `Collapse all` sits next to the
+  region count.
+- **Searching or filtering force-opens every group.** Hiding matches
+  behind a closed header is how a search box gets reported as broken.
+  Sorting is unchanged in meaning: it now orders tiles *within* each
+  region.
+- The **Building** section is untouched and still sits above everything,
+  ungrouped — it's a transient "what did Upgrade All just do" view, not a
+  place to go looking for a specific tile.
+
+### Behind the scenes
+
+- `regionLabel()` is memoised. It costs five city-index sweeps per call
+  and is now called once per region on every Assets render — a list that
+  re-renders off the 250ms economy tick — for a label that can never
+  change for a given region.
+
 ## 1.28.0
 
 ### The tutorial names the thing it was giving away

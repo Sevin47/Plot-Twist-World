@@ -43,6 +43,15 @@ const VERSION_CHECK_MS = 5 * 60 * 1000;
 // commit, not after the fact.
 const CHANGELOG = [
   {
+    id: "1.29.0",
+    date: "Jul 29, 2026",
+    notes: [
+      "Assets is now grouped by region. Every region you own land in gets its own collapsible header showing how many tiles are in it and what the whole region earns per second — so you can finally see what you own where, instead of scrolling one flat list of coordinates.",
+      "Your home region opens by default and the rest start collapsed, biggest earner first. Tap a header to open it, or use Expand all / Collapse all.",
+      "Searching or filtering opens every region automatically, so a match is never hidden behind a closed header. Sorting still orders tiles within each region.",
+    ],
+  },
+  {
     id: "1.28.0",
     date: "Jul 29, 2026",
     notes: [
@@ -1039,7 +1048,14 @@ function coordLabel(qk) {
 // footprint is findable, not just one directly under its midpoint.
 // Falls back to coordinates (always available, never "unnamed") only
 // when truly nothing is close by any of the five samples.
+// Memoised: pure function of the region string, but 5 urbanAt sweeps per
+// call and now called once per region group on every Assets render — that
+// list re-renders off the 250ms economy tick, so an uncached lookup would
+// burn city-index scans 4x/sec for a label that can never change.
+const REGION_LABEL_CACHE = new Map();
 function regionLabel(region) {
+  const hit = REGION_LABEL_CACHE.get(region);
+  if (hit !== undefined) return hit;
   const [rx, ry] = txyOf(region);
   const rn = 1 << region.length;
   const samples = [[0.5, 0.5], [0.08, 0.08], [0.92, 0.08], [0.08, 0.92], [0.92, 0.92]];
@@ -1049,8 +1065,9 @@ function regionLabel(region) {
     const { city, dkm } = urbanAt(wyToLat(wy), wx * 360 - 180);
     if (city && dkm < bestD) { bestD = dkm; best = city; }
   }
-  if (best) return bestD < 25 ? best.name : `near ${best.name}`;
-  return coordLabel(region);
+  const out = best ? (bestD < 25 ? best.name : `near ${best.name}`) : coordLabel(region);
+  REGION_LABEL_CACHE.set(region, out);
+  return out;
 }
 
 /* ── real urban geography: Natural Earth populated places ───── */
@@ -2417,6 +2434,12 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
   const [regionsExpanded, setRegionsExpanded] = useState(false); // HQ territory list starts collapsed once it outgrows the grid preview
   const [activityExpanded, setActivityExpanded] = useState(false); // Recent activity list starts collapsed once it outgrows the preview
   const [assetSort, setAssetSort] = useState("rent");
+  // Assets list is grouped by region. This holds ONLY explicit per-region
+  // open/closed overrides ({ [regionQk]: bool }) — a region the player has
+  // never touched isn't in here at all and keeps following the default
+  // rule in assetRegionOpen() below, so newly-unlocked regions behave
+  // consistently instead of inheriting whatever this map was seeded with.
+  const [assetRegionOverrides, setAssetRegionOverrides] = useState({});
   const [batchBusy, setBatchBusy] = useState(null);
   const [nameDraft, setNameDraft] = useState(G.current.name || "");
   const [priceDraft, setPriceDraft] = useState("");
@@ -5582,6 +5605,48 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
   const assetsUpgradable = tab !== "assets" ? [] : assetsFiltered.filter((t) => t.l < maxLevelOf(t));
   const assetsFilterActive = assetClsFilter !== "all" || assetRarityFilter !== -1 || !!assetQuery.trim();
 
+  // Region grouping for the main list. Once a player is spread across
+  // several unlocked regions, a flat rent-sorted list can't answer "what
+  // do I own in Lisbon?" without reading every coordinate label — so the
+  // list nests under one collapsible header per region.
+  //
+  // Built from the already-filtered+sorted array, not from g.own, so the
+  // sort dropdown still orders tiles WITHIN each region and the
+  // class/rarity/search filters still hide non-matches. Regions with
+  // nothing left after filtering simply don't produce a group.
+  // Home region pins first, then biggest earner — same "where does my
+  // money come from" ordering the default rent sort implies.
+  const assetRegions = tab !== "assets" ? [] : (() => {
+    const groups = new Map();
+    for (const t of assetsFiltered) {
+      const region = regionOf(t.qk);
+      let grp = groups.get(region);
+      if (!grp) { grp = { region, tiles: [], rent: 0, upgradable: 0 }; groups.set(region, grp); }
+      grp.tiles.push(t);
+      grp.rent += rentOf(t);
+      if (t.l < maxLevelOf(t)) grp.upgradable++;
+    }
+    const home = homeRegionRef.current;
+    return [...groups.values()].sort((a, b) =>
+      (b.region === home ? 1 : 0) - (a.region === home ? 1 : 0) || b.rent - a.rent);
+  })();
+
+  // Default is home-region-open, everything else collapsed — the whole
+  // point of grouping is seeing the regions at a glance. Two overrides of
+  // that default: a lone group always opens (collapsing the only group
+  // would leave the tab looking empty), and an active filter/search
+  // force-opens everything, since silently hiding matches behind a closed
+  // header makes the search box look broken.
+  const assetRegionOpen = (region) =>
+    (assetsFilterActive || assetRegions.length === 1) ? true
+      : region in assetRegionOverrides ? assetRegionOverrides[region]
+        : region === homeRegionRef.current;
+  const assetRegionsAllOpen = assetRegions.length > 0 && assetRegions.every((grp) => assetRegionOpen(grp.region));
+  const assetsListMeta = [
+    assetsFilterActive && assetsFiltered.length > 0 ? `Showing ${assetsFiltered.length} of ${g.own.length - assetsBuilding.length}` : "",
+    assetRegions.length > 1 ? `${assetRegions.length} regions` : "",
+  ].filter(Boolean).join(" · ");
+
   // shared row markup — used for both the Building section and the main
   // list below, so a tile looks identical whichever one it's in
   const renderAssetRow = (t) => (
@@ -6473,8 +6538,20 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
                     onClick={() => { setAssetQuery(""); setAssetClsFilter("all"); setAssetRarityFilter(-1); }}>Clear filters</button>
                 </div>
               )}
-              {g.own.length > 0 && assetsFilterActive && assetsFiltered.length > 0 && (
-                <div className="pt10 mb-2" style={{ ...mono, color: C.dim }}>Showing {assetsFiltered.length} of {g.own.length - assetsBuilding.length}</div>
+              {assetsListMeta && (
+                <div className="mb-2 flex items-center justify-between gap-2">
+                  <span className="pt10" style={{ ...mono, color: C.dim }}>{assetsListMeta}</span>
+                  {/* hidden while filtering — every group is force-open then,
+                      so the button would have nothing meaningful to toggle */}
+                  {!assetsFilterActive && assetRegions.length > 1 && (
+                    <button
+                      onClick={() => setAssetRegionOverrides(Object.fromEntries(assetRegions.map((grp) => [grp.region, !assetRegionsAllOpen])))}
+                      className="pt11 shrink-0 font-bold focus-visible:outline focus-visible:outline-2"
+                      style={{ ...mono, color: C.amber, outlineColor: C.amber }}>
+                      {assetRegionsAllOpen ? "Collapse all" : "Expand all"}
+                    </button>
+                  )}
+                </div>
               )}
 
               {assetsBuilding.length > 0 && (
@@ -6495,7 +6572,33 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
               {assetsFiltered.length === 0 && assetsBuilding.length > 0 && !assetsFilterActive && (
                 <div className="pt11 py-2 text-center" style={{ ...mono, color: C.dim }}>Everything you own is under construction — see above.</div>
               )}
-              {assetsFiltered.map(renderAssetRow)}
+              {assetRegions.map((grp) => {
+                const open = assetRegionOpen(grp.region);
+                const isHome = grp.region === homeRegionRef.current;
+                return (
+                  <div key={grp.region} className="mb-2">
+                    <button aria-expanded={open}
+                      onClick={() => setAssetRegionOverrides((o) => ({ ...o, [grp.region]: !open }))}
+                      className="flex w-full items-center gap-2 rounded-xl px-3 py-2.5 text-left transition-colors hover:bg-white/5 active:bg-white/10 focus-visible:outline focus-visible:outline-2"
+                      style={{ ...cardSty, outlineColor: C.amber }}>
+                      <span aria-hidden className="shrink-0 text-sm transition-transform duration-150"
+                        style={{ ...mono, color: C.dim, transform: open ? "rotate(90deg)" : "none" }}>›</span>
+                      <span className="min-w-0 flex-1 truncate text-sm font-bold" style={display}>{regionLabel(grp.region)}</span>
+                      {isHome && <Chip color={C.amber}>Home</Chip>}
+                      <span className="pt10 shrink-0" style={{ ...mono, color: C.dim }}>{grp.tiles.length} tile{grp.tiles.length === 1 ? "" : "s"}</span>
+                      <span className="pt11 shrink-0" style={{ ...mono, color: C.amber }}>₲{fmt1(grp.rent)}/s</span>
+                    </button>
+                    {/* left rule + indent is the only thing marking these as
+                        nested — the rows themselves are the same card as the
+                        old flat list, deliberately unchanged */}
+                    {open && (
+                      <div className="ml-2.5 mt-2 pl-2.5" style={{ borderLeft: `1px solid ${C.hair}` }}>
+                        {grp.tiles.map(renderAssetRow)}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           </div>
         )}
