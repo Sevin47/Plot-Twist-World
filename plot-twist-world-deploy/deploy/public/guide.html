@@ -239,7 +239,7 @@
          update-available poll reads), because a hand-maintained version
          string in a doc is a string that goes stale the next time anything
          ships — which is exactly what happened between 1.32.1 and 1.32.3. -->
-    <div class="verchip" id="ptwVer">v1.32.5</div>
+    <div class="verchip" id="ptwVer">v1.33.0</div>
   </div>
 
   <div class="shell">
@@ -416,7 +416,7 @@
           <div class="card"><div class="card-t">Map</div><div class="card-d">The world itself — pan, zoom, buy, build, attack, and watch the <a href="#live-feed">live feed</a> of land changing hands.</div></div>
           <div class="card"><div class="card-t">Assets</div><div class="card-d">Every tile you own, <strong>grouped under a collapsible header per region</strong> showing that region's tile count and combined rent. Home region opens by default, the rest start collapsed, biggest earner first. Searching or filtering opens every group. Tiles under construction sit in their own section up top, soonest-to-finish first.</div></div>
           <div class="card"><div class="card-t">Market</div><div class="card-d">Player listings inside territory you've unlocked. See <a href="#market">The open market</a>.</div></div>
-          <div class="card"><div class="card-t">Profile</div><div class="card-d">You: status, achievements, <a href="#contracts">contracts</a> and <a href="#collections">collections</a>. A dot appears here whenever something is ready to claim.</div></div>
+          <div class="card"><div class="card-t">Profile</div><div class="card-d">You: status, achievements, your <a href="#streak">daily stipend</a>, <a href="#contracts">contracts</a> and <a href="#collections">collections</a>. A dot appears here whenever something is ready to claim.</div></div>
           <div class="card"><div class="card-t">World</div><div class="card-d">Your territory and region unlocks, <a href="#projects">region projects</a>, <a href="#landmarks">landmarks</a>, and the recent activity log.</div></div>
           <div class="card"><div class="card-t">Social</div><div class="card-d"><a href="#friends">Friends</a>, <a href="#dms">direct messages</a>, and your blocked list.</div></div>
         </div>
@@ -844,6 +844,7 @@
           Status is based on the highest net worth your account has ever reached, not your current one. Spending big, a bad trade, or losing a tile in combat will never demote you. Once earned, a rank is yours forever.
         </div>
         <p>Net worth here means your balance plus everything you've invested across every tile you own — the same number the <a href="#leaderboard">leaderboard</a> ranks by, and the same number the PvP wealth floor is based on.</p>
+        <p><strong>Reaching a new rank announces itself.</strong> A promotion opens with the rank you just made and every number it raised, shown as the change rather than the total — daily energy, builder slots, attacks a day, and a note when <a href="#contracts">contracts</a> your account couldn't previously be handed have joined the rotation. It can arrive up to about 20 seconds after the purchase that earned it: your peak net worth is recalculated on the server, and the game only learns about it on its next sync.</p>
         <div class="trivia">
           <span class="trivia-label">Did you know</span>
           Daily attacks scale with status now, not just energy — a Squatter and a Mogul used to get the exact same 6 attacks a day despite everything else about their accounts being wildly different. Mogul's 250,000,000 threshold is set well past what even a serious landmark collector needs (216 tiles world-wide at ₲1,000,000 each) — the ladder is meant to keep giving you somewhere to climb.
@@ -879,7 +880,7 @@
 
       <section id="friends">
         <h2>Friends</h2>
-        <p class="section-desc">Add other players by username from HQ. Costs nothing, and their territory lights up teal on the map.</p>
+        <p class="section-desc">Add other players by username from the <strong>Social</strong> tab. Costs nothing, and their territory lights up teal on the map.</p>
         <p>Send a request by exact landlord name; they can accept, decline, or block. Sending each other a request at the same time auto-accepts instead of creating two pending requests. From your friends list you can jump straight to a friend's home region with one tap. Making your first friend unlocks the <strong>Sociable</strong> achievement.</p>
         <div class="callout">
           <span class="callout-label">Rate limit</span>
@@ -890,7 +891,7 @@
       <section id="dms">
         <h2>Direct messages</h2>
         <p class="section-desc">Private, friends-only conversations — and the game's only channel. You can't be messaged by anyone you haven't accepted, and there's no open or regional room to be pulled into.</p>
-        <p>Open a conversation from any friend's row in HQ. Unread counts show per-friend and as a dot on the HQ tab. Sending a first message unlocks the <strong>Pen pal</strong> achievement.</p>
+        <p>Open a conversation from any friend's row on the <strong>Social</strong> tab. Unread counts show per-friend and as a dot on that tab. Sending a first message unlocks the <strong>Pen pal</strong> achievement.</p>
         <div class="callout">
           <span class="callout-label">Limits</span>
           Up to 20 messages per minute, per account. Each conversation keeps its most recent 200 messages.
@@ -900,8 +901,8 @@
       <section id="safety">
         <h2>Blocking</h2>
         <p class="section-desc">There is no public or open channel anywhere in the game — the only way anyone can message you is by being a friend you accepted. Blocking is how you make sure someone never becomes one.</p>
-        <p><strong>Block</strong> sits next to Accept and Decline on any incoming friend request, in HQ's Social tab. It's mutual and immediate: a blocked player can't send you requests or messages, and you can't reach them either. Nothing is announced — they aren't told, and blocked players only ever appear on <em>your</em> list.</p>
-        <p>Blocks last until you lift them. Only you can, from the <strong>Blocked</strong> list under HQ's friends, and unblocking resets the two of you to strangers rather than restoring anything. If someone's already a friend and you'd rather they weren't, <strong>Remove</strong> on their row ends the friendship — and with it the ability to message each other at all.</p>
+        <p><strong>Block</strong> sits next to Accept and Decline on any incoming friend request, on the <strong>Social</strong> tab. It's mutual and immediate: a blocked player can't send you requests or messages, and you can't reach them either. Nothing is announced — they aren't told, and blocked players only ever appear on <em>your</em> list.</p>
+        <p>Blocks last until you lift them. Only you can, from the <strong>Blocked</strong> list under the Social tab's friends, and unblocking resets the two of you to strangers rather than restoring anything. If someone's already a friend and you'd rather they weren't, <strong>Remove</strong> on their row ends the friendship — and with it the ability to message each other at all.</p>
       </section>
 
       <section id="guest">
@@ -939,9 +940,11 @@
 
       <section id="streak">
         <h2>Daily streak</h2>
-        <p class="section-desc">Log in once per day (UTC) to claim a stipend that grows with consecutive days.</p>
+        <p class="section-desc">Open the game once per day (UTC) to build a streak, then collect a stipend that grows with it.</p>
         <div class="formula"><span class="fname">Daily reward</span>₲150 × min(current streak, 7)</div>
         <p>The reward climbs each day through day 7 (₲1,050), then holds flat at ₲1,050/day for every day after — a day-100 streak pays the same as a day-7 streak. <strong>Missing a single day resets your streak back to 1.</strong> A 3-day streak unlocks the <strong>Regular</strong> achievement.</p>
+        <p><strong>Showing up and collecting are two different things.</strong> Your streak advances the moment you open the game, whether or not you go and get the money — so a session spent entirely on the map never costs you a day. The stipend itself is a card at the top of the <strong>Profile</strong> tab, showing the seven-day ladder, what today pays and what tomorrow pays if you come back. Tap <strong>Collect</strong> to take it; the dot on the Profile tab is there until you do.</p>
+        <p>Unlike a <a href="#collections">collection</a>, an uncollected stipend does <strong>not</strong> wait: it expires at 00:00 UTC, and the card counts down to it. Missing the money doesn't break the streak, though — that was already banked when you opened the game.</p>
       </section>
 
       <section id="offline">
@@ -1108,7 +1111,7 @@
 
       <section id="achievements">
         <h2>Achievements</h2>
-        <p class="section-desc">13 one-time milestones, tracked from HQ.</p>
+        <p class="section-desc">13 one-time milestones, tracked on the <strong>Profile</strong> tab.</p>
         <div class="achlist">
           <div class="ach"><div class="ach-icon">★</div><div><div class="ach-t">First deed</div><div class="ach-d">Claim your first tile</div></div></div>
           <div class="ach"><div class="ach-icon">10</div><div><div class="ach-t">Landlord</div><div class="ach-d">Own 10 tiles</div></div></div>
@@ -1138,7 +1141,7 @@
         <div class="stratlist">
           <div class="strat">
             <div class="strat-head"><span class="strat-t">The Daily Grind</span><span class="strat-tag">Best for: everyone</span></div>
-            <div class="strat-d">Energy doesn't bank and a missed day resets your streak all the way to 1. The single highest-value habit in the game is logging in every day, spending your energy the same day, and collecting the stipend before it caps at day 7. This alone outperforms most "clever" plays over a long enough timeline. Since energy now lands in two halves (00:00 and 12:00 UTC), checking in on both sides of noon lets you spend the first half immediately instead of sitting on it — but a single later visit still collects the whole day's worth.</div>
+            <div class="strat-d">Energy doesn't bank and a missed day resets your streak all the way to 1. The single highest-value habit in the game is logging in every day, spending your energy the same day, and tapping Collect on the stipend card in Profile — it expires at 00:00 UTC even though the streak behind it doesn't. This alone outperforms most "clever" plays over a long enough timeline. Since energy now lands in two halves (00:00 and 12:00 UTC), checking in on both sides of noon lets you spend the first half immediately instead of sitting on it — but a single later visit still collects the whole day's worth.</div>
           </div>
           <div class="strat">
             <div class="strat-head"><span class="strat-t">Rural Spam</span><span class="strat-tag">Best for: brand-new accounts</span></div>
@@ -1292,6 +1295,19 @@ otherwise:     3 standard cards, weighted-random from the eligible pool</div>
         <h2>Version history</h2>
         <p class="section-desc">The game auto-detects new deploys and prompts a refresh; a "What's new" popup and version badge live in the header. This wiki is written against the version in the chip at the top of this page, which it reads from the live build. Recent highlights:</p>
         <div class="verhist">
+          <div class="verentry"><span class="vertag">v1.33.0</span><span class="verdate">Jul 30, 2026</span>
+            <ul>
+              <li><strong>Reaching a new <a href="#status">status rank</a> now tells you what it unlocked</strong> — daily energy, builder slots, attacks a day, and any <a href="#contracts">contracts</a> that have joined your rotation, each shown as the change rather than the total. It used to happen silently.</li>
+              <li>The <a href="#streak">daily stipend</a> moved off the startup popup and onto the <strong>Profile</strong> tab as a card you collect, with the seven-day ladder laid out and a countdown to 00:00 UTC.</li>
+              <li>Your streak is banked when you open the game, not when you collect — a day spent entirely on the map can no longer cost you one.</li>
+            </ul>
+          </div>
+          <div class="verentry"><span class="vertag">v1.32.4 – v1.32.6</span><span class="verdate">Jul 29–30, 2026</span>
+            <ul>
+              <li>"While you were away" now waits for a real absence (two minutes) instead of greeting every app switch. No rent is lost either way — the popup was only ever the announcement.</li>
+              <li>This wiki's Social pages brought in line with the game (friend DMs only, no open rooms), and the version chip above now reads the live build instead of a hand-typed number.</li>
+            </ul>
+          </div>
           <div class="verentry"><span class="vertag">v1.32.2 – v1.32.3</span><span class="verdate">Jul 29, 2026</span>
             <ul>
               <li>This wiki brought back up to date after drifting 23 releases behind the game — <a href="#covenants">Covenants</a>, <a href="#projects">Region projects</a>, <a href="#guest">guest play</a>, <a href="#notifications">Notifications</a> and the <a href="#live-feed">Live feed</a> were all missing.</li>

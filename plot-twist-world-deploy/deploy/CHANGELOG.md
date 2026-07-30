@@ -4,6 +4,82 @@ Player-visible changes. Bumped together with `package.json`'s `version`,
 which is the single source of truth the corner badge and the new-version
 poll both read (see `vite.config.js`).
 
+## 1.33.0
+
+### Status promotions announce themselves
+
+- Reaching a new `STATUS_TIERS` rank raised nothing but the badge on
+  Profile. The capacity that came with it — daily energy, builder slots,
+  daily attacks, and the `contract_defs.min_tier` gates that open at tiers
+  2/3/5 — was only ever discoverable in one line of small print under the
+  progress bar.
+- **The modal.** `kind: "status"`, showing the new rank and every number as
+  a **delta against the rank they were on** ("16 → 18/day (+2)"). A bare
+  "18/day" says nothing about what just changed, which was the whole
+  problem being fixed.
+- **Detection.** `peak_net_worth` only ever arrives from the server, so
+  `noteStatus()` hangs off `syncRent()` — the one place a rank change is
+  observable, and why a promotion shows up within a ~20s reconcile of the
+  purchase that earned it rather than instantly.
+- **What's been seen** lives in `localStorage` (`ptw_status:<uid>`), not in
+  session state: rent accrues server-side while the app is closed, so a
+  rank can be earned entirely between sessions and comparing against "what
+  this session started at" would swallow it. A device with no record
+  adopts the current tier silently — nobody is congratulated on boot for a
+  rank they made last month.
+- Hands off through `statusUp` state to an effect rather than calling
+  `setModal` from inside `syncRent`. Two reasons: a state updater with a
+  side effect double-fires under StrictMode, and boot's own modal drain
+  (`pendings.current.shift()` right after `setReady(true)`) would overwrite
+  anything set before it. The effect is `ready`-gated for that second one,
+  same as the link-bonus effect it's modelled on.
+
+### The daily stipend is a card on Profile, not a modal at startup
+
+- `claim_daily()` ran during boot and raised a modal announcing money that
+  had already landed — the one reward in the game with an expiry was the
+  one reward the player never had to think about, and the seven-day ladder
+  (the most useful thing about it) was visible nowhere.
+- **Split server-side.** `touch_daily()` advances the visit streak and pays
+  nothing; `claim_daily()` pays. Two columns to match: `last_daily` is "last
+  UTC day seen", the new `last_daily_paid` is "last UTC day collected". They
+  were one thing when visiting *was* claiming, which is what the backfill
+  (`last_daily_paid = last_daily`) encodes.
+- **The streak is never at risk.** Boot calls `touch_daily()`, so a session
+  that never opens Profile still counts as showing up. This is the whole
+  reason for the split — a manual claim that also gated the streak would
+  reset a day-40 run to 1 for not tapping a card.
+- Both functions are safe in either order, any number of times per day, and
+  `claim_daily()` keeps its pre-split return shape so an older cached bundle
+  still calling it at startup keeps working.
+- **The card** sits above Contracts: seven pips for the ladder, today's
+  payout, tomorrow's if they come back, a countdown to 00:00 UTC, and an
+  amber border until it's collected. It feeds the Profile nav dot
+  (`claimableTotal`) alongside contracts and collections.
+- Refreshed on every Profile visit and on refocus, not just at boot, so a
+  session left open across the UTC rollover rolls over with it.
+- `refreshDaily()` falls back to the old auto-pay path if `touch_daily`
+  isn't there yet — a bundle can ship before `supabase.sql` is re-run, and
+  the stipend shouldn't drop on the floor for however long that gap lasts.
+
+### "HQ" swept out of the source
+
+- HQ stopped being a tab in 1.14.x when it split into Profile / World /
+  Social, but the name survived across a dozen comments, one wiki section
+  and — the only one a player could see — the new-DM toast, which told them
+  to "see Friends in HQ".
+- Each reference now names the tab that actually holds the thing: territory
+  and the activity log are **World**, friends/DMs/blocking are **Social**,
+  contracts, collections, achievements and the stipend are **Profile**, and
+  account deletion is the pause menu's Settings card.
+- **Dated release notes are left alone**, in both the in-app `CHANGELOG` and
+  the wiki's version history. Those entries describe what shipped on a day
+  when HQ *was* the name; editing them would make the history wrong to fix
+  a word that was right at the time.
+- The two root planning docs (`LANDMARKS-PLAN.md`, `CONTENT-RESEARCH.md`)
+  are left alone for the same reason — they record what was being
+  considered, not what exists.
+
 ## 1.32.6
 
 ### "While you were away" waits for a real absence

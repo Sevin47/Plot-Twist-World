@@ -43,6 +43,17 @@ const VERSION_CHECK_MS = 5 * 60 * 1000;
 // commit, not after the fact.
 const CHANGELOG = [
   {
+    id: "1.33.0",
+    date: "Jul 30, 2026",
+    notes: [
+      "Reaching a new status now tells you what you got for it. Squatter to Homesteader, Baron to Magnate — every promotion opens with the rank you just made and exactly what it raised: daily energy, builder slots, attacks a day, and whether contracts you couldn't be handed before have joined the rotation.",
+      "It was silent before. The badge on Profile quietly changed and the extra capacity sat in a line of small print under the progress bar, so most of the ladder went unnoticed by the people climbing it.",
+      "The daily stipend is no longer a modal at startup. It's a card at the top of Profile now, with the seven-day ladder drawn out, what today pays, what tomorrow pays if you come back, and how long you have to collect it.",
+      "Your streak is still banked the moment you open the game — not when you collect. A day you play without opening Profile still counts; the money just waits for you there.",
+      "The new-message alert now points at the Social tab instead of \"HQ\", which hasn't been the name of anything since HQ became three tabs.",
+    ],
+  },
+  {
     id: "1.32.6",
     date: "Jul 30, 2026",
     notes: [
@@ -757,7 +768,7 @@ const TIPS = [
     when: (ctx) => ctx.claimable > 0,
     anchor: { dom: "nav-profile" },
     title: "Something's waiting",
-    text: "Contracts and collections pay out on the Profile tab. Collections never expire.",
+    text: "Your daily stipend, contracts and collections all pay out on the Profile tab. The stipend expires at 00:00 UTC; collections never do.",
   },
   {
     id: "attacked",
@@ -917,7 +928,7 @@ const PROJECT_DEFS = {
   port:  { name: "Free Port",            perkType: "levy_waiver", perkValue: 0    },
 };
 
-const REGION_PREVIEW_COUNT = 6; // HQ territory grid rows shown before "Show all" — keeps the tab from growing unbounded as players unlock more regions
+const REGION_PREVIEW_COUNT = 6; // World-tab territory grid rows shown before "Show all" — keeps the tab from growing unbounded as players unlock more regions
 const ACTIVITY_PREVIEW_COUNT = 8; // Recent activity rows shown before "Show all" — same collapse pattern as regions above
 
 // Live land feed (the collapsible "Live sales" panel on the map — see
@@ -964,7 +975,7 @@ const C = {
   panelGrad: "linear-gradient(180deg, #14213380 0%, #0F1A2900 60%)",
 };
 const blur = (px) => ({ backdropFilter: `blur(${px}px)`, WebkitBackdropFilter: `blur(${px}px)` });
-// shared card surface (assets/market rows, HQ panels+stat tiles) — one
+// shared card surface (assets/market rows, Profile/World panels+stat tiles) — one
 // gradient+shadow treatment so every list/panel in the app reads as the
 // same material instead of each screen inventing its own flat rectangle
 const cardSty = { background: `${C.panel}cc`, backgroundImage: C.panelGrad, border: `1px solid ${C.hairLit}`, boxShadow: C.shadowSm };
@@ -1044,6 +1055,26 @@ const statusFor = (netWorth) => {
   for (let i = 0; i < STATUS_TIERS.length; i++) if (nw >= STATUS_TIERS[i].min) idx = i;
   return { ...STATUS_TIERS[idx], next: STATUS_TIERS[idx + 1] || null };
 };
+
+// Tiers at which contract_defs.min_tier gates open (see the contract_defs
+// seed in supabase.sql) — crossing one of these puts contract types the
+// account structurally couldn't draw before into the rotation, which is
+// worth naming on the promotion notice alongside the capacity numbers.
+const CONTRACT_UNLOCK_TIERS = [2, 3, 5];
+
+// Which device last saw which status tier. Server-side there's only
+// peak_net_worth, and a promotion can land while the app is closed (rent
+// accrues on the server), so "have they been told about this rank yet" has
+// nowhere else to live. Per-account key, same convention as the tutorial
+// mirror. Worst case on a new device: one promotion goes unannounced.
+const STATUS_SEEN_KEY = (uid) => `ptw_status:${uid}`;
+
+// MUST match claim_daily/touch_daily in supabase.sql. The server is the
+// authority on what's actually paid — this exists for the one display case
+// where no server number is on hand (see refreshDaily's legacy fallback)
+// and for drawing the seven-day ladder ahead of where the streak is now.
+const DAILY_BASE = 150, DAILY_STREAK_CAP = 7;
+const dailyRewardFor = (streak) => DAILY_BASE * Math.min(Math.max(streak || 1, 1), DAILY_STREAK_CAP);
 
 const ATTACK_RECEIVED_CAP = 2; // attacks a single TILE may absorb per UTC day — flat, not status-scaled
 
@@ -1446,6 +1477,16 @@ const energySecsToReset = () => {
   return Math.max(0, Math.round((next - Date.now()) / 1000));
 };
 
+// Seconds until the stipend rolls over. Unlike energy this is a plain UTC
+// calendar-day boundary (claim_daily compares dates, not tranches), so
+// midnight is the only one that matters — and unlike energy, an uncollected
+// stipend is genuinely gone at it, which is why the card counts down.
+const dailySecsToReset = () => {
+  const now = new Date();
+  const next = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1, 0, 0, 0);
+  return Math.max(0, Math.round((next - Date.now()) / 1000));
+};
+
 // PvP: UTC calendar-day string ("YYYY-MM-DD") — used only to locally
 // interpret a synced tile's attacks_received_date for the "attacked X/2
 // today" display before the region cache next resyncs. Display only:
@@ -1466,7 +1507,7 @@ const isoTs = (v) => {
   return Number.isNaN(d.getTime()) ? new Date().toISOString() : d.toISOString();
 };
 
-// relative-time label for the HQ activity log — display only.
+// relative-time label for the World tab's activity log — display only.
 const timeAgo = (iso) => {
   const secs = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 1000));
   if (secs < 60) return "just now";
@@ -1480,9 +1521,9 @@ const timeAgo = (iso) => {
    RPCs in supabase.sql, keyed by auth.uid()) are the only source of truth.
    `g` stays a plain mutable object rather than React state — the render
    loop and economy tick both mutate it directly and call force() — so the
-   rest of the component (Assets/Market/HQ tabs, the canvas renderer) reads
-   the exact same shape it always has; only *where these fields come from*
-   has changed. */
+   rest of the component (the Assets/Market/Profile/World/Social tabs, the
+   canvas renderer) reads the exact same shape it always has; only *where
+   these fields come from* has changed. */
 const gameFromProfile = (uid, profile) => ({
   uid,
   name: profile.username,
@@ -1619,8 +1660,8 @@ function Eyebrow({ children }) {
 // One persistent account per Google login, forever — there is no "new
 // game": signing back in with the same account always continues the same
 // wallet/tiles/streak, and the only way to start over is to delete your
-// account & data from the HQ tab (which really deletes it, see auth.js /
-// the delete-account edge function).
+// account & data from the pause menu's Settings card (which really deletes
+// it, see auth.js / the delete-account edge function).
 // Real continent silhouettes — derived from Natural Earth 110m land polygons
 // (public domain; same source this project already credits for coastlines),
 // equirectangular-projected to this 1000x500 viewBox and decimated down to
@@ -2544,6 +2585,11 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
   const [social, setSocial] = useState({ loading: false, rows: null, err: false });
   const [contracts, setContracts] = useState({ loading: false, rows: null });
   const [collections, setCollections] = useState({ loading: false, rows: null });
+  // Today's stipend — { streak, reward, claimed }. null until the first
+  // touch_daily lands. It's a third reward slate now, sitting above the
+  // other two on Profile, rather than a modal thrown at you during boot.
+  const [daily, setDaily] = useState(null);
+  const [dailyBusy, setDailyBusy] = useState(false);
   const [friendDraft, setFriendDraft] = useState("");
   // accepted-friend uids as a ref, not state — read inside the canvas draw
   // loop every frame (friend-teal territory), same pattern as regions/
@@ -2566,7 +2612,7 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
   const [assetQuery, setAssetQuery] = useState("");
   const [assetClsFilter, setAssetClsFilter] = useState("all");
   const [assetRarityFilter, setAssetRarityFilter] = useState(-1);
-  const [regionsExpanded, setRegionsExpanded] = useState(false); // HQ territory list starts collapsed once it outgrows the grid preview
+  const [regionsExpanded, setRegionsExpanded] = useState(false); // World-tab territory list starts collapsed once it outgrows the grid preview
   // Region projects. `regionProj` is the CHEAP world-wide view — one select
   // over region_projects for every unlocked region at once, keyed by region
   // — and it drives both the territory-grid chips and the point-of-use perk
@@ -2726,6 +2772,41 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
     }
   }, [g, toast]);
 
+  /* ── status promotions ────────────────────────────────────────────────
+     The ladder is sticky and driven by peak_net_worth, which only ever
+     arrives from the server (syncRent below) — so this is the one place a
+     rank change can be observed, and it's why a promotion shows up within
+     a reconcile of the purchase that earned it rather than instantly.
+
+     What tier the player has already been TOLD about is remembered per
+     device (STATUS_SEEN_KEY): rent accrues server-side while the app is
+     closed, so a rank can be earned entirely between sessions, and
+     comparing against "whatever this session started at" would swallow it.
+     A device with no record adopts the current tier silently — nobody gets
+     congratulated on boot for a rank they earned last month.
+
+     Handing off through state rather than calling setModal here is what
+     keeps it from stomping on whatever is already open (and out of the
+     boot drain's way) — see the effect that consumes it, next to the
+     link-bonus one it's modelled on. ── */
+  const statusSeen = useRef(null);
+  const [statusUp, setStatusUp] = useState(null); // { from, to } waiting for a quiet moment
+  const noteStatus = useCallback(() => {
+    const tier = statusFor(g.peakNetWorth).tier;
+    if (statusSeen.current == null) {
+      let stored = 0;
+      try { stored = Number(localStorage.getItem(STATUS_SEEN_KEY(g.uid))) || 0; } catch { /* private mode */ }
+      // No record on this device: adopt silently. A brand-new account is
+      // tier 1 and has nothing to announce either way.
+      statusSeen.current = stored || tier;
+    }
+    if (tier <= statusSeen.current) return;
+    const from = STATUS_TIERS.find((t) => t.tier === statusSeen.current) || STATUS_TIERS[0];
+    statusSeen.current = tier;
+    try { localStorage.setItem(STATUS_SEEN_KEY(g.uid), String(tier)); } catch { /* private mode */ }
+    setStatusUp({ from, to: statusFor(g.peakNetWorth) });
+  }, [g]);
+
   // Reconciles the optimistic local tick against the real server balance —
   // a client can display whatever it wants, but every RPC that spends money
   // checks the real profiles.balance, never this value.
@@ -2740,8 +2821,9 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
     if (data.peak_net_worth != null) g.peakNetWorth = data.peak_net_worth;
     if (data.attacks_sent_count != null) g.attacksSent = data.attacks_sent_count;
     if (data.dev_mode != null) g.devMode = data.dev_mode;
+    noteStatus(); // the only moment a rank change is observable — see above
     return data;
-  }, [g]);
+  }, [g, noteStatus]);
 
   // Re-pulls the real owned-tile list straight from the server, independent
   // of viewport/tab (unlike ensureRegion's per-prefix reconcile, which only
@@ -2795,9 +2877,10 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
     if (received_count) {
       // a lost tile changes g.own out from under us with no local action —
       // pull the real portfolio immediately rather than waiting for the
-      // next focus/visibility resync. Also flags the HQ nav badge so a loss
-      // that happened fully offline stays visible past the toast, until
-      // the player actually opens HQ (see the refreshLog effect above).
+      // next focus/visibility resync. Also flags the World tab's nav badge
+      // so a loss that happened fully offline stays visible past the toast,
+      // until the player actually opens World (see the refreshLog effect
+      // above, which is what clears it).
       if (received_lost_count) { refreshOwnedTiles(); g.hasUnseenLoss = true; }
       toast(received_lost_count
         ? `Your region was raided — ${received_lost_count} of ${received_count} attack${received_count === 1 ? "" : "s"} took a tile`
@@ -2824,15 +2907,11 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
         if (gain > 0 && awayFor >= AWAY_MODAL_MIN_MS) pendings.current.push({ kind: "welcome", gain });
       }
 
-      const { data: dailyRows, error: dailyErr } = await supabase.rpc("claim_daily");
-      const daily = !dailyErr && dailyRows && dailyRows[0];
-      if (daily) {
-        g.streak = daily.streak;
-        if (!daily.already_claimed) {
-          g.bal += Number(daily.reward);
-          pendings.current.push({ kind: "daily", streak: daily.streak, reward: Number(daily.reward) });
-        }
-      }
+      // Banks the visit — the streak advances here, the money doesn't. The
+      // stipend is collected from the card at the top of Profile now (see
+      // refreshDaily/claimDaily above), so boot no longer stops the player
+      // to announce ₲450 they never asked about.
+      await refreshDaily();
 
       // Fetch owned tiles with a couple of retries — this must NEVER fall
       // through to an empty g.own on a transient failure, or a real owner
@@ -2943,6 +3022,60 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
     if (error) { setCollections((c) => ({ ...c, loading: false })); return; }
     setCollections({ loading: false, rows: data || [] });
   }, []);
+
+  /* ── the daily stipend, third of the three reward slates ─────────────
+     touch_daily() advances the VISIT streak and reports what today pays;
+     claim_daily() is what actually hands the money over, and only runs off
+     the button on the Profile card. Split that way on purpose (see the
+     daily-stipend section in supabase.sql): the payout is opt-in, the
+     streak is not, so a session that never opens Profile still counts as
+     showing up.
+
+     Called on every Profile visit and on refocus, not just at boot, so a
+     session left open across the 00:00 UTC rollover rolls over with it
+     instead of sitting on yesterday's "collected". ── */
+  const refreshDaily = useCallback(async () => {
+    const { data, error } = await supabase.rpc("touch_daily");
+    if (error) {
+      // Server still on the pre-split schema — supabase.sql hasn't been
+      // re-run yet. Fall back to the old behaviour (claim_daily advances
+      // the streak AND pays in one step) rather than dropping the stipend
+      // on the floor for however long that gap lasts. The card then just
+      // reports what already landed.
+      const { data: legacy } = await supabase.rpc("claim_daily");
+      const old = legacy && legacy[0];
+      if (!old) return;
+      g.streak = old.streak;
+      if (!old.already_claimed) {
+        g.bal += Number(old.reward);
+        toast(`+₲${fmt(old.reward)} daily stipend · day ${old.streak}`);
+      }
+      setDaily({ streak: old.streak, reward: dailyRewardFor(old.streak), claimed: true });
+      return;
+    }
+    const row = data && data[0];
+    if (!row) return;
+    g.streak = row.streak;
+    setDaily({ streak: row.streak, reward: Number(row.reward), claimed: !!row.claimed });
+  }, [g, toast]);
+
+  const claimDaily = useCallback(async () => {
+    if (dailyBusy) return;
+    setDailyBusy(true);
+    const { data, error } = await supabase.rpc("claim_daily");
+    setDailyBusy(false);
+    const row = !error && data && data[0];
+    if (!row) { toast("Couldn't collect the stipend — try again."); return; }
+    g.streak = row.streak;
+    // already_claimed here means another device got there first; the card
+    // was just stale, so correct it rather than reporting a failure
+    if (row.already_claimed) { setDaily({ streak: row.streak, reward: dailyRewardFor(row.streak), claimed: true }); return; }
+    g.bal += Number(row.reward);
+    setDaily({ streak: row.streak, reward: Number(row.reward), claimed: true });
+    checkAch(); // a 3-day streak is a commendation, and this is now the moment it can land
+    dirty.current = true; save();
+    toast(`+₲${fmt(row.reward)} collected · day ${row.streak}`);
+  }, [g, dailyBusy, toast, checkAch, save]);
 
   /* ── covenants: the three-card draft a REDEVELOP earns ──────────────
      Offers are rolled and stored SERVER-side (covenant_offer_roll in
@@ -3815,10 +3948,14 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
   useEffect(() => { if (tab === "world") { refreshLog(); g.hasUnseenLoss = false; } }, [tab, refreshLog, g]);
 
   useEffect(() => { if (tab === "profile") refreshContracts(); }, [tab, refreshContracts]);
+  useEffect(() => { if (tab === "profile") refreshDaily(); }, [tab, refreshDaily]);
 
   // how many finished contracts are sitting unclaimed — drives the nav dot
   // so a completed contract is visible without opening the tab to find it
   const claimableContracts = (contracts.rows || []).filter((c) => !c.claimed && c.progress >= c.target).length;
+  // the stipend counts toward the same dot: it's the one reward that
+  // expires if it isn't collected, so it's the one that most needs it
+  const claimableDaily = daily && !daily.claimed ? 1 : 0;
 
   const claimContract = async (slot) => {
     const { data, error } = await supabase.rpc("claim_contract", { p_slot: slot });
@@ -3842,6 +3979,9 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
   const collectionEnergyBonus = () => (collections.rows || []).reduce((s, c) => s + (c.claimed ? (c.reward_energy || 0) : 0), 0);
   const collectionSlotBonus = () => (collections.rows || []).reduce((s, c) => s + (c.claimed ? (c.reward_slots || 0) : 0), 0);
   const claimableCollections = (collections.rows || []).filter((c) => !c.claimed && c.have >= c.need).length;
+  // everything sitting unclaimed on Profile — the nav dot and the tour's
+  // "something's ready" tip both read this one number
+  const claimableTotal = claimableContracts + claimableCollections + claimableDaily;
 
   const claimCollection = async (code) => {
     const { data, error } = await supabase.rpc("claim_collection", { p_code: code });
@@ -3857,7 +3997,7 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
   /* ── friends (social phase 1) — one RPC returns the whole graph slice:
      accepted friends, pending requests both directions, and players
      you've blocked. friendIds (accepted only) feeds the map's teal
-     territory tint; the rows feed HQ's Friends section. err flags the
+     territory tint; the rows feed the Social tab's Friends section. err flags the
      "RPC missing" case so a client deployed ahead of the SQL migration
      degrades to a visible hint instead of a silently-empty list. ── */
   const refreshSocial = useCallback(async () => {
@@ -3909,8 +4049,8 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
     if (error) { toast(error.message || "Couldn't unblock — try again."); return; }
     refreshSocial();
   };
-  // Player stats card — reads the same public `leaderboard` view the HQ
-  // leaderboard section already queries (net_worth/tile_count/
+  // Player stats card — reads the same public `leaderboard` view the World
+  // register on the pause menu already queries (net_worth/tile_count/
   // peak_net_worth, plus ach now that sync_achievements mirrors badges
   // there too — see supabase.sql), just scoped to one user_id instead of
   // top-10. The view has no per-row privacy gate, so this works for any
@@ -3961,7 +4101,7 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
     const counts = {};
     for (const r of data || []) counts[r.sender] = (counts[r.sender] || 0) + 1;
     const total = (data || []).length;
-    if (total > unreadPrevTotal.current) toast("📬 New message — see Friends in HQ");
+    if (total > unreadPrevTotal.current) toast("📬 New message — see Friends on the Social tab");
     unreadPrevTotal.current = total;
     setUnread(counts);
   }, [g, toast]);
@@ -4673,10 +4813,24 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
     else setModal(null);
   };
 
+  // A promotion noticed by noteStatus, shown once the screen is free.
+  // Gated on `ready` for the same reason the link-bonus effect below is:
+  // boot's own modal drain runs the instant ready flips, and setting a
+  // modal before it would just be overwritten. A promotion detected DURING
+  // boot (earned between sessions, off server-side rent) therefore lands
+  // behind the welcome modal rather than fighting it.
+  useEffect(() => {
+    if (!ready || !statusUp) return;
+    const m = { kind: "status", ...statusUp };
+    if (modal) pendings.current.push(m);
+    else setModal(m);
+    setStatusUp(null);
+  }, [ready, statusUp, modal]);
+
   // A guest world that just became a real account (the round trip through
   // Google landed, claim_link_bonus paid out — see loadProfile). Jumps the
-  // queue ahead of the welcome/daily modals: it's the answer to something
-  // the player just did, and those two are ambient.
+  // queue ahead of the welcome modal: it's the answer to something the
+  // player just did, and that one is ambient.
   const linkBonusShown = useRef(false);
   useEffect(() => {
     if (!ready || !linkBonus || linkBonusShown.current) return;
@@ -5536,7 +5690,7 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
       homeRarity: RAR[g.own.find((t) => t.qk === tutHomeQk)?.r || 0],
       selMine: sel ? ownMap.current.get(sel) : undefined,
       selLocked: sel && g.own.length > 0 ? !unlockedRegions.current.has(regionOf(sel)) : false,
-      claimable: claimableContracts + claimableCollections,
+      claimable: claimableTotal,
       // gated on the strip being rendered RIGHT NOW, not merely on an offer
       // existing somewhere — the tip anchors to that element, so firing it
       // while the sheet is closed would spotlight nothing
@@ -5595,8 +5749,8 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
 
   // Start (or resume) the tour only once the opening moment is actually
   // quiet: a fresh account's first seconds are contested — fly-to, the
-  // rarity-roll spin, and a daily-stipend modal that queued invisibly
-  // behind the pick-home screen all land at once. Waiting for !modal &&
+  // rarity-roll spin, and whatever modal queued invisibly behind the
+  // pick-home screen all land at once. Waiting for !modal &&
   // !roll (deps below re-fire this when they clear) means the tour begins
   // after that dust settles instead of stacking a bubble on top of it.
   useEffect(() => {
@@ -5846,6 +6000,7 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
       collectBattles();
       refreshContracts();
       refreshCollections();
+      refreshDaily(); // a phone picked up the next morning crosses a UTC day boundary without ever reloading
       if (tab === "map") for (const q of prefixesFor(cam.current, size.current)) ensureRegion(q, true);
     };
     const onVis = () => { if (!document.hidden) resync(); };
@@ -5941,7 +6096,7 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
     : 0;
   const tilePxNow = cam.current.s / N;
   // unread DMs from current friends only — a count from someone since
-  // unfriended would otherwise light the HQ dot with no row to clear it
+  // unfriended would otherwise light the Social dot with no row to clear it
   const unreadTotal = Object.entries(unread).reduce((a, [uid, c]) => a + (friendIds.current.has(uid) ? c : 0), 0);
 
   // Only actually filters/sorts when the Assets tab is showing — skipped
@@ -6409,7 +6564,7 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
                           <span className="pt9 block truncate font-bold" style={{ ...display, color: mine ? C.mine : C.text }}>
                             {mine ? "You" : e.buyer_name}
                             {/* a raid reads as an attack, not a transaction — same
-                                red the HQ activity log uses for a lost tile */}
+                                red the World tab's activity log uses for a lost tile */}
                             <span className="font-medium" style={{ color: raid ? "#F08A8A" : C.dim }}>
                               {raid ? " captured" : e.kind === "trade" ? " bought" : " claimed"}
                             </span>
@@ -7092,14 +7247,71 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
           </div>
         )}
 
-        {/* HQ */}
+        {/* PROFILE */}
         {tab === "profile" && (
           <div className="absolute inset-0 overflow-y-auto p-4">
-            {/* Contracts sit at the very top of this tab on purpose: they're
-                the game's "what should I do today" surface, and the whole
-                point of adding them was that a session used to end the
-                moment energy ran out with nothing else on offer. See the
-                Contracts section in supabase.sql for the design rationale. */}
+            {/* Daily stipend. Above contracts because it's the shortest
+                thing on the tab and the only one with an expiry — everything
+                else waits, this is gone at 00:00 UTC.
+
+                It used to be a modal thrown at you during boot, which made
+                the one reward with a deadline the one reward you never had
+                to think about; it also meant the seven-day ladder, the
+                single most useful thing about it, was never visible
+                anywhere. The streak itself is still banked on arrival (see
+                touch_daily), so nothing here can cost a day. */}
+            {daily && (
+              <div className="mb-3 rounded-xl p-3"
+                style={{ ...cardSty, ...(daily.claimed ? null : { border: `1px solid ${C.amber}` }) }}>
+                <div className="mb-2 flex items-center justify-between gap-2">
+                  <Eyebrow>Daily stipend</Eyebrow>
+                  <span className="pt10 font-bold" style={{ ...mono, color: C.dim }}>
+                    day {daily.streak}{daily.claimed ? ` · next in ${hm(dailySecsToReset())}` : ""}
+                  </span>
+                </div>
+                {/* the ladder — the reward climbs to day 7 and then holds,
+                    so seven pips is the whole story, not a truncation */}
+                <div className="mb-2.5 flex items-center gap-1.5">
+                  {Array.from({ length: DAILY_STREAK_CAP }, (_, i) => {
+                    const reached = i < Math.min(daily.streak, DAILY_STREAK_CAP);
+                    const isToday = i === Math.min(daily.streak, DAILY_STREAK_CAP) - 1;
+                    return (
+                      <div key={i} className="h-1.5 flex-1 rounded-full" title={`Day ${i + 1} — ₲${fmt(dailyRewardFor(i + 1))}`}
+                        style={{
+                          background: reached ? C.amber : C.hair,
+                          boxShadow: isToday && !daily.claimed ? `0 0 8px ${C.amber}aa` : "none",
+                        }} />
+                    );
+                  })}
+                </div>
+                <div className="flex items-center justify-between gap-2">
+                  <div className="min-w-0">
+                    <div className="text-lg font-bold" style={{ ...mono, color: daily.claimed ? C.text : C.amber, fontVariantNumeric: "tabular-nums" }}>
+                      ₲{fmt(daily.reward)}
+                    </div>
+                    <div className="pt10 mt-0.5" style={{ ...mono, color: C.dim }}>
+                      {daily.claimed
+                        ? daily.streak >= DAILY_STREAK_CAP
+                          ? "Collected. Day 7 is the ceiling — it pays this every day you keep showing up."
+                          : `Collected. Tomorrow pays ₲${fmt(dailyRewardFor(daily.streak + 1))} if you're back.`
+                        : `Waiting for you · expires in ${hm(dailySecsToReset())}`}
+                    </div>
+                  </div>
+                  {daily.claimed ? (
+                    <span className="pt10 shrink-0 font-bold" style={{ ...display, color: C.dim }}>Collected</span>
+                  ) : (
+                    <Btn small onClick={claimDaily} disabled={dailyBusy}>{dailyBusy ? "…" : "Collect"}</Btn>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* Contracts lead the tab (under the stipend, which is one card
+                and a tap): they're the game's "what should I do today"
+                surface, and the whole point of adding them was that a
+                session used to end the moment energy ran out with nothing
+                else on offer. See the Contracts section in supabase.sql for
+                the design rationale. */}
             <div className="mb-3 rounded-xl p-3" style={cardSty}>
               <div className="mb-2 flex items-center justify-between gap-2">
                 <Eyebrow>Contracts</Eyebrow>
@@ -7753,10 +7965,10 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
                 style={{ background: "#C9A0FF", boxShadow: "0 0 6px #C9A0FF99" }}
                 title={`${covOfferCount} covenant${covOfferCount === 1 ? "" : "s"} offered`} />
             )}
-            {k === "profile" && claimableContracts + claimableCollections > 0 && (
+            {k === "profile" && claimableTotal > 0 && (
               <span className="absolute right-2.5 top-1.5 h-2 w-2 rounded-full"
                 style={{ background: C.amber, boxShadow: `0 0 6px ${C.amber}99` }}
-                title={`${claimableContracts + claimableCollections} reward${claimableContracts + claimableCollections === 1 ? "" : "s"} ready to claim`} />
+                title={`${claimableTotal} reward${claimableTotal === 1 ? "" : "s"} ready to claim`} />
             )}
             {k === "social" && unreadTotal > 0 && (
               <span className="absolute right-2.5 top-1.5 h-2 w-2 rounded-full"
@@ -7778,12 +7990,51 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
               <Btn full onClick={closeModal}>Collect</Btn>
             </>
           )}
-          {modal.kind === "daily" && (
+          {/* Status promotion. The one interruption the ladder gets: the
+              rank badge on Profile has always changed silently, so the
+              capacity that came with it — more energy, another builder
+              slot, more attacks — went unnoticed until someone happened to
+              read the fine print under the progress bar. Every number here
+              is a delta against the rank they were on, because "18/day" on
+              its own says nothing about what just changed. */}
+          {modal.kind === "status" && (
             <>
-              <Eyebrow>Daily stipend · day {modal.streak}</Eyebrow>
-              <div className="my-2 text-3xl font-bold" style={{ ...mono, color: C.amber, textShadow: `0 0 26px ${C.glow}` }}>+₲{fmt(modal.reward)}</div>
-              <div className="mb-4 text-xs" style={{ color: C.dim }}>The World Deed Office pays you for showing up. Streak grows the stipend, up to day 7.</div>
-              <Btn full onClick={closeModal}>Accept</Btn>
+              <Eyebrow>Promotion</Eyebrow>
+              <div className="my-2 text-3xl font-bold" style={{ ...mono, color: C.amber, textShadow: `0 0 26px ${C.glow}` }}>{modal.to.name}</div>
+              <div className="mb-3 text-xs leading-relaxed" style={{ color: C.dim }}>
+                ₲{fmt(g.peakNetWorth)} peak net worth clears the {modal.to.name} threshold. Status is sticky — spend it all tomorrow and you keep the rank.
+              </div>
+              <div className="mb-3 rounded-xl px-3 py-2.5" style={{ background: `${C.amber}14`, border: `1px solid ${C.amber}44` }}>
+                <div className="pt10 trk uppercase font-semibold" style={{ ...display, color: C.amber }}>What it unlocks</div>
+                <div className="mt-1.5 flex flex-col gap-1">
+                  {[
+                    ["Daily energy", modal.from.cap, modal.to.cap, "/day"],
+                    ["Builder slots", modal.from.slots, modal.to.slots, ""],
+                    ["Daily attacks", modal.from.atk, modal.to.atk, ""],
+                  ].map(([label, was, now, suffix]) => (
+                    <div key={label} className="pt11 flex items-center justify-between gap-2" style={mono}>
+                      <span style={{ color: C.dim }}>{label}</span>
+                      <span style={{ fontVariantNumeric: "tabular-nums" }}>
+                        <span style={{ color: C.dim }}>{was}{suffix}</span>
+                        <span style={{ color: C.dim }}> → </span>
+                        <span className="font-bold" style={{ color: C.amber }}>{now}{suffix}</span>
+                        <span className="font-bold" style={{ color: C.amber }}> (+{now - was})</span>
+                      </span>
+                    </div>
+                  ))}
+                </div>
+                {CONTRACT_UNLOCK_TIERS.some((t) => t > modal.from.tier && t <= modal.to.tier) && (
+                  <div className="pt10 mt-2" style={{ ...mono, color: C.dim }}>
+                    Contracts this account couldn't be handed before are now in the rotation.
+                  </div>
+                )}
+              </div>
+              <div className="pt10 mb-4" style={{ ...mono, color: C.dim }}>
+                {modal.to.next
+                  ? `Next: ${modal.to.next.name} at ₲${fmt(modal.to.next.min)} peak net worth.`
+                  : "Top of the ladder. There is nothing above this."}
+              </div>
+              <Btn full onClick={closeModal}>Take the deed</Btn>
             </>
           )}
           {modal.kind === "name" && (
