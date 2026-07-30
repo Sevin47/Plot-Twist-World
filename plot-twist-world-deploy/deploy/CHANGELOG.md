@@ -4,6 +4,19 @@ Player-visible changes. Bumped together with `package.json`'s `version`,
 which is the single source of truth the corner badge and the new-version
 poll both read (see `vite.config.js`).
 
+## 1.32.4
+
+### The Wiki reads its own version
+
+- `guide.html`'s version chip and the infobox's "Current version" row now
+  come from `version.json` — the file the Vite build writes and the game's
+  own update-available poll already reads. The hardcoded strings remain as a
+  silent fallback.
+- **Why:** the chip said `v1.32.1` on a `1.32.3` build within an hour of the
+  big wiki refresh landing, because it's a number typed into a document. That
+  is the same failure mode that let it sit at `v1.9.0` for 23 releases; the
+  fix is to stop hand-maintaining it.
+
 ## 1.32.3
 
 ### Market listings no longer disclose a covenant

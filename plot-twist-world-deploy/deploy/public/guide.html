@@ -234,7 +234,12 @@
       <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.4"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
       <input id="navFilter" type="text" placeholder="Filter pages…" oninput="ptwFilterNav(this.value)" />
     </div>
-    <div class="verchip">v1.32.1</div>
+    <!-- Text here is a FALLBACK only. The script at the bottom of this file
+         overwrites it from version.json (the same file the game's
+         update-available poll reads), because a hand-maintained version
+         string in a doc is a string that goes stale the next time anything
+         ships — which is exactly what happened between 1.32.1 and 1.32.3. -->
+    <div class="verchip" id="ptwVer">v1.32.3</div>
   </div>
 
   <div class="shell">
@@ -334,7 +339,7 @@
             <tr><th>Contracts</th><td>26 (16 daily · 10 weekly)</td></tr>
             <tr><th>Collections</th><td>13</td></tr>
             <tr><th>Achievements</th><td>13</td></tr>
-            <tr><th>Current version</th><td>1.32.1</td></tr>
+            <tr><th>Current version</th><td id="ptwVerBox">1.32.3</td></tr>
           </table>
         </div>
         <h2>What is this?</h2>
@@ -1298,8 +1303,14 @@ otherwise:     3 standard cards, weighted-random from the eligible pool</div>
 
       <section id="version-history">
         <h2>Version history</h2>
-        <p class="section-desc">The game auto-detects new deploys and prompts a refresh; a "What's new" popup and version badge live in the header. This wiki reflects <strong>v1.32.1</strong>. Recent highlights:</p>
+        <p class="section-desc">The game auto-detects new deploys and prompts a refresh; a "What's new" popup and version badge live in the header. This wiki is written against the version in the chip at the top of this page, which it reads from the live build. Recent highlights:</p>
         <div class="verhist">
+          <div class="verentry"><span class="vertag">v1.32.2 – v1.32.3</span><span class="verdate">Jul 29, 2026</span>
+            <ul>
+              <li>This wiki brought back up to date after drifting 23 releases behind the game — <a href="#covenants">Covenants</a>, <a href="#projects">Region projects</a>, <a href="#guest">guest play</a>, <a href="#notifications">Notifications</a> and the <a href="#live-feed">Live feed</a> were all missing.</li>
+              <li><a href="#market">Market listings</a> no longer show a covenant. A covenant ends with the seller's tenure and is cleared on transfer, so the listing was describing terms the buyer would never be under. Listing a tile still doesn't clear or pause anything.</li>
+            </ul>
+          </div>
           <div class="verentry"><span class="vertag">v1.32.1</span><span class="verdate">Jul 29, 2026</span>
             <ul>
               <li><a href="#notifications">Energy alerts</a> now fire for <em>both</em> daily refills. They had been stuck on the old once-a-day schedule since energy split into two halves, so the noon refill went unannounced.</li>
@@ -1421,6 +1432,25 @@ otherwise:     3 standard cards, weighted-random from the eligible pool</div>
 </div>
 
 <script>
+  /* Version chip + infobox row, read from the live build rather than
+     hand-maintained here. version.json is written by the Vite build (see
+     vite.config.js) and is the same file the game's own update-available
+     poll reads, so this page can never disagree with the deploy it shipped
+     in. Relative URL on purpose — this is served from a GitHub Pages
+     subpath, not a domain root. Failure is silent and leaves the
+     hardcoded fallback text alone: a doc that renders with a slightly
+     stale number beats a doc with a blank where its version should be. */
+  fetch('version.json', { cache: 'no-store' })
+    .then(function (r) { return r.ok ? r.json() : null; })
+    .then(function (v) {
+      if (!v || !v.version) return;
+      var chip = document.getElementById('ptwVer');
+      var box = document.getElementById('ptwVerBox');
+      if (chip) chip.textContent = 'v' + v.version;
+      if (box) box.textContent = v.version;
+    })
+    .catch(function () {});
+
   function ptwFilterNav(q) {
     q = q.trim().toLowerCase();
     var links = document.querySelectorAll('#ptwSidebar .navlink');

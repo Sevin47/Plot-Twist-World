@@ -43,6 +43,13 @@ const VERSION_CHECK_MS = 5 * 60 * 1000;
 // commit, not after the fact.
 const CHANGELOG = [
   {
+    id: "1.32.4",
+    date: "Jul 29, 2026",
+    notes: [
+      "The Wiki's version badge now reads the live build instead of a number typed into the page — it was showing 1.32.1 on a 1.32.3 game, which is exactly how it went 23 releases stale the first time.",
+    ],
+  },
+  {
     id: "1.32.3",
     date: "Jul 29, 2026",
     notes: [
