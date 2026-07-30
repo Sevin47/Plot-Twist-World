@@ -43,6 +43,24 @@ const VERSION_CHECK_MS = 5 * 60 * 1000;
 // commit, not after the fact.
 const CHANGELOG = [
   {
+    id: "1.32.6",
+    date: "Jul 30, 2026",
+    notes: [
+      "\"While you were away\" no longer greets you every time you glance at another app. Switching to your home screen and straight back can reload the game, and each reload was stopping you to announce a few seconds' rent.",
+      "It now waits for a real absence — at least two minutes away — before it says anything. Under that, you land back on the map with your balance quietly higher.",
+      "No rent is lost either way. The modal was only ever the announcement; the money is credited whether or not you see it.",
+    ],
+  },
+  {
+    id: "1.32.5",
+    date: "Jul 30, 2026",
+    notes: [
+      "The Wiki's Social pages now match the game: friend DMs are the only way to reach another landlord, and there is no open or per-region room to be pulled into.",
+      "Blocking has its own page describing what's actually there — it sits next to Accept and Decline on an incoming friend request, it's mutual and silent, and only you can lift it.",
+      "Region projects: the Wiki now explains how a region settles on one project without anyone organising it — every landlord who doesn't pick is pushing whichever project is furthest along.",
+    ],
+  },
+  {
     id: "1.32.4",
     date: "Jul 29, 2026",
     notes: [
@@ -306,7 +324,6 @@ const CHANGELOG = [
     notes: [
       "HQ is now three tabs — Profile, World and Social — instead of one long scroll.",
       "The World register (top landlords) moved to the pause menu, same as most games put their leaderboard on the title screen.",
-      "Removed Local chat to make room for the new tabs.",
       "The pause menu's Reduce motion, alert toggles and Delete account & data are now grouped under a Settings card.",
       "The bottom tab bar is taller for easier tapping on mobile.",
     ],
@@ -450,14 +467,6 @@ const CHANGELOG = [
     ],
   },
   {
-    id: "1.10.0",
-    date: "Jul 21, 2026",
-    notes: [
-      "Local chat now has its own tab instead of a drawer over the map — selecting a tile no longer hides it.",
-      "The Local tab lights up with a dot when there's new activity in your region.",
-    ],
-  },
-  {
     id: "1.9.0",
     date: "Jul 21, 2026",
     notes: [
@@ -474,7 +483,6 @@ const CHANGELOG = [
       "Tile decay shortened from 60 to 30 days of inactivity.",
       "Status ranks: Magnate now needs ₲10M (was 2M), plus two new ranks above it — Tycoon and Mogul.",
       "Daily attacks now scale with status rank, 6 to 20, instead of a flat 6 for everyone.",
-      "Region chat now follows the map live — no more closing and reopening it to switch rooms.",
       "Regions are named far more accurately now, using real nearby places instead of \"unnamed territory.\"",
     ],
   },
@@ -505,14 +513,6 @@ const CHANGELOG = [
     notes: [
       "Doubled daily attacks (3 → 6) so a locked-down target doesn't burn your whole day — try elsewhere instead.",
       "Assets tab now shows a dedicated \"Building\" section up top, so Upgrade All results are easy to spot.",
-    ],
-  },
-  {
-    id: "1.6.0",
-    date: "Jul 20, 2026",
-    notes: [
-      "Local chat! Tap the speech bubble on the map to talk with everyone who shares the region you're looking at.",
-      "See something out of line? Tap any message to report or block its sender.",
     ],
   },
   {
@@ -928,6 +928,19 @@ const ACTIVITY_PREVIEW_COUNT = 8; // Recent activity rows shown before "Show all
 const FEED_LIMIT = 20;               // rows kept in the panel at once
 const FEED_POLL_LIVE_MS = 45000;     // reconcile poll while the realtime channel is subscribed
 const FEED_POLL_FALLBACK_MS = 12000; // …and when it isn't
+
+// "While you were away" should reward a real absence, not tax alt-tabbing.
+// Boot is what raises that modal (see the boot effect), and boot re-runs far
+// more often than "the player came back tomorrow" — mobile browsers evict a
+// backgrounded PWA within seconds, so a trip to the home screen, a glance at
+// another app, or an OAuth round-trip all reload the page. Without this gate
+// the modal interrupts every one of those to announce a few seconds' rent.
+// The heartbeat below stamps the clock while the game is actually on screen;
+// boot reads the stamp left by the previous session and only celebrates if
+// the gap since then is long enough to feel like time away.
+const AWAY_MODAL_MIN_MS = 120000; // absence required before the welcome modal earns an interruption
+const AWAY_BEAT_MS = 15000;       // how often a visible game refreshes the stamp
+const AWAY_KEY = "ptw_lastActive";
 
 const C = {
   ink: "#0A1622", panel: "#111C2B", hair: "#243146",
@@ -2579,6 +2592,15 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
   const [priceDraft, setPriceDraft] = useState("");
   const [nickDraft, setNickDraft] = useState("");
   const pendings = useRef([]);
+  // Read exactly once, at mount, BEFORE the heartbeat effect below starts
+  // overwriting it (hence the lazy initializer, not a plain read) — this is
+  // "when did this player last actually have the game on screen", and the
+  // boot effect gates the welcome modal on it. 0 means no stamp at all
+  // (first run on this device, or private mode), which reads as away-long-
+  // enough so a genuinely returning player is never silently skipped.
+  const [lastActive] = useState(() => {
+    try { return Number(localStorage.getItem(AWAY_KEY)) || 0; } catch { return 0; /* private mode */ }
+  });
   const dirty = useRef(false);
   const regions = useRef(new Map()); // prefix -> {t:{qk:rec}, at}
   const regionOrder = useRef([]);    // insertion order, for the eviction below
@@ -2792,7 +2814,14 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
       const fresh = await syncRent();
       if (fresh) {
         const gain = Math.round(Number(fresh.balance) - before);
-        if (gain > 0) pendings.current.push({ kind: "welcome", gain });
+        // The money lands either way — accrue_rent() already credited it and
+        // the balance display picks it up. The modal is only the
+        // announcement, and it's worth an interruption solely when the
+        // player has been gone long enough to have missed something (see
+        // AWAY_MODAL_MIN_MS). A reload after a 20-second app switch just
+        // rejoins a game whose balance quietly went up.
+        const awayFor = lastActive ? Date.now() - lastActive : Infinity;
+        if (gain > 0 && awayFor >= AWAY_MODAL_MIN_MS) pendings.current.push({ kind: "welcome", gain });
       }
 
       const { data: dailyRows, error: dailyErr } = await supabase.rpc("claim_daily");
@@ -5768,6 +5797,32 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
     const onVis = () => { if (document.hidden) { ptrs.current.clear(); gesture.current = null; } };
     document.addEventListener("visibilitychange", onVis);
     return () => document.removeEventListener("visibilitychange", onVis);
+  }, []);
+
+  // Heartbeat behind the welcome-modal gate: while the game is actually on
+  // screen, keep stamping "the player is here". Deliberately stops the
+  // moment the tab goes hidden — and writes one last stamp on the way out,
+  // which is the reading that matters, since that's when they left. So the
+  // gap the next boot measures is real time away, not time since the page
+  // happened to load. pagehide covers the mobile case where the browser
+  // kills a backgrounded PWA outright (the reload that follows is exactly
+  // the boot this gate exists for); on desktop it fires on navigation away.
+  useEffect(() => {
+    const beat = () => {
+      if (typeof document !== "undefined" && document.hidden) return;
+      try { localStorage.setItem(AWAY_KEY, String(Date.now())); } catch { /* private mode — gate just defaults to showing the modal */ }
+    };
+    const leave = () => { try { localStorage.setItem(AWAY_KEY, String(Date.now())); } catch { /* ignore */ } };
+    const onVis = () => { if (document.hidden) leave(); else beat(); };
+    beat();
+    const iv = setInterval(beat, AWAY_BEAT_MS);
+    document.addEventListener("visibilitychange", onVis);
+    window.addEventListener("pagehide", leave);
+    return () => {
+      clearInterval(iv);
+      document.removeEventListener("visibilitychange", onVis);
+      window.removeEventListener("pagehide", leave);
+    };
   }, []);
 
   // Resync the instant this tab/device is looked at again, instead of

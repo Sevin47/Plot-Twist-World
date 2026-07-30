@@ -4,6 +4,65 @@ Player-visible changes. Bumped together with `package.json`'s `version`,
 which is the single source of truth the corner badge and the new-version
 poll both read (see `vite.config.js`).
 
+## 1.32.6
+
+### "While you were away" waits for a real absence
+
+- The welcome modal is raised by the boot effect, and boot re-runs far more
+  often than "the player came back tomorrow" — a mobile browser evicts a
+  backgrounded PWA within seconds, so a trip to the home screen, a look at
+  another app, or an OAuth round-trip all reload the page and re-ran it.
+- **Why:** it turned every app switch into a popup announcing a few seconds'
+  rent, including switching to the home menu and straight back in.
+- **The gate.** A heartbeat (`AWAY_BEAT_MS`, 15s) stamps `ptw_lastActive`
+  while the document is visible, and writes one final stamp on
+  `visibilitychange`→hidden and on `pagehide` — that last one is the reading
+  that matters, since it's the moment the player actually left. Boot reads
+  the stamp through a `useState` lazy initializer (before the heartbeat can
+  overwrite it) and only queues the modal when the gap is at least
+  `AWAY_MODAL_MIN_MS` (2 minutes).
+- No stamp at all — first run on a device, or private mode — reads as
+  away-long-enough, so a genuinely returning player is never silently
+  skipped.
+- Nothing about the economy changed: `accrue_rent()` credits the rent
+  server-side and the balance display picks it up regardless. Only the
+  announcement is suppressed.
+
+## 1.32.5
+
+### The Wiki stops documenting a channel the game doesn't have
+
+- `guide.html` was still carrying a full page for the per-region room that
+  was pulled in 1.15.0 — sidebar link, TOC entry, its own rate-limit callout,
+  a cheat-sheet row, and passing references in the Map tab card, the fog
+  paragraph, the username step and a starter strategy. All gone.
+- **Why:** it read as a shipped feature. A player following the wiki went
+  looking for a button on the map that hasn't existed for seventeen releases,
+  and the projects section told them to go negotiate with their neighbours
+  somewhere they can't.
+- **Reporting & blocking → Blocking.** The old section's only described
+  entry point was "tap a message in the room," so with the room gone it
+  described nothing. Rewritten against the actual client: `Block` next to
+  Accept/Decline on an incoming request, mutual, silent, lifted only by the
+  blocker from the Blocked list, `Remove` for an existing friend. Section id
+  stays `#safety` so no inbound anchor breaks.
+- **Reports dropped from the wiki.** `report_player` exists server-side but
+  `supabase.sql` says it plainly — the client has no report UI wired up, so
+  nothing calls it. The wiki was promising a 10/day allowance on an action a
+  player cannot take. The RPC is untouched; only the documentation of it went.
+- **Direct messages** now say what they are: the only channel in the game.
+  The friends strategy card says the same, and points at why you'd want one
+  (project coordination, non-aggression) now that friendship is the only way
+  to have that conversation.
+- **Choosing what gets built** rewritten to explain convergence on its own
+  terms — the default follows the leading project, so passive landlords
+  accelerate an emerging consensus instead of four bars stalling at a quarter.
+  Matches the "Follow the leader" default in `settle_region`.
+- Version history: the wiki's v1.6.0 entry and one v1.8.0 bullet are gone,
+  and in-app "What's new" lost the same bullet plus its 1.6.0 and 1.10.0
+  entries — every note in those was about the removed room, so the entries
+  had nothing left to say.
+
 ## 1.32.4
 
 ### The Wiki reads its own version

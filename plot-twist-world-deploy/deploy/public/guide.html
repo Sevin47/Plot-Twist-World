@@ -239,7 +239,7 @@
          update-available poll reads), because a hand-maintained version
          string in a doc is a string that goes stale the next time anything
          ships — which is exactly what happened between 1.32.1 and 1.32.3. -->
-    <div class="verchip" id="ptwVer">v1.32.3</div>
+    <div class="verchip" id="ptwVer">v1.32.5</div>
   </div>
 
   <div class="shell">
@@ -285,8 +285,7 @@
         <div class="navgroup-label">Social</div>
         <a class="navlink" href="#friends">Friends</a>
         <a class="navlink" href="#dms">Direct messages</a>
-        <a class="navlink" href="#region-chat">Region chat</a>
-        <a class="navlink" href="#safety">Reporting &amp; blocking</a>
+        <a class="navlink" href="#safety">Blocking</a>
       </div>
       <div class="navgroup">
         <div class="navgroup-label">Playing Over Time</div>
@@ -339,7 +338,7 @@
             <tr><th>Contracts</th><td>26 (16 daily · 10 weekly)</td></tr>
             <tr><th>Collections</th><td>13</td></tr>
             <tr><th>Achievements</th><td>13</td></tr>
-            <tr><th>Current version</th><td id="ptwVerBox">1.32.3</td></tr>
+            <tr><th>Current version</th><td id="ptwVerBox">1.32.5</td></tr>
           </table>
         </div>
         <h2>What is this?</h2>
@@ -380,8 +379,7 @@
           <li><a href="#world-claimed">World land claimed</a></li>
           <li><a href="#friends">Friends</a></li>
           <li><a href="#dms">Direct messages</a></li>
-          <li><a href="#region-chat">Region chat</a></li>
-          <li><a href="#safety">Reporting &amp; blocking</a></li>
+          <li><a href="#safety">Blocking</a></li>
           <li><a href="#guest">Playing as a guest</a></li>
           <li><a href="#tutorial">Tutorial &amp; tips</a></li>
           <li><a href="#streak">Daily streak</a></li>
@@ -404,7 +402,7 @@
         <p class="section-desc">From opening the app for the first time to owning your first tile.</p>
         <div class="stepgrid">
           <div class="step"><div class="step-n">01</div><div class="step-t">Press Play now — or sign in</div><div class="step-d">You don't need an account to start. <strong>Play now</strong> drops you straight into a guest world in this browser. Signing in with Google instead gives you a permanent account that follows you across devices. Either way you get a real tile on the real map. See <a href="#guest">Playing as a guest</a>.</div></div>
-          <div class="step"><div class="step-n">02</div><div class="step-t">Pick a username</div><div class="step-d">2–16 letters, numbers, or underscores. Permanent for the account, and what other players see on your deeds, listings, chat, and the <a href="#leaderboard">World register</a>.</div></div>
+          <div class="step"><div class="step-n">02</div><div class="step-t">Pick a username</div><div class="step-d">2–16 letters, numbers, or underscores. Permanent for the account, and what other players see on your deeds, listings, messages, and the <a href="#leaderboard">World register</a>.</div></div>
           <div class="step"><div class="step-n">03</div><div class="step-t">Choose your starting area</div><div class="step-d">A basemap-only screen — pan and zoom the real map to find your home turf, then drop the pin.</div></div>
           <div class="step"><div class="step-n">04</div><div class="step-t">Claim it &amp; learn the ropes</div><div class="step-d">Confirming rolls your first tile's rarity, claims it free, and sets that region as your permanent home. An eight-step interactive tutorial follows, covering the core loop live on your own deed — and new accounts start with a free <a href="#contracts">rush credit</a>, so your first build timer is on the house.</div></div>
         </div>
@@ -415,7 +413,7 @@
         <h2>The interface</h2>
         <p class="section-desc">Six tabs along the bottom, a persistent header, and a pause menu behind <strong>Menu</strong> at top-left.</p>
         <div class="cardgrid">
-          <div class="card"><div class="card-t">Map</div><div class="card-d">The world itself — pan, zoom, buy, build, attack, chat with whoever shares your region, and watch the <a href="#live-feed">live feed</a> of land changing hands.</div></div>
+          <div class="card"><div class="card-t">Map</div><div class="card-d">The world itself — pan, zoom, buy, build, attack, and watch the <a href="#live-feed">live feed</a> of land changing hands.</div></div>
           <div class="card"><div class="card-t">Assets</div><div class="card-d">Every tile you own, <strong>grouped under a collapsible header per region</strong> showing that region's tile count and combined rent. Home region opens by default, the rest start collapsed, biggest earner first. Searching or filtering opens every group. Tiles under construction sit in their own section up top, soonest-to-finish first.</div></div>
           <div class="card"><div class="card-t">Market</div><div class="card-d">Player listings inside territory you've unlocked. See <a href="#market">The open market</a>.</div></div>
           <div class="card"><div class="card-t">Profile</div><div class="card-d">You: status, achievements, <a href="#contracts">contracts</a> and <a href="#collections">collections</a>. A dot appears here whenever something is ready to claim.</div></div>
@@ -450,7 +448,7 @@
           </table>
         </div>
         <h3>Territory and fog</h3>
-        <p>Once you own at least one tile, the interactive grid only lights up inside <strong>regions you've unlocked</strong> (roughly 150 km chunks of the world). Everywhere else appears fogged on the grid — you can still browse it at wide zoom, but you can't buy, attack, chat, or trade there until you unlock that region. Your home region is always free. See <a href="#regions">Regions &amp; unlocking</a> for cost.</p>
+        <p>Once you own at least one tile, the interactive grid only lights up inside <strong>regions you've unlocked</strong> (roughly 150 km chunks of the world). Everywhere else appears fogged on the grid — you can still browse it at wide zoom, but you can't buy, attack, or trade there until you unlock that region. Your home region is always free. See <a href="#regions">Regions &amp; unlocking</a> for cost.</p>
       </section>
 
       <section id="classification">
@@ -694,7 +692,7 @@
         <h3>Upkeep and pausing</h3>
         <p>A built project keeps running for as long as the fund can pay its upkeep. If a region's players drift away, the fund stops keeping up and its projects <strong>pause</strong> until it recovers — nothing is lost and no progress is destroyed, it just waits. A busy region sustains two projects comfortably; a near-empty one won't sustain one.</p>
         <h3>Choosing what gets built</h3>
-        <p>You can back a specific project with your region's fund, or leave it alone and the fund follows whatever the region is closest to finishing. In a region where you're the only landlord, that makes the choice entirely yours; in a busy one it's a genuine negotiation with the neighbours — and region chat is where it happens.</p>
+        <p>You can back a specific project with your region's fund, or leave it alone and the fund follows whatever the region is closest to finishing. In a region where you're the only landlord, that makes the choice entirely yours. In a busy one, nobody has to organise anything: every landlord who doesn't pick is quietly pushing whichever project is already furthest along, so the region converges on one instead of leaving four stuck at a quarter each. Backing a project is a standing choice, not a vote — change it whenever you like and your future levy redirects, but ₲ already in a bar stays there.</p>
         <div class="trivia">
           <span class="trivia-label">Did you know</span>
           The 5% market duty on sales (see <a href="#market">The open market</a>) is the only genuinely <em>new</em> cost that arrived with projects — everything else was already being spent. It exists so Free Port has something to waive, which gives a trading-heavy region a project worth arguing for over Metro Line.
@@ -891,7 +889,7 @@
 
       <section id="dms">
         <h2>Direct messages</h2>
-        <p class="section-desc">Private, friends-only chat — you can't be messaged by anyone you haven't accepted.</p>
+        <p class="section-desc">Private, friends-only conversations — and the game's only channel. You can't be messaged by anyone you haven't accepted, and there's no open or regional room to be pulled into.</p>
         <p>Open a conversation from any friend's row in HQ. Unread counts show per-friend and as a dot on the HQ tab. Sending a first message unlocks the <strong>Pen pal</strong> achievement.</p>
         <div class="callout">
           <span class="callout-label">Limits</span>
@@ -899,21 +897,11 @@
         </div>
       </section>
 
-      <section id="region-chat">
-        <h2>Region chat</h2>
-        <p class="section-desc">Local chat scoped to whichever region you're currently looking at — you talk to the people whose territory you actually share.</p>
-        <p>Open it from the speech-bubble button on the map. The room follows your camera live — pan into a different unlocked region and the header, the message list, and where your next message goes all switch the instant you arrive, with a small notification confirming the new room. No need to close and reopen it to "refresh." Locked regions show a hint to unlock first rather than an empty room. Each region is named after the nearest real place close enough to be recognizable, or by coordinates when nothing nearby has a name.</p>
-        <div class="callout">
-          <span class="callout-label">Limits</span>
-          Up to 10 messages per minute, per account. Each region keeps its most recent 100 messages.
-        </div>
-      </section>
-
       <section id="safety">
-        <h2>Reporting &amp; blocking</h2>
-        <p class="section-desc">Every message, anywhere, can be reported or its sender blocked.</p>
-        <p>Tap a message in region chat to reveal Report and Block. Blocking is mutual and immediate — a blocked player can no longer message you, send you friend requests, or appear in your region chat, and you disappear from theirs the same way. Blocks can be lifted any time from the Blocked list in HQ's Friends card.</p>
-        <p>Reports are private — only visible to the game's operator, never to other players, including the person you reported. Up to 10 reports may be filed per day.</p>
+        <h2>Blocking</h2>
+        <p class="section-desc">There is no public or open channel anywhere in the game — the only way anyone can message you is by being a friend you accepted. Blocking is how you make sure someone never becomes one.</p>
+        <p><strong>Block</strong> sits next to Accept and Decline on any incoming friend request, in HQ's Social tab. It's mutual and immediate: a blocked player can't send you requests or messages, and you can't reach them either. Nothing is announced — they aren't told, and blocked players only ever appear on <em>your</em> list.</p>
+        <p>Blocks last until you lift them. Only you can, from the <strong>Blocked</strong> list under HQ's friends, and unblocking resets the two of you to strangers rather than restoring anything. If someone's already a friend and you'd rather they weren't, <strong>Remove</strong> on their row ends the friendship — and with it the ability to message each other at all.</p>
       </section>
 
       <section id="guest">
@@ -1178,7 +1166,7 @@
           </div>
           <div class="strat">
             <div class="strat-head"><span class="strat-t">Make Friends on Day One</span><span class="strat-tag">Best for: everyone, costs nothing</span></div>
-            <div class="strat-d">Friends cost nothing to add, light up teal on the map so you can see their footprint from orbit, and unlock DMs. Region chat puts you in the same room as whoever else has unlocked your territory. There's no direct mechanical bonus, but a persistent shared world is a lot stickier with people you actually know in it — and it's the cheapest strategy on this list.</div>
+            <div class="strat-d">Friends cost nothing to add, light up teal on the map so you can see their footprint from orbit, unlock <a href="#dms">DMs</a>, and let you jump to their home region with one tap. Friendship is also the <em>only</em> channel in the game — there's nowhere else to talk to a neighbour, so if you want to coordinate on a <a href="#projects">region project</a> or agree not to raid each other, adding them is the move. There's no direct mechanical bonus, but a persistent shared world is a lot stickier with people you actually know in it — and it's the cheapest strategy on this list.</div>
           </div>
         </div>
       </section>
@@ -1293,8 +1281,7 @@ otherwise:     3 standard cards, weighted-random from the eligible pool</div>
               <tr><td>Notifications</td><td>Energy alerts at 00:00 &amp; 12:00 UTC · attack alerts on capture · both opt-in</td></tr>
               <tr><td>Abandon refund</td><td>50% of invested</td></tr>
               <tr><td>Inactivity threshold</td><td>30 days → 30% refund, tile returns to the world</td></tr>
-              <tr><td>Friend requests / DMs / region chat limits</td><td>20/day · 20/min (200 kept per chat) · 10/min (100 kept per region)</td></tr>
-              <tr><td>Reports</td><td>10/day, private to the game's operator</td></tr>
+              <tr><td>Friend requests / DM limits</td><td>20/day · 20 messages/min, latest 200 kept per conversation</td></tr>
             </tbody>
           </table>
         </div>
@@ -1384,7 +1371,6 @@ otherwise:     3 standard cards, weighted-random from the eligible pool</div>
               <li>Tile decay shortened from 60 to 30 days of inactivity.</li>
               <li>Status ranks: Magnate's threshold raised 2M → 10M, plus two new ranks above it (Tycoon, Mogul).</li>
               <li>Daily attack allowance now scales with status rank instead of being flat for everyone.</li>
-              <li>Region chat rebuilt to follow the camera live — no more closing and reopening it to switch rooms.</li>
               <li>Region names are now far more accurate — real nearby places instead of "unnamed territory" for most of the world.</li>
             </ul>
           </div>
@@ -1399,9 +1385,6 @@ otherwise:     3 standard cards, weighted-random from the eligible pool</div>
           </div>
           <div class="verentry"><span class="vertag">v1.6.1</span><span class="verdate">Jul 21, 2026</span>
             <ul><li>Daily attack cap doubled, 3 → 6.</li><li>Assets tab: dedicated Building section.</li></ul>
-          </div>
-          <div class="verentry"><span class="vertag">v1.6.0</span><span class="verdate">Jul 20, 2026</span>
-            <ul><li>Region chat, plus report and block.</li></ul>
           </div>
           <div class="verentry"><span class="vertag">v1.5.0</span><span class="verdate">Jul 20, 2026</span>
             <ul><li>Friend direct messages.</li></ul>
