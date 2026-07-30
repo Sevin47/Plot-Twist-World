@@ -4,6 +4,26 @@ Player-visible changes. Bumped together with `package.json`'s `version`,
 which is the single source of truth the corner badge and the new-version
 poll both read (see `vite.config.js`).
 
+## 1.32.3
+
+### Market listings no longer disclose a covenant
+
+- `refreshMarket` stops selecting `covenant`, and the listing row drops the
+  covenant chip. The comment claiming it "TRANSFERS with the deed" was true
+  under 1.25.0's runs-with-the-land model and wrong from 1.26.0 onward, when
+  covenants became tenure-scoped and `buy_listed_tile` started clearing them
+  on transfer. Disclosure of terms the buyer will never be under isn't
+  fairness, it's misinformation.
+- **No mechanical change.** Verified in `supabase.sql`: `buy_listed_tile`
+  clears `covenant`/`covenant_at`/`covenant_declined`; `list_tile` only
+  *reads* the covenant (to refuse `no_list` cards) and `unlist_tile` doesn't
+  touch it at all. So listing → unlisting cannot be used to launder a bad
+  covenant, which was the specific worry.
+- A rival's tile still shows its covenant on the sheet before a raid — those
+  terms are in force and affect the fight, so that disclosure is real.
+- Wiki updated to match, including an explicit note that selling is a
+  legitimate exit from a covenant but listing alone changes nothing.
+
 ## 1.32.2
 
 ### The Wiki, brought back up to date

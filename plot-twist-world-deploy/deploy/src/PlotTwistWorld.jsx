@@ -43,6 +43,14 @@ const VERSION_CHECK_MS = 5 * 60 * 1000;
 // commit, not after the fact.
 const CHANGELOG = [
   {
+    id: "1.32.3",
+    date: "Jul 29, 2026",
+    notes: [
+      "Market listings no longer show a covenant. They were advertising the seller's terms on a tile that arrives clean — a covenant ends with the tenure it belonged to, so a buyer was never going to be under the deal the listing described.",
+      "Nothing changed about how covenants work: they still clear when a tile is sold, captured, abandoned or repossessed, and listing a tile still doesn't clear or pause anything. The terms hold until the sale completes, and pulling a listing leaves them exactly where they were.",
+    ],
+  },
+  {
     id: "1.32.2",
     date: "Jul 29, 2026",
     notes: [
@@ -3712,13 +3720,17 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
     const { data, error } = await supabase
       // see the matching comment in ensureRegion — must stay FK-qualified
       // now that tiles has two relationships into profiles.
-      // covenant is selected because it TRANSFERS with the deed — a listing
-      // that hides it is selling someone a trade they never agreed to, so
-      // disclosure here is a fairness requirement, not decoration.
-      .from("tiles").select("qk,cls,list_price,covenant,profiles!tiles_owner_fkey(username,peak_net_worth)")
+      // covenant is deliberately NOT selected. It used to be, back when a
+      // covenant ran with the land and a buyer really did inherit it —
+      // disclosure was a fairness requirement then. Since 1.26 a covenant
+      // is scoped to one owner's TENURE and buy_listed_tile clears it on
+      // transfer, so showing it here advertised terms the buyer would never
+      // be under. What you're buying is clean ground plus the level,
+      // rarity and prestige on it.
+      .from("tiles").select("qk,cls,list_price,profiles!tiles_owner_fkey(username,peak_net_worth)")
       .not("list_price", "is", null).or(filter).order("updated_at", { ascending: false }).limit(40);
     if (error) { setMarket({ loading: false, rows: [] }); return; }
-    setMarket({ loading: false, rows: (data || []).map((r) => ({ qk: r.qk, cls: r.cls, p: r.list_price, n: r.profiles?.username, pnw: r.profiles?.peak_net_worth || 0, cv: r.covenant })) });
+    setMarket({ loading: false, rows: (data || []).map((r) => ({ qk: r.qk, cls: r.cls, p: r.list_price, n: r.profiles?.username, pnw: r.profiles?.peak_net_worth || 0 })) });
   }, []);
 
   useEffect(() => { if (tab === "market") refreshMarket(); }, [tab, refreshMarket]);
@@ -6998,19 +7010,11 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
                     <span className="truncate text-sm font-bold" style={mono}>{coordLabel(e.qk)}</span>
                   </div>
                   <div className="pt11 mt-0.5" style={{ ...mono, color: C.dim }}>by {e.n || "a player"}{e.n === g.name ? " (you)" : ""} · {statusFor(e.pnw).name}</div>
-                  {/* the covenant comes WITH the deed — both sides of it —
-                      so it belongs on the listing, not behind a tap */}
-                  {e.cv && COVENANTS[e.cv] && (
-                    <div className="mt-1 flex flex-wrap items-center gap-1">
-                      <span className="pt10 rounded-full px-2 py-0.5 font-bold"
-                        style={{ ...display, color: "#C9A0FF", background: "#C9A0FF1f", border: "1px solid #C9A0FF55" }}>
-                        {COVENANTS[e.cv].name}
-                      </span>
-                      {covChips(COVENANTS[e.cv].mods).map((ch, i) => (
-                        <span key={i} className="pt10 font-bold" style={{ ...mono, color: ch.good ? "#7FD1A0" : "#F08A8A" }}>{ch.t}</span>
-                      ))}
-                    </div>
-                  )}
+                  {/* No covenant on a listing. A covenant belongs to the
+                      SELLER's tenure and buy_listed_tile clears it on
+                      transfer, so there is nothing here for a buyer to be
+                      disclosed — showing the seller's terms would describe a
+                      deal the buyer never ends up under. See refreshMarket. */}
                 </button>
                 <div className="flex shrink-0 items-center gap-2">
                   <span className="text-sm font-bold" style={{ ...mono, color: C.amber }}>₲{fmt(e.p)}</span>
