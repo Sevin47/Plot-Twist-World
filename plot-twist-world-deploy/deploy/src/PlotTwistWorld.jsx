@@ -43,6 +43,17 @@ const VERSION_CHECK_MS = 5 * 60 * 1000;
 // commit, not after the fact.
 const CHANGELOG = [
   {
+    id: "1.33.2",
+    date: "Jul 31, 2026",
+    notes: [
+      "Fixed: if your only session of the day fell between 00:00 and 12:00 UTC, you were getting half your daily energy and never the rest. The second half arrives at noon UTC, and there was nothing to hand it to you if you'd already been and gone — so it expired ungranted, every day, and the shortfall never showed up as an error.",
+      "This hit evening play in the Americas hardest: 00:00–12:00 UTC is 8pm–8am US Eastern. If that was your window, you have been running on half energy since the split refill shipped.",
+      "Now, if you weren't around in the afternoon to collect the second half, your next visit hands you the whole day's energy at once. A day you check in once is worth exactly as much as a day you check in twice — which is what was always intended.",
+      "Also fixed: bonus energy from a contract could eat the noon refill. If you were holding a contract reward when the second half landed, part or all of it was dropped instead of added, and the game recorded it as delivered anyway.",
+      "The energy readout now names the next refill — \"+13 at 12:00 UTC\" instead of \"more in 11h\". Half a cap and a bare countdown looked like something had gone wrong; it now says how much is coming and when.",
+    ],
+  },
+  {
     id: "1.33.1",
     date: "Jul 30, 2026",
     notes: [
@@ -1482,6 +1493,25 @@ const energySecsToReset = () => {
     ? Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), nextH, 0, 0)
     : Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1, ENERGY_REFILL_HOURS[0], 0, 0);
   return Math.max(0, Math.round((next - Date.now()) / 1000));
+};
+// Which UTC hour the next tranche lands at, for labelling it "00:00"/"12:00"
+// rather than making the player convert a duration in their head.
+const energyNextRefillHour = () => {
+  const h = new Date().getUTCHours();
+  const nextH = ENERGY_REFILL_HOURS.find((x) => x > h);
+  return nextH != null ? nextH : ENERGY_REFILL_HOURS[0];
+};
+// How much that next tranche is worth. MUST match reset_daily_energy's
+// v_first/v_second split exactly — ceil() on the first half is what makes an
+// odd cap round in the player's favour early in the day.
+// Understates for a player due a catch-up (one who missed a 12:00 tranche
+// gets the WHOLE cap at 00:00, not v_first — see the MISSED TRANCHE note in
+// supabase.sql). That direction is deliberate: energy_pm_date isn't on the
+// client, and a refill that beats the label is a surprise, not a broken
+// promise. Never overstates.
+const energyNextRefillAmount = (cap) => {
+  const first = Math.ceil(cap / 2);
+  return energyNextRefillHour() === 0 ? first : cap - first;
 };
 
 // Seconds until the stipend rolls over. Unlike energy this is a plain UTC
@@ -6084,6 +6114,9 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
   const mmss = (ms) => { const s = Math.ceil(ms / 1000); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`; };
   const hm = (secs) => { const h = Math.floor(secs / 3600), m = Math.floor((secs % 3600) / 60); return h > 0 ? `${h}h ${m}m` : `${m}m`; };
   const myStatus = statusFor(g.peakNetWorth);
+  // Full daily allowance — tier cap plus both permanent bonuses. Mirrors
+  // reset_daily_energy's v_total_cap; the HUD reads it three times.
+  const myEnergyCap = myStatus.cap + landmarkEnergyBonus() + collectionEnergyBonus();
 
   const selRec = sel ? recOf(sel) : undefined;
   const selDbg = dbg && sel ? classify(sel) : null;
@@ -6375,10 +6408,16 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
             <Chip color={C.amber}>{myStatus.name}</Chip>
             {g.devMode && <Chip color="#F08A8A">DEV</Chip>}
             <span data-tut="energy" className="pt10 font-bold" style={{ ...mono, color: energyNow(g) > 0 ? C.amber : "#F08A8A", fontVariantNumeric: "tabular-nums" }} title="Energy — spent claiming unowned land, refills in two halves at 00:00 and 12:00 UTC">
-              ⚡{energyNow(g)}/{myStatus.cap + landmarkEnergyBonus() + collectionEnergyBonus()} today
+              ⚡{energyNow(g)}/{myEnergyCap} today
             </span>
-            {energyNow(g) < myStatus.cap + landmarkEnergyBonus() + collectionEnergyBonus() && (
-              <span className="pt10" style={{ ...mono, color: C.dim }}>more in {hm(energySecsToReset())}</span>
+            {/* Names the next tranche and when it lands, rather than a bare
+                duration. "13/26 · more in 11h" read as "you are short and will
+                stay short"; the amount and the fixed UTC hour say the other
+                half is coming and is not something you missed. */}
+            {energyNow(g) < myEnergyCap && (
+              <span className="pt10" style={{ ...mono, color: C.dim }} title={`Refills at 00:00 and 12:00 UTC — next in ${hm(energySecsToReset())}`}>
+                +{energyNextRefillAmount(myEnergyCap)} at {String(energyNextRefillHour()).padStart(2, "0")}:00 UTC
+              </span>
             )}
             <span className="pt10 font-bold" style={{ ...mono, color: (g.attacksSent || 0) < myStatus.atk ? C.text : "#F08A8A", fontVariantNumeric: "tabular-nums" }} title="Attacks launched — resets once per day">
               ⚔{Math.max(0, myStatus.atk - (g.attacksSent || 0))}/{myStatus.atk} today
@@ -7414,7 +7453,7 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
                 <div className="pt10" style={{ ...mono, color: C.dim }}>Highest status reached — ₲{fmt(g.peakNetWorth)} peak net worth.</div>
               )}
               <div className="pt10 mt-2" style={{ ...mono, color: C.dim }}>
-                Status is sticky (never drops) and raises your daily energy — {myStatus.cap + landmarkEnergyBonus() + collectionEnergyBonus()}/day now, including collection and landmark bonuses, arriving in two halves at 00:00 and 12:00 UTC. Your name is public on tiles, listings and the leaderboard.
+                Status is sticky (never drops) and raises your daily energy — {myEnergyCap}/day now, including collection and landmark bonuses, arriving in two halves at 00:00 and 12:00 UTC. Your name is public on tiles, listings and the leaderboard.
               </div>
             </div>
 

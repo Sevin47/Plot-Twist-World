@@ -4,6 +4,75 @@ Player-visible changes. Bumped together with `package.json`'s `version`,
 which is the single source of truth the corner badge and the new-version
 poll both read (see `vite.config.js`).
 
+## 1.33.2
+
+### A pre-noon session got half a day's energy, every day
+
+- **`reset_daily_energy` only ever granted the second tranche to a player who
+  contacted the server at or after 12:00 UTC.** A player whose single session
+  of the day fell before noon got `v_first` and nothing else; the next day's
+  rollover reset `energy_tranche` to 0 and the ungranted half was discarded.
+  They ran at **half their daily cap indefinitely**, with no error anywhere.
+- The function's own header claimed the opposite — "a single visit at 20:00 is
+  worth exactly as much as two visits at 00:05 and 12:05". That held only for a
+  single visit *after* noon (the `energy_tranche = 0 and v_target = 2` branch).
+  Nothing covered a single visit *before* noon.
+- **Not an edge case.** 00:00–12:00 UTC is 8pm–8am US Eastern, so it hit
+  ordinary evening play across the Americas hardest. Found from a player report
+  of a "missing 00:00 reset" — the midnight grant was fine; the noon one had
+  been silently expiring for that player since the split refill shipped.
+- **The fix is `profiles.energy_pm_date`**, the last UTC date the player was
+  seen at or after 12:00. At the rollover, a player who wasn't present in the
+  afternoon on their last active day could not have collected that day's second
+  tranche, so their next first-contact grants the whole day at once.
+  `energy_tranche` can't answer this (it's a within-day counter, and the
+  catch-up sets it to 2, which would make the following day read as collected —
+  giving a 26/13/26/13 alternation); `last_seen` can't either, since
+  `accrue_rent` stamps it to `now()` before `reset_daily_energy` reads the row.
+- Afternoon presence is recorded **before** the early return, so a player who
+  checks in at 14:00 with both tranches already collected still counts as having
+  had the opportunity.
+- The daily total is unchanged in every path: a caught-up day and a two-visit
+  day are both exactly `v_total_cap`.
+
+### A contract bonus could eat the noon refill
+
+- The grant was `greatest(energy, least(v_total_cap, energy + v_granted))`. The
+  outer `greatest` protected an over-cap contract bonus from being clipped, but
+  the inner `least` still clamped the **sum** to the cap — so a tranche landed
+  short, or not at all, for anyone already holding bonus energy, while
+  `energy_tranche` advanced to `v_target` regardless and recorded the shortfall
+  as delivered. It was never made up.
+- Now a plain `energy + v_granted`. Nothing can overshoot: the early return
+  grants each tranche at most once per UTC day, and `v_first + v_second` is
+  exactly `v_total_cap`, so the allowance always sums to the cap however the day
+  is split. Anything above it is earned bonus, which is intended.
+- Also corrected `accrue_rent`'s ordering comment, which still described the
+  reset as overwriting energy to the tier cap. It has added rather than
+  overwritten since the split refill; the rollover branch is what zeroes.
+
+### The energy readout names the next refill
+
+- `⚡13/26 today · more in 11h` was what the reporting player was looking at
+  when they concluded their reset had failed. A bare duration next to half a
+  cap reads as "you are short and will stay short" — it never says the other
+  half is guaranteed, or that 13/26 is the correct state at 00:05 UTC.
+- Now `⚡13/26 today · +13 at 12:00 UTC`. `energyNextRefillHour()` and
+  `energyNextRefillAmount()` mirror `reset_daily_energy`'s `v_first`/`v_second`
+  split, `ceil()` included, so an odd cap rounds the same way on both sides.
+  The countdown moves to the tooltip rather than being dropped.
+- The amount **understates** for a player owed a catch-up (they get the whole
+  cap at 00:00, not `v_first`). Deliberate: `energy_pm_date` isn't on the
+  client, and a refill that beats its label is a surprise rather than a broken
+  promise. It never overstates.
+- `myEnergyCap` replaces the tier-plus-both-bonuses expression that was spelled
+  out four times across the HUD and the status blurb.
+
+**Deploy note:** the two server-side fixes are a **`supabase.sql` re-paste** —
+they add the `profiles.energy_pm_date` column and replace `reset_daily_energy`,
+and do not take effect until the SQL is run. The HUD change is the only part of
+this release that ships with the Pages build.
+
 ## 1.33.0
 
 ### Status promotions announce themselves
