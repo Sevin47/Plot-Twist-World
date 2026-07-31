@@ -16,7 +16,7 @@ import VectorWorker from "./vectorWorker.js?worker&inline";
 /* ─────────────────────────────────────────────────────────────
    PLOT TWIST: WORLD DEED — one shared Earth, ~300m tiles.
    Real coastlines (Natural Earth), quadkey grid, live trading.
-   Virtual money only. Parody ads. No real anything.
+   ₲ Geobux is an in-game virtual currency with no real-world value.
    ───────────────────────────────────────────────────────────── */
 
 // Bumped by hand alongside any fix worth confirming actually shipped —
@@ -42,6 +42,13 @@ const VERSION_CHECK_MS = 5 * 60 * 1000;
 // player-visible change ships with a version bump + entry in the same
 // commit, not after the fact.
 const CHANGELOG = [
+  {
+    id: "1.33.1",
+    date: "Jul 30, 2026",
+    notes: [
+      "Wording pass on the boost screen and across the Wiki — the ₲ Geobux disclaimer is now one plain line in both places instead of several scattered ones. No gameplay, prices or rules changed.",
+    ],
+  },
   {
     id: "1.33.0",
     date: "Jul 30, 2026",
@@ -8265,7 +8272,7 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
   );
 }
 
-/* ── fake ad modal ──────────────────────────────────────────── */
+/* ── boost ad modal ─────────────────────────────────────────── */
 
 function AdModal({ ad, reduced, onClaim, onClose }) {
   const [t, setT] = useState(0);
@@ -8278,7 +8285,7 @@ function AdModal({ ad, reduced, onClaim, onClose }) {
   return (
     <>
       <div className="flex items-center justify-between">
-        <Eyebrow>Paid promotion · parody, not a real ad</Eyebrow>
+        <Eyebrow>Paid promotion</Eyebrow>
         <button onClick={onClose} className="px-1 text-lg focus-visible:outline focus-visible:outline-2" style={{ color: C.dim, outlineColor: C.amber }}>✕</button>
       </div>
       <div className="my-4 rounded-xl p-5 text-center" style={{ background: C.ink, border: `1px dashed ${C.hairLit}` }}>

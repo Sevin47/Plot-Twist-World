@@ -1,9 +1,9 @@
 # Plot Twist: World Deed
 
-A parody land-grab idle game on one shared Earth. Buy ~300 m tiles anywhere on
+A land-grab idle game on one shared Earth. Buy ~300 m tiles anywhere on
 the planet, roll deed rarities, build towers, and trade tiles with other
-players on an open market. Virtual currency only — nothing is worth real money,
-and the "ads" are fictional.
+players on an open market. ₲ Geobux, the in-game currency, is virtual and
+holds no real-world value.
 
 ## Run locally
 
