@@ -4,6 +4,43 @@ Player-visible changes. Bumped together with `package.json`'s `version`,
 which is the single source of truth the corner badge and the new-version
 poll both read (see `vite.config.js`).
 
+## 1.33.3
+
+### The daily stipend paid nothing and stayed collectable
+
+- **Reported as a display bug — "I collect it, switch tabs, and it's
+  claimable again" — but the money was never arriving either.** Every claim
+  since 1.33.2 was a silent no-op.
+- **Cause: two divergent copies of `supabase.sql`.** The stipend split
+  (1.33.0) added `last_daily_paid` + `touch_daily()` to
+  `plot-twist-world-deploy/deploy/supabase.sql`. The energy fix (1.33.2) was
+  written against `plot-twist-world-server/supabase.sql`, a copy that had
+  branched *before* the split — so it still carried the pre-split
+  `claim_daily()`, which gates the payout on `last_daily` and knows nothing
+  about `last_daily_paid`. Running it for the energy fix silently
+  `create or replace`d the split-aware `claim_daily()` back to the old one.
+  `touch_daily()` survived, since nothing dropped it.
+- **Why that produces exactly this symptom.** `touch_daily()` stamps
+  `last_daily` on arrival to bank the visit streak. The old `claim_daily()`
+  then sees `last_daily = today`, answers `already_claimed`, and pays ₲0 —
+  and the client's `already_claimed` branch treats that as "another device
+  got there first", so it flips the card to Collected with no error. The
+  card's real state comes from `touch_daily()`'s `last_daily_paid = today`,
+  which nothing ever set, so the next Profile visit or refocus honestly
+  reported the stipend as still waiting. Both halves were behaving
+  correctly; they just disagreed about which column meant "paid".
+- **Fix: the stipend section of both `supabase.sql` copies is now
+  byte-identical** — the column, the backfill, `touch_daily()` and the
+  split-aware `claim_daily()`. Whichever copy gets run leaves the database
+  consistent. No client change; the bundle was right all along.
+- The section header now spells out that the two functions must always be
+  re-run together and what happens if only one lands, because the failure is
+  a silent ₲0 rather than an error.
+- **Still to reconcile:** the two copies remain out of sync elsewhere — the
+  1.33.2 energy work (`energy_pm_date`, the missed-tranche catch-up) exists
+  only in the `plot-twist-world-server` copy. Run that copy, not the deploy
+  one, until they're merged.
+
 ## 1.33.2
 
 ### A pre-noon session got half a day's energy, every day
