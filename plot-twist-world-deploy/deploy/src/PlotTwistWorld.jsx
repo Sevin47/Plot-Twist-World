@@ -43,6 +43,17 @@ const VERSION_CHECK_MS = 5 * 60 * 1000;
 // commit, not after the fact.
 const CHANGELOG = [
   {
+    id: "1.34.0",
+    date: "Aug 3, 2026",
+    notes: [
+      "New: Redevelop all, on the Assets tab. Every maxed-out tile in the list goes back to Vacant in one go, each one banking a prestige star and its permanent +25% rent — the same trade as redeveloping one tile, done to the whole portfolio at once.",
+      "It costs no ₲. The cost is the buildings themselves: those tiles stop paying their current rent until you rebuild them, which is why the button asks twice — the first tap arms it, the second runs it, and it disarms itself if you change a filter or leave it alone.",
+      "Like Upgrade all, it obeys the Assets filters, so it only ever acts on the tiles the list is currently showing.",
+      "Fixed: owning a landmark tile broke Upgrade all. Landmark tiles can't be developed, but they were being counted as eligible — so the batch would run until it reached one and then stop, leaving most of your tiles untouched with no explanation.",
+      "Landmarks are now excluded from the eligible count too, so the button's number is what it will actually build.",
+    ],
+  },
+  {
     id: "1.33.2",
     date: "Jul 31, 2026",
     notes: [
@@ -2671,6 +2682,14 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
   // consistently instead of inheriting whatever this map was seeded with.
   const [assetRegionOverrides, setAssetRegionOverrides] = useState({});
   const [batchBusy, setBatchBusy] = useState(null);
+  // "Redevelop all" is armed by a first tap and only fires on a second one.
+  // Its siblings (Upgrade all, Rush all) only ever spend money on things the
+  // player already wanted; this one knocks every maxed tile back to Vacant
+  // and stops their rent until they're rebuilt, so a stray tap on a
+  // full-width button in a scrolling list is not an acceptable way to
+  // trigger it. Cleared by the timer below, by running, and by any change
+  // to the filters that decide what it would act on.
+  const [redevArmed, setRedevArmed] = useState(false);
   const [nameDraft, setNameDraft] = useState(G.current.name || "");
   const [priceDraft, setPriceDraft] = useState("");
   const [nickDraft, setNickDraft] = useState("");
@@ -4247,6 +4266,27 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
   };
   const myLandmarkPieces = (landmarkId) => g.own.filter((t) => landmarksByQk.current.get(t.qk)?.landmarkId === landmarkId).length;
 
+  // ── "can this tile be developed at all?" — the single source of truth for
+  //    every build/redevelop affordance, batch or otherwise.
+  //
+  //    A landmark tile is owned like any other and sits in g.own and the
+  //    Assets list, but upgrade_tile refuses it outright (supabase.sql: "the
+  //    landmark itself is the attraction") and it therefore never reaches the
+  //    level that makes redeveloping legal either. Its level is permanently
+  //    0, so a naive `t.l < maxLevelOf(t)` test counts EVERY landmark tile as
+  //    upgradable — which is what put landmarks into Upgrade All's pool and
+  //    then stopped the whole batch dead on the first one, since these
+  //    batches deliberately halt on the first server-side rejection rather
+  //    than retry-looping past it. Excluding them here rather than at each
+  //    call site is the point: they're excluded from the eligible COUNT too,
+  //    so the button doesn't offer work that doesn't exist.
+  const isLandmarkTile = (t) => landmarksByQk.current.has(t.qk);
+  // maxLevelOf, not MAX_LVL, in both: a covenant can cap the ceiling lower
+  // (heritage_listing), and such a tile is "fully built" — and so
+  // redevelopable — at its own ceiling. See redevelop_tile.
+  const canUpgrade = (t) => !t.bu && !isLandmarkTile(t) && t.l < maxLevelOf(t);
+  const canRedevelop = (t) => !t.bu && !isLandmarkTile(t) && t.l >= maxLevelOf(t) && !modsOf(t).no_redevelop;
+
   /* ── Region projects (see supabase.sql's REGION PROJECTS section).
      Two fetch paths, deliberately: this cheap one covers every unlocked
      region in a single pair of selects and feeds the territory chips and
@@ -4643,6 +4683,10 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
     // heritage_listing). Mirrors upgrade_tile's own max_level gate.
     if (!t || t.l >= maxLevelOf(t)) return;
     if (t.bu) { toast("Already building — rush it or wait for it to finish."); return; }
+    // no Build button is ever rendered for a landmark tile, so this only
+    // fires for a stale/synthetic call — but it turns upgrade_tile's raise
+    // into the same sentence the tile detail already shows
+    if (isLandmarkTile(t)) { toast("Landmark tiles can't be developed — the landmark itself is the attraction."); return; }
     if (!g.devMode) {
       const activeBuilds = g.own.filter((x) => x.bu).length;
       // + permanent slots from completed collections, or this local
@@ -4710,9 +4754,12 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
   const upgradeAll = async (tiles) => {
     if (batchBusy) return;
     const kind = "upgrade";
-    // already-building tiles aren't "eligible" here — starting a build is
-    // all this does now, and a tile can only run one at a time
-    let pool = tiles.filter((t) => t.l < maxLevelOf(t) && !t.bu);
+    // canUpgrade, not a hand-rolled level test: already-building tiles aren't
+    // "eligible" here (starting a build is all this does now, and a tile can
+    // only run one at a time), and neither are landmark tiles, which
+    // upgrade_tile rejects and which would otherwise end the batch at the
+    // first one — see canUpgrade.
+    let pool = tiles.filter(canUpgrade);
     const totalEligible = pool.length;
     if (totalEligible === 0) { toast("Nothing here needs upgrading."); return; }
     let count = 0, spent = 0, slotLimited = false;
@@ -4819,6 +4866,75 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
     // looking at.
     if (!t.cv) refreshCovOffers();
   };
+
+  // Batch redevelop over a given tile set — third of the same family as
+  // upgradeAll and rushAll above (sequential, visibly one at a time, stops on
+  // the first server-side rejection rather than retry-looping), and like
+  // upgradeAll it's scoped to the Assets tab's currently-filtered list, so
+  // "redevelop all my maxed Downtown tiles" falls out of the existing filters.
+  //
+  // Two things make this one different from its siblings:
+  //
+  // 1. There is no cost and no running balance, so there's no affordability
+  //    ordering to get right and no reason to re-sort each round the way
+  //    upgradeAll does. It runs in the order the player is already looking
+  //    at, which is the least surprising thing it can do.
+  //
+  // 2. It is the one batch that takes something away — every tile drops to
+  //    Vacant, and the rent they were paying stops until they're rebuilt.
+  //    That's the deal redeveloping has always been (+25% forever in
+  //    exchange for the whole ladder), but making it at a stroke over
+  //    dozens of tiles is not a click anyone should be able to make by
+  //    accident, hence the arm-then-confirm on the button itself.
+  //
+  // REDEVELOP IS THE OFFER POINT (see redevelop_tile): the server rolls a
+  // fresh covenant offer for each redeveloped tile that has no covenant and
+  // hasn't already declined one. Those pile up as offer chips on the rows —
+  // deliberately not surfaced as modals here, since a batch of thirty would
+  // be thirty permanent decisions in a row. One refreshCovOffers at the end
+  // picks up the lot in a single query.
+  const redevelopAll = async (tiles) => {
+    if (batchBusy) return;
+    const kind = "redevelop";
+    const pool = tiles.filter(canRedevelop);
+    const totalEligible = pool.length;
+    if (totalEligible === 0) { toast("Nothing here is maxed out yet."); return; }
+    let count = 0, offers = false, stopped = false;
+    setBatchBusy({ kind, done: 0, total: totalEligible });
+    for (const t of pool) {
+      const { data, error } = await supabase.rpc("redevelop_tile", { p_qk: t.qk });
+      // a rejection mid-batch is reported either way — silently finishing 3
+      // of 10 and announcing 3 reads as the button being broken
+      if (error || !data) { toast(error?.message || "Couldn't redevelop."); stopped = true; break; }
+      t.l = data.level; t.pr = data.prestige;
+      // the covenant survives untouched — it's a term of this owner's
+      // tenure, not of the building that just came down
+      const rr = regions.current.get(regionOf(t.qk));
+      if (rr && rr.t[t.qk]) rr.t[t.qk] = { ...rr.t[t.qk], l: 0, pr: data.prestige };
+      if (!t.cv) offers = true;
+      count++;
+      setBatchBusy({ kind, done: count, total: totalEligible });
+      force();
+    }
+    setBatchBusy(null);
+    if (count > 0 && !g.ach.redevelop1) { g.ach.redevelop1 = 1; toast("Unlocked — Redeveloper"); }
+    rebuildOwn(); checkAch(); dirty.current = true; save();
+    if (count > 0) toast(`Redeveloped ${count} tile${count === 1 ? "" : "s"} — each +25% rent permanently`
+      + (stopped ? ` · stopped with ${totalEligible - count} to go` : ""));
+    if (offers) refreshCovOffers();
+  };
+
+  // Disarm Redevelop all on anything that changes what it would act on, and
+  // after 5s of nothing — an armed danger button left sitting in the toolbar
+  // is exactly the stray-tap hazard the arming was added to prevent, and an
+  // arm aimed at "my 3 filtered Downtown tiles" must not survive into a
+  // cleared filter where it now means all 40.
+  useEffect(() => { setRedevArmed(false); }, [tab, assetClsFilter, assetRarityFilter, assetQuery]);
+  useEffect(() => {
+    if (!redevArmed) return;
+    const id = setTimeout(() => setRedevArmed(false), 5000);
+    return () => clearTimeout(id);
+  }, [redevArmed]);
 
   const abandon = async (qk) => {
     const t = ownMap.current.get(qk);
@@ -6190,7 +6306,11 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
     else if (assetSort === "district") sorted.sort((a, b) => (CLS[a.cls]?.name || "").localeCompare(CLS[b.cls]?.name || ""));
     return sorted;
   })();
-  const assetsUpgradable = tab !== "assets" ? [] : assetsFiltered.filter((t) => t.l < maxLevelOf(t));
+  // canUpgrade/canRedevelop, not raw level tests: landmark tiles sit in this
+  // list at a permanent level 0 and would otherwise be counted as upgradable
+  // forever — inflating the count on a button that then can't act on them.
+  const assetsUpgradable = tab !== "assets" ? [] : assetsFiltered.filter(canUpgrade);
+  const assetsRedevelopable = tab !== "assets" ? [] : assetsFiltered.filter(canRedevelop);
   const assetsFilterActive = assetClsFilter !== "all" || assetRarityFilter !== -1 || !!assetQuery.trim();
 
   // Region grouping for the main list. Once a player is spread across
@@ -6212,7 +6332,7 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
       if (!grp) { grp = { region, tiles: [], rent: 0, upgradable: 0 }; groups.set(region, grp); }
       grp.tiles.push(t);
       grp.rent += rentOf(t);
-      if (t.l < maxLevelOf(t)) grp.upgradable++;
+      if (canUpgrade(t)) grp.upgradable++;
     }
     const home = homeRegionRef.current;
     return [...groups.values()].sort((a, b) =>
@@ -7155,6 +7275,22 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
                   {assetsUpgradable.length > 0 && (
                     <Btn small tone="ghost" full onClick={() => upgradeAll(assetsFiltered)} disabled={!!batchBusy}>
                       {batchBusy?.kind === "upgrade" ? `Upgrading… ${batchBusy.done}/${batchBusy.total}` : `Upgrade all — ${assetsUpgradable.length} eligible${assetsFilterActive ? " (filtered)" : ""}`}
+                    </Btn>
+                  )}
+                  {/* Sits under Upgrade all rather than beside it: they're
+                      never both the obvious next move (a tile is either still
+                      climbing or already maxed), and the pair reads as one
+                      "act on everything shown" block. Danger tone + the
+                      arm-then-confirm below because this is the only batch
+                      that costs rent instead of ₲ — see redevelopAll. */}
+                  {assetsRedevelopable.length > 0 && (
+                    <Btn small tone={redevArmed ? "danger" : "ghost"} full disabled={!!batchBusy}
+                      onClick={() => { if (redevArmed) { setRedevArmed(false); redevelopAll(assetsFiltered); } else setRedevArmed(true); }}>
+                      {batchBusy?.kind === "redevelop"
+                        ? `Redeveloping… ${batchBusy.done}/${batchBusy.total}`
+                        : redevArmed
+                          ? `Tap again — ${assetsRedevelopable.length} tile${assetsRedevelopable.length === 1 ? "" : "s"} back to Vacant`
+                          : `Redevelop all — ${assetsRedevelopable.length} maxed${assetsFilterActive ? " (filtered)" : ""}`}
                     </Btn>
                   )}
                 </div>

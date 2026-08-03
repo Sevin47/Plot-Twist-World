@@ -530,10 +530,12 @@
         <p>How many tiles can be under construction <em>at once</em> is capped by your <a href="#status">status rank</a> — 2 slots at Squatter, rising to 6 at Mogul — plus any permanent slots from <a href="#collections">collections</a> (up to +5 more). Starting an upgrade while all your slots are full simply isn't possible until one finishes.</p>
         <h3>Rushing a build</h3>
         <p>Impatient? Rushing pays the <strong>remaining fraction</strong> of the full upgrade cost to finish instantly — rush a build that's 90% done and you're only paying for the last 10%, not the whole thing again. Rushing is the game's main money sink, and both a <a href="#landmarks">landmark</a> perk and the <a href="#projects">Contractors' Guild</a> project discount it. See <a href="#formulas">Formula reference</a> for the exact math.</p>
-        <h3>Upgrade All &amp; Rush all</h3>
+        <h3>Upgrade All, Rush all &amp; Redevelop all</h3>
         <p>From the Assets tab, <strong>Upgrade All</strong> starts a build on every eligible, affordable tile (cheapest first) until your builder slots or balance run out.</p>
         <p><strong>Rush all</strong>, on the Building section, finishes every build you have running, one after another, and shows the total cost before you commit. If you're holding <a href="#contracts">rush credits</a> it spends them on your <em>most expensive</em> builds first, so a credit is never burned on a five-minute Cottage; once they're gone it works up from the cheapest, finishing as many as your ₲ allows.</p>
-        <p>Anything either button starts or finishes appears in the dedicated Building section at the top of Assets, so you can see exactly what it did.</p>
+        <p><strong>Redevelop all</strong> does the same for the other end of the ladder: every maxed-out tile in the list goes back to Vacant, each one banking a <a href="#redevelop">prestige star</a> and its permanent +25% rent. It costs no ₲ — the cost is the buildings, and the rent they were paying stops until you rebuild them. Because that can't be undone, the button arms on the first tap and only runs on a second; changing a filter or leaving it alone for a few seconds disarms it again.</p>
+        <p>All three obey the Assets filters, so each acts on exactly the tiles the list is currently showing you — filter to one district and "all" means all of those. <a href="#landmarks">Landmark</a> tiles are never included in any of them: they can't be developed at all.</p>
+        <p>Anything these buttons start or finish appears in the dedicated Building section at the top of Assets, so you can see exactly what they did.</p>
       </section>
 
       <section id="nicknames">
@@ -1294,6 +1296,12 @@ otherwise:     3 standard cards, weighted-random from the eligible pool</div>
         <h2>Version history</h2>
         <p class="section-desc">The game auto-detects new deploys and prompts a refresh; a "What's new" popup and version badge live in the header. This wiki is written against the version in the chip at the top of this page, which it reads from the live build. Recent highlights:</p>
         <div class="verhist">
+          <div class="verentry"><span class="vertag">v1.34.0</span><span class="verdate">Aug 3, 2026</span>
+            <ul>
+              <li><strong><a href="#buildings">Redevelop all</a></strong> on the Assets tab — every maxed tile in the list goes back to Vacant at once, each banking its <a href="#redevelop">prestige star</a>. Arms on the first tap, runs on the second.</li>
+              <li>Fixed: owning a <a href="#landmarks">landmark</a> tile broke <strong>Upgrade All</strong>. Landmarks can't be developed, but they were being counted as eligible and the batch stopped dead at the first one it reached.</li>
+            </ul>
+          </div>
           <div class="verentry"><span class="vertag">v1.33.0</span><span class="verdate">Jul 30, 2026</span>
             <ul>
               <li><strong>Reaching a new <a href="#status">status rank</a> now tells you what it unlocked</strong> — daily energy, builder slots, attacks a day, and any <a href="#contracts">contracts</a> that have joined your rotation, each shown as the change rather than the total. It used to happen silently.</li>

@@ -4,6 +4,57 @@ Player-visible changes. Bumped together with `package.json`'s `version`,
 which is the single source of truth the corner badge and the new-version
 poll both read (see `vite.config.js`).
 
+## 1.34.0
+
+### Redevelop all
+
+- **Third of the batch family on the Assets tab**, alongside Upgrade all and
+  Rush all, and built to the same shape: sequential, visibly one tile at a
+  time with a live progress count, and it stops on the first server-side
+  rejection rather than retry-looping past it.
+- **Scoped to the currently-filtered list**, like Upgrade all — filter to one
+  district or rarity and "all" means all of those. Eligible means maxed at
+  *this tile's* ceiling (`maxLevelOf`, so a `heritage_listing` tile counts at
+  its own capped level — see `redevelop_tile`), not building, not a landmark,
+  and not held under a `no_redevelop` covenant.
+- **No ordering rule, deliberately.** Its siblings sort each round because
+  they spend against a running balance; `redevelop_tile` charges nothing, so
+  this runs in the order the player is already looking at.
+- **Arm-then-confirm on the button itself.** The other two only ever spend ₲
+  on something the player already wanted; this one knocks every maxed tile
+  back to Vacant and stops that rent until they're rebuilt. First tap arms
+  (button flips to danger tone and names the count), second tap runs. It
+  disarms after 5s, on running, and on any filter/tab change — an arm aimed
+  at three filtered tiles must not survive into a cleared filter meaning
+  forty.
+- **Covenant offers are collected, not queued as modals.** Redevelop is the
+  offer point (`redevelop_tile`), so a batch of thirty would otherwise be
+  thirty permanent decisions in a row. They land as `offer` chips on the rows
+  via a single `refreshCovOffers()` at the end.
+
+### Owning a landmark tile broke Upgrade All
+
+- **Reported as "Upgrade all triggers but fails."** It ran, did some or none
+  of the work, and stopped without saying why.
+- **Cause: landmark tiles were passing the eligibility test.** `upgrade_tile`
+  refuses them outright ("the landmark itself is the attraction"), so their
+  level is permanently 0 — which means the pool filter `t.l < maxLevelOf(t)`
+  counted *every* landmark tile a player owns as upgradable, forever. The
+  batch deliberately breaks on the first server-side rejection, so it ran
+  until it reached one and then ended, leaving the rest of the portfolio
+  untouched. Rarity of the trigger tracked ownership: the more landmark
+  pieces you held, the earlier it stopped.
+- **Fix: `canUpgrade` / `canRedevelop` are now the single source of truth**
+  for every build affordance, and both exclude landmarks up front. Used by
+  `upgradeAll`'s pool, `redevelopAll`'s pool, the `assetsUpgradable` /
+  `assetsRedevelopable` counts and the per-region `upgradable` tally — so
+  landmarks are out of the eligible *count* too, and the button no longer
+  advertises work it can't do.
+- `upgrade()`'s single-tile path also guards, turning what would be a raw
+  `raise` into the same sentence the tile sheet already shows. No Build
+  button is ever rendered for a landmark, so this only catches stale calls.
+- Server-side unchanged — `upgrade_tile` was already correct.
+
 ## 1.33.3
 
 ### The daily stipend paid nothing and stayed collectable
