@@ -4,6 +4,83 @@ Player-visible changes. Bumped together with `package.json`'s `version`,
 which is the single source of truth the corner badge and the new-version
 poll both read (see `vite.config.js`).
 
+## 1.34.1
+
+### Regions were named after the wrong city
+
+- **Reported as "I have a region called near Cape Town that doesn't show up
+  anywhere."** It was showing up — as **Paarl**. Same for Oʻahu, listed as
+  "near Wahiawa" rather than Honolulu, and the Athens region, listed as
+  Piraeus. A region you can't recognise by name is a region you can't find,
+  and tapping the ones you don't recognise never lands where you expected.
+- **Cause: the label was the city nearest a sample point, with no regard for
+  how big that city is.** A region is ~150km across and routinely holds one
+  metro plus a dozen towns. Paarl sits 1.4km from that square's exact
+  midpoint; Cape Town is 19km from the nearest corner sample. Paarl won.
+  Both answers were "correct" — the question was wrong.
+- **A region is now named for the most prominent city inside its bounds.**
+  Population is scored directly, and only distance *outside* the region is
+  penalised — so a metro just over the border can still claim the name
+  (50km of "outside" costs about a 10x population difference), but a
+  similar-sized neighbour can never displace the city actually in the square.
+  A city inside the region drops the "near" hedge, because it isn't near it,
+  it's in it.
+- Regions with no city in or near them still read as coordinates — open
+  ocean, the Sahara, the ice caps.
+
+### Hawai'i is on the map now
+
+- **The whole archipelago had two entries: Honolulu and Wahiawa.** The city
+  table is Natural Earth's 100,000+ cut, and Hawai'i's largest settlement
+  outside Honolulu is Hilo at ~44k — so the entire Big Island, two full
+  regions of it, could never be named after anywhere and fell back to bare
+  coordinates, with no "near X" on any tile sheet there either.
+- **24 places added** at real 2020 census populations, covering O'ahu, the
+  Big Island, Maui, Kaua'i, Moloka'i and Lāna'i. The Big Island's two
+  regions now read **Hilo** and **Ocean View**; Maui reads **Kahului**,
+  Kaua'i **Kapa'a**.
+- A deliberate, local exception to the table's population floor — nothing
+  outside the archipelago changes, and a sub-floor town can only ever name
+  a region that has nothing bigger in it.
+- **Tuned against Maui while doing it:** at the first cut of the scoring,
+  Honolulu — 37km away, across open ocean, on a different island — beat
+  Kahului sitting inside the region and named it "near Honolulu". A city
+  outside a region now loses ground about three times faster, so a metro
+  can still claim a region it genuinely spills into (10x bigger buys ~15km
+  over the border) without reaching to another island.
+
+### A region you unlocked could stay invisible
+
+- **Reported as "I have 12 regions unlocked and only 11 show up"** — in the
+  World tab's region list and, through it, everywhere else scoped to
+  territory.
+- **Cause: `unlocked_regions` was fetched exactly once, at boot, and never
+  again.** Every other piece of server state already refreshes when the tab
+  is looked at again — tiles, rent, the bank, battles, contracts — but
+  territory was left out of that resync. So a region unlocked in a second
+  tab, or on a phone while the desktop session sat open, never appeared in
+  the session that missed it. A reload fixed it, which is why it looked
+  intermittent; an installed PWA can go days without one.
+- **Territory now refreshes on the same schedule as everything else** — on
+  focus/visibility resync and on the ~20s reconcile tick. It only ever adds:
+  nothing server-side deletes a region, so a missing row is always a failed
+  read, never a revoked region, and a bad response can't re-fog land you own.
+- **A capture can no longer invent a region.** Winning an attack marked the
+  target's region unlocked locally, but the server only does that when the
+  capture is your first tile ever — so a cross-border capture would have
+  shown a region that vanished on the next reload. The client now mirrors
+  the server exactly.
+
+### Assets: a region under construction no longer disappears
+
+- **A region whose every tile happened to be building dropped out of the
+  grouped list**, and the "N regions" count above it dropped with it — the
+  grouping is built from the filtered list, which excludes building tiles
+  because they have their own section.
+- Those regions now keep their header, carrying a 🔨 count, and say where
+  their tiles went when opened. Suppressed while a filter or search is
+  active, where an empty group would read as a broken search.
+
 ## 1.34.0
 
 ### Redevelop all
