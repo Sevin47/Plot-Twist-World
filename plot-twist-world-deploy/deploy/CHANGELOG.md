@@ -4,6 +4,35 @@ Player-visible changes. Bumped together with `package.json`'s `version`,
 which is the single source of truth the corner badge and the new-version
 poll both read (see `vite.config.js`).
 
+## 1.35.1
+
+### Unattackable covenants are now genuinely rare
+
+- **Reported as "tiles are permanently locked around landmarks."** Three
+  cards carry `no_attack`: Conservation Easement and Holdout Parcel in the
+  standard pool, Sovereign Charter in the rare tier.
+- **They were appearing in ~1 offer in 5 at low level and ~1 in 3 at
+  Tower** — the pool shrinks as `max_level` cards drop out, and Tower is
+  exactly where players redevelop. Given a safe option, players sign it.
+- **`no_attack` is the one mod whose cost is paid by other players**, and
+  the one that accumulates: a tile draws one offer per tenure, so whatever
+  fraction of offers carry it is roughly the fraction of a long-lived
+  portfolio that becomes untouchable. Around landmarks — the only
+  genuinely contested thing on the map — that hardened into rings with no
+  counterplay: no raid, no market, no repossession while the owner plays.
+- **Weights cut: easement 6 → 1, holdout_parcel 6 → 1, sovereign_charter
+  8 → 3** within the rare pool. That's ~1 offer in 23 at low level and ~1
+  in 15 at Tower, about a 5x reduction. The 7% rare gate itself is
+  unchanged.
+- Deliberately not removed and not moved to the rare tier — rare is the
+  *deals* pool, and these two are mild and defensive; they'd read as a
+  reward there. A player who wants one untouchable tile can still get one.
+- **Existing covenants are untouched.** A covenant is a promise for the
+  length of a tenure; retroactively stripping signed ones would break that.
+  This applies to offers rolled from here on.
+- Requires re-running `supabase.sql` — the weights live in `covenant_defs`,
+  and the seed block's `on conflict do update` carries them across.
+
 ## 1.35.0
 
 ### Selling a tile for 50% now asks first

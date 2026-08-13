@@ -43,6 +43,16 @@ const VERSION_CHECK_MS = 5 * 60 * 1000;
 // commit, not after the fact.
 const CHANGELOG = [
   {
+    id: "1.35.1",
+    date: "Aug 13, 2026",
+    notes: [
+      "Covenants that make a tile unattackable are now genuinely rare. Conservation Easement, Holdout Parcel and Sovereign Charter were showing up in about one offer in five — one in three on a Tower — and everyone signs the safe card.",
+      "Around landmarks that was hardening into rings of tiles nobody could ever take: no raid, no market, and no repossession while the owner keeps playing. Landmarks are the one thing on the map worth fighting over, and they were becoming the one thing you couldn't fight over.",
+      "They now turn up in roughly one offer in twenty. Still there, still signable, still the answer if you want one tile nobody can touch — just no longer often enough to pave a neighbourhood with them.",
+      "Nothing already signed changes. A covenant is a promise for as long as you hold the tile, and that holds for these too — this only affects offers from here on.",
+    ],
+  },
+  {
     id: "1.35.0",
     date: "Aug 13, 2026",
     notes: [
