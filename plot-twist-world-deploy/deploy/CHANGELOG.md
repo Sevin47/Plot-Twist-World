@@ -4,6 +4,47 @@ Player-visible changes. Bumped together with `package.json`'s `version`,
 which is the single source of truth the corner badge and the new-version
 poll both read (see `vite.config.js`).
 
+## 1.35.0
+
+### Selling a tile for 50% now asks first
+
+- **Reported as "too many times I've accidentally sold tiles while spam
+  tapping rush builds / redeveloping."** The 50% button shares a row with
+  Rush, Build and Redevelop — the controls players tap fastest and most
+  repeatedly — and it was the only irreversible one in that row, firing
+  instantly on a single tap.
+- **It now opens a confirmation** naming the tile, the refund, and
+  everything that leaves with it: the building, any prestige stars, its
+  covenant, and the rent it was paying. It also points at the market as the
+  alternative when the tile can be listed.
+- Dismissing it is the safe path — tapping outside the dialog, or "Keep
+  it", cancels. Nothing else in that row is gated; the rest are either
+  reversible (Unlist) or a straight gain.
+
+### Commendations could vanish on sign-out
+
+- **Reported as "the Oriented badge doesn't stay unlocked after completing
+  the tutorial, signing out and back in."** Confirmed, and it hit
+  **Sociable** (first friend) the same way.
+- **Cause: the badge list was rebuilt from scratch on every sign-in**, by
+  re-deriving each badge from live game state — tile count, regions,
+  balance, streak, prestige, plus a few one-row history lookups. Every
+  badge that *is* a function of current state survived that. The two that
+  aren't — finishing the tour, having a friend — had nothing to re-derive
+  from and silently came back locked. They were already being written to
+  the account (that's what a friend's stats card reads), but that copy was
+  never read back on load.
+- **Badges are now hydrated from the account row**, so anything unlocked
+  stays unlocked regardless of whether it can be inferred from state. The
+  re-derivation still runs on top, which is what restores badges for
+  accounts that earned them before any of this was persisted.
+- **Also fixed: three unlocks never reached the server in the first place**
+  — Oriented, Sociable and Pen pal marked state dirty but nothing on their
+  code paths ever triggered a save, so they only synced if the player
+  happened to do something else (claim, build, sell) later in the session.
+  Finishing the tutorial and immediately signing out lost the badge twice
+  over.
+
 ## 1.34.1
 
 ### Regions were named after the wrong city

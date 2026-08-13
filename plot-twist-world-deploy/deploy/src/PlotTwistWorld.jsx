@@ -43,6 +43,16 @@ const VERSION_CHECK_MS = 5 * 60 * 1000;
 // commit, not after the fact.
 const CHANGELOG = [
   {
+    id: "1.35.0",
+    date: "Aug 13, 2026",
+    notes: [
+      "Selling a tile back for 50% now asks first. That button sits next to Rush and Build — the two you tap fastest — and it was handing developed tiles to the void on a mistap, instantly and permanently.",
+      "The confirmation says what actually leaves with the tile: the building, any prestige stars, its covenant, and the rent it was paying. Tap anywhere outside to back out.",
+      "Fixed: commendations you'd earned could disappear when you signed out and back in. Oriented (finish the tutorial) and Sociable (add your first friend) were the two that went missing — the game rebuilt your badge list from your tiles and balance on each sign-in, and neither of those is something your tiles can prove.",
+      "Your badges are now read back from your account, so anything you've unlocked stays unlocked. Badges lost this way come back the next time you meet their condition; Oriented specifically returns if you replay the tour from the pause menu.",
+    ],
+  },
+  {
     id: "1.34.0",
     date: "Aug 3, 2026",
     notes: [
@@ -1653,7 +1663,15 @@ const gameFromProfile = (uid, profile) => ({
   name: profile.username,
   bal: Number(profile.balance),
   own: [],
-  ach: {},
+  // Commendations, hydrated straight from profiles.ach — the server row IS
+  // the record (sync_achievements merges into it, monotonically, and the
+  // leaderboard view reads it back for friends' stats cards). Boot also
+  // re-derives the badges it can from real synced data (see the block in the
+  // boot effect), but re-derivation alone silently loses every badge that
+  // isn't a function of current state: "Oriented" (finished the tour),
+  // "Sociable" (first friend). Those unlocked, synced, and then vanished on
+  // the next sign-in because this started empty every session.
+  ach: profile.ach && typeof profile.ach === "object" && !Array.isArray(profile.ach) ? { ...profile.ach } : {},
   streak: profile.streak || 0,
   boostUntil: profile.boost_until ? new Date(profile.boost_until).getTime() : 0,
   boostReadyAt: profile.boost_ready_at ? new Date(profile.boost_ready_at).getTime() : 0,
@@ -2857,11 +2875,14 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
   // working unchanged — every actual mutation already went through a
   // server-validated RPC by the time save() is called.
   //
-  // g.ach is the one exception: it's still derived client-side (see
-  // checkAch/the boot hydration above), but is now ALSO mirrored to
-  // Postgres (sync_achievements, folded into the public `leaderboard`
-  // view — see supabase.sql) so a friend's stats card can show real
-  // badges instead of only ever your own. achSyncedRef dedupes so this
+  // g.ach is the one exception: it's unlocked client-side (see checkAch),
+  // then written to Postgres here (sync_achievements, folded into the
+  // public `leaderboard` view — see supabase.sql) so a friend's stats card
+  // can show real badges instead of only ever your own. That column is
+  // also what the next session loads them back from (gameFromProfile), so
+  // a badge that never reaches this function is a badge the player loses
+  // on sign-out — every unlock site must end in a save(), not just a
+  // `dirty.current = true`. achSyncedRef dedupes so this
   // fires only when g.ach actually changed since the last sync, not on
   // every single save() call (which happens after nearly every tile
   // action, almost none of which touch achievements).
@@ -3104,13 +3125,14 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
       // false "unlocked" that could bypass the server-side check.
       await refreshTerritory();
 
-      // silently pre-populate already-earned achievement flags so they
-      // don't re-toast every login — checkAch()'s unlock() only toasts
-      // achievements that become newly true *during* this session. g.ach
-      // itself is never persisted (Postgres is the only source of truth,
-      // see gameFromProfile above), so every one of these has to be
-      // re-derived from real synced data or it'll re-fire the first time
-      // its trigger condition is true again in a later session.
+      // Belt-and-braces on top of the profiles.ach hydration in
+      // gameFromProfile: silently pre-populate already-earned achievement
+      // flags so they don't re-toast every login — checkAch()'s unlock()
+      // only toasts achievements that become newly true *during* this
+      // session. Still worth doing after hydration, for accounts that
+      // earned a badge before ach was persisted at all (or whose sync
+      // round-trip never landed) — anything derivable from real synced
+      // data gets restored here rather than re-firing its toast.
       const n = g.own.length;
       if (n >= 1) g.ach.deed1 = 1;
       if (n >= 10) g.ach.deed10 = 1;
@@ -4160,11 +4182,13 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
     friendIds.current = new Set(rows.filter((r) => r.status === "accepted").map((r) => r.other_user));
     if (friendIds.current.size > 0) {
       if (!socialHydrated.current) g.ach.friend1 = 1; // already true going in — silent
-      else if (!g.ach.friend1) { g.ach.friend1 = 1; toast("Unlocked — Sociable"); dirty.current = true; }
+      // save() for the same reason as "Oriented" below — friendships aren't
+      // re-derived at boot, so profiles.ach is the only place this survives.
+      else if (!g.ach.friend1) { g.ach.friend1 = 1; toast("Unlocked — Sociable"); dirty.current = true; save(); }
     }
     socialHydrated.current = true;
     setSocial({ loading: false, rows, err: false });
-  }, [g, toast]);
+  }, [g, toast, save]);
   useEffect(() => { if (ready) refreshSocial(); }, [ready, refreshSocial]);
   useEffect(() => { if (tab === "social") refreshSocial(); }, [tab, refreshSocial]);
 
@@ -4302,7 +4326,7 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
     if (error) { toast(error.message || "Couldn't send that."); return; }
     setChatDraft("");
     if (data) setChatMsgs((m) => ({ ...m, rows: [...(m.rows || []), data] }));
-    if (!g.ach.dm1) { g.ach.dm1 = 1; toast("Unlocked — Pen pal"); dirty.current = true; }
+    if (!g.ach.dm1) { g.ach.dm1 = 1; toast("Unlocked — Pen pal"); dirty.current = true; save(); }
   };
 
   // ── landmarks: small, near-static reference data — fetched once at
@@ -5043,6 +5067,18 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
     const id = setTimeout(() => setRedevArmed(false), 5000);
     return () => clearTimeout(id);
   }, [redevArmed]);
+
+  // Every "50%" button routes through here rather than straight into
+  // abandon(). That button shares a row with Rush and Build — the two
+  // things players tap fastest and most repeatedly — and selling is
+  // instant, permanent, and pays half of what the tile cost. A stray tap
+  // during a rush-build session was handing developed tiles to the void
+  // with no way back. It's the only irreversible control in that row, so
+  // it's the only one that asks.
+  const confirmAbandon = (qk) => {
+    if (!ownMap.current.get(qk)) return;
+    setModal({ kind: "abandon", qk });
+  };
 
   const abandon = async (qk) => {
     const t = ownMap.current.get(qk);
@@ -6081,7 +6117,11 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
   const endTutorial = (completed) => {
     markTutorial({ tour: "done", step: TUT_STEPS.length });
     setTut(null);
-    if (completed && !g.ach.tutorial) { g.ach.tutorial = 1; toast("Unlocked — Oriented"); dirty.current = true; }
+    // save() immediately, not just dirty: "Oriented" can't be re-derived
+    // from game state on a later boot, so this sync IS the record of it.
+    // Nothing else in the tour's path calls save(), and a player who
+    // finished the tutorial and signed straight out used to lose the badge.
+    if (completed && !g.ach.tutorial) { g.ach.tutorial = 1; toast("Unlocked — Oriented"); dirty.current = true; save(); }
     // The one moment worth asking a guest for an account: they've claimed
     // a tile, watched it earn, and put a building on it. Asked before any
     // of that, "sign in" is a toll; asked here, it's about keeping
@@ -7242,7 +7282,7 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
                         ) : (
                           <Btn tone="ghost" onClick={() => openListModal(sel, selMine.pd || CLS[selCls].price)}>List…</Btn>
                         )}
-                        <Btn tone="danger" onClick={() => abandon(sel)}>50%</Btn>
+                        <Btn tone="danger" onClick={() => confirmAbandon(sel)}>50%</Btn>
                       </div>
                     </div>
                   ) : selMine.l < maxLevelOf(selMine) ? (
@@ -7270,7 +7310,7 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
                               ? `Rush — free (${g.rushCredits} credit${g.rushCredits === 1 ? "" : "s"})`
                               : `Rush — ₲${fmt(rushCostFor(selMine, landmarkPerkPct(regionOf(sel), "build_speed"), landmarkPerkPct(regionOf(sel), "rush_discount"), projectFactor(regionOf(sel), "build_time"), projectFactor(regionOf(sel), "rush_cost")))}`}
                           </Btn>
-                          <Btn tone="danger" onClick={() => abandon(sel)}>50%</Btn>
+                          <Btn tone="danger" onClick={() => confirmAbandon(sel)}>50%</Btn>
                         </div>
                       </div>
                     ) : (
@@ -7306,7 +7346,7 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
                           <Btn tone="ghost" disabled={!!modsOf(selMine).no_list}
                             onClick={() => openListModal(sel, selMine.pd || CLS[selCls].price)}>List…</Btn>
                         )}
-                        <Btn tone="danger" onClick={() => abandon(sel)}>50%</Btn>
+                        <Btn tone="danger" onClick={() => confirmAbandon(sel)}>50%</Btn>
                       </div>
                       </>
                     )
@@ -7339,7 +7379,7 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
                           <Btn tone="ghost" disabled={!!modsOf(selMine).no_list}
                             onClick={() => openListModal(sel, selMine.pd || CLS[selCls].price)}>List…</Btn>
                         )}
-                        <Btn tone="danger" onClick={() => abandon(sel)}>50%</Btn>
+                        <Btn tone="danger" onClick={() => confirmAbandon(sel)}>50%</Btn>
                       </div>
                       {modsOf(selMine).no_list && !selMine.p && (
                         <div className="pt10 text-center" style={{ ...mono, color: C.dim }}>
@@ -8461,6 +8501,32 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
               </div>
             </>
           )}
+          {/* The one confirmation on a tile action — see confirmAbandon.
+              Spells out what leaves with the tile (building, prestige,
+              rent) rather than asking a bare "are you sure?", because the
+              tap that got here was usually aimed at the button next to it. */}
+          {modal.kind === "abandon" && (() => {
+            const t = ownMap.current.get(modal.qk);
+            // sold, captured or repossessed out from under the open modal
+            if (!t) return <><Eyebrow>Gone already</Eyebrow><div className="mb-4 mt-2 text-xs" style={{ color: C.dim }}>That tile isn't yours anymore.</div><Btn full onClick={closeModal}>Close</Btn></>;
+            const refund = Math.round((t.pd || 0) * 0.5);
+            return (
+              <>
+                <Eyebrow>Sell {t.nick || coordLabel(modal.qk)} to the void?</Eyebrow>
+                <div className="my-2 text-3xl font-bold" style={{ ...mono, color: C.amber, textShadow: `0 0 26px ${C.glow}` }}>+₲{fmt(refund)}</div>
+                <div className="mb-4 text-xs leading-relaxed" style={{ color: C.dim }}>
+                  Half the ₲{fmt(t.pd || 0)} this tile cost you. It takes your {LVL[t.l]}
+                  {t.pr ? `, ${t.pr} prestige star${t.pr === 1 ? "" : "s"}` : ""}
+                  {t.cv ? `, its ${COVENANTS[t.cv]?.name || "covenant"}` : ""} and ₲{fmt1(rentOf(t))}/s of rent with it, and can't be undone.
+                  {!modsOf(t).no_list && " Listing it on the market instead lets you name your own price."}
+                </div>
+                <div className="flex flex-col gap-2">
+                  <Btn full tone="danger" onClick={() => { closeModal(); abandon(modal.qk); }}>Sell for ₲{fmt(refund)}</Btn>
+                  <Btn full tone="ghost" onClick={closeModal}>Keep it</Btn>
+                </div>
+              </>
+            );
+          })()}
           {modal.kind === "nickname" && (
             <>
               <Eyebrow>Name {coordLabel(modal.qk)}</Eyebrow>
