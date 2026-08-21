@@ -10,14 +10,19 @@ scripts/*.geojson
 
 # supabase.sql is deliberately UNTRACKED and was purged from history
 # (2026-07-29). It's the whole server: covenant weights, the rare-deal
-# gate, contract and NPC internals — every tuning number that isn't
+# gate, contract and NPC internals -- every tuning number that isn't
 # already mirrored in the client for display. This repo is public, so
 # tracking it published the economy to anyone willing to read it.
 #
-# The file still lives at its usual path on disk and is still applied by
-# re-pasting into the Supabase SQL Editor; nothing about that changed.
-# It is NOT backed up by this repo any more — keep a copy somewhere that
-# isn't this working tree.
+# As of 2026-08-21 the file is not on disk here either. It lives ONLY in
+# plot-twist-world-server/supabase.sql. Keeping a second untracked copy
+# in this tree was not a backup -- .gitignore hid it, so git never showed
+# it drifting, and it drifted twice (1.33.3's silently unpaid stipend, and a
+# 47-line regression caught on 2026-08-21). See SUPABASE.md, which IS
+# tracked, for the whole story and how to apply the schema.
+#
+# This pattern stays so a stray copy can't be committed by accident. If
+# one reappears at this path, delete it -- don't edit it.
 #
 # Numbers the client mirrors (rollRarity's thresholds, covenant `mods`,
 # class prices) ship in the bundle regardless and are not secret.

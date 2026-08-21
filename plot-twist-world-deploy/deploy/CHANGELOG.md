@@ -4,6 +4,52 @@ Player-visible changes. Bumped together with `package.json`'s `version`,
 which is the single source of truth the corner badge and the new-version
 poll both read (see `vite.config.js`).
 
+## 1.35.2
+
+### Block Party and City Block only counted blocks the grid agreed with
+
+- **Reported as "'Block Party: Own all 4 tiles of a single 2x2 block' is
+  either bugged or unclearly worded: I own a 2x2 square of tiles, didn't
+  trigger."** Bugged, and worse than it looked.
+- **The rule grouped tiles by a fixed quadkey prefix.** A quadkey prefix
+  is a square block, but only a *grid-aligned* one — it starts on an even
+  tile index. Any 2x2 square whose corner lands on an odd index straddles
+  the boundary and splits across 2 or 4 different prefixes.
+- **So 3 of every 4 real 2x2 squares could never complete it.** Worse,
+  they under-reported: an odd/odd square showed **1/4** while the player
+  was staring at all four tiles they owned. City Block had the same fault
+  scaled up — it completed in **1 of 16** alignments.
+- **Fixed by checking every alignment, not just one.** Any axis-aligned
+  k×k square is grid-aligned in exactly one of the k² grids shifted by
+  (dx, dy), so the rule now evaluates all of them and keeps the best.
+  Block Party completes on any 2x2 square, City Block on any 4x4, and the
+  progress bar counts the block you actually own. Still one pass per
+  shift — no adjacency walk, no recursive CTE.
+- **City Block gets easier, deliberately.** Sixteen tiles in a square
+  anywhere is what the description has always promised; the old rule also
+  demanded you guess the grid. The requirement is unchanged at 16 tiles.
+- Nothing already claimed is affected — this only ever reported *more*
+  progress, never less.
+- Requires re-running `supabase.sql`: the rule lives in
+  `collection_have()`, and the two `params` values move from
+  `{"prefix_len":16|15}` to `{"size":2|4}`, carried across by the seed
+  block's `on conflict do update`.
+
+### Toasts sat on top of the Build and Rush buttons
+
+- **Reported as "having the notifications over the build/rush button is a
+  bit annoying,"** with a screenshot.
+- The toast strip was pinned 80px off the bottom of the screen. The tile
+  sheet's action row — Build, Rush, Redevelop, the controls players tap
+  fastest and most repeatedly — sits right about there, so every toast
+  landed face-down on it.
+- **Toasts now clear the sheet**, measured rather than guessed: the sheet
+  grows with covenant chips, build progress and the owned/unowned split,
+  so a taller constant would have been wrong somewhere. They ease back to
+  their normal height when the sheet closes.
+- Taps were never actually blocked — the strip has always been
+  `pointer-events-none`, so this was occlusion, not a dead button.
+
 ## 1.35.1
 
 ### Unattackable covenants are now genuinely rare

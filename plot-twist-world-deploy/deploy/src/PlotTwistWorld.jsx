@@ -43,6 +43,16 @@ const VERSION_CHECK_MS = 5 * 60 * 1000;
 // commit, not after the fact.
 const CHANGELOG = [
   {
+    id: "1.35.2",
+    date: "Aug 21, 2026",
+    notes: [
+      "Fixed: Block Party wouldn't complete on most 2x2 blocks you owned. The rule only recognised blocks that lined up with the underlying map grid, so three out of every four real 2x2 squares didn't count — and they showed you 1/4 or 2/4 while you were looking at all four tiles on the map.",
+      "City Block had the same fault, and worse odds: it could only ever complete on one 4x4 square in sixteen. Both now count any square block you own, wherever it sits. Still 4 tiles and 16 tiles — you just no longer have to guess where the grid lines are.",
+      "Progress you'd already made was never lost, only under-reported. Check the Profile tab; you may be further along than it was telling you.",
+      "Toasts no longer land on top of the Build and Rush buttons. They now sit above the tile panel instead of over its buttons, and drop back down when you close it.",
+    ],
+  },
+  {
     id: "1.35.1",
     date: "Aug 13, 2026",
     notes: [
@@ -2710,6 +2720,15 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
   const [roll, setRoll] = useState(null);        // {qk, phase, r}
   const [modal, setModal] = useState(null);
   const [toasts, setToasts] = useState([]);
+  // The toast strip sat at a fixed 80px from the bottom, which put it
+  // squarely over the tile sheet's action row -- Build, Rush and Redevelop,
+  // the buttons players tap fastest and most repeatedly. Reported as
+  // "having the notifications over the build/rush button is a bit
+  // annoying". The sheet's height is not a constant to guess at: it grows
+  // with covenant chips, build progress and the owned/unowned split, so
+  // measure the real thing and park the toasts just above it.
+  const sheetRef = useRef(null);
+  const [sheetClear, setSheetClear] = useState(0);
   const [updateAvailable, setUpdateAvailable] = useState(false);
   const [worldTilesOwned, setWorldTilesOwned] = useState(null);
   const [tut, setTut] = useState(null); // 1-based TUT_STEPS index, or null when not running
@@ -2828,6 +2847,34 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
   const logEvt = (n) => { dbgRef.current.lastEvt = n; };
 
   const reduced = reducedOverride ?? osReducedMotion();
+
+  // Measured rather than hard-coded, and reset to 0 the moment the sheet
+  // closes so toasts drop back to their normal resting height.
+  //
+  // Two traps here, both worth the extra lines. The sheet is bottom-0 of
+  // the CONTENT column, which stops at the top of the nav bar, while the
+  // toasts are positioned from the root, whose bottom is under the nav --
+  // so the sheet's own height is not the clearance, and the difference is
+  // however tall the nav renders. And the sheet's entry animation is a
+  // translateY, which moves getBoundingClientRect() but not layout, so a
+  // rect read on the first frame comes back 16px short and no observer
+  // ever fires to correct it. Reading offsetHeight (layout, ignores the
+  // transform) off the sheet and the un-animated offsetParent's rect for
+  // the nav gap avoids both.
+  useEffect(() => {
+    const el = sheetRef.current;
+    if (!sel || !el) { setSheetClear(0); return; }
+    const measure = () => {
+      const parent = el.offsetParent;
+      const below = parent ? window.innerHeight - parent.getBoundingClientRect().bottom : 0;
+      setSheetClear(Math.round(below + el.offsetHeight));
+    };
+    measure();
+    window.addEventListener("resize", measure);
+    const ro = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(measure);
+    ro?.observe(el);
+    return () => { window.removeEventListener("resize", measure); ro?.disconnect(); };
+  }, [sel]);
 
   const toast = useCallback((text) => {
     const id = Math.random();
@@ -6988,7 +7035,7 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
 
           {/* tile sheet */}
           {sel && (
-            <div data-tut="tile-sheet" className="pt-anim-sheetUp absolute inset-x-0 bottom-0 rounded-t-2xl p-4"
+            <div ref={sheetRef} data-tut="tile-sheet" className="pt-anim-sheetUp absolute inset-x-0 bottom-0 rounded-t-2xl p-4"
               style={{ background: `${C.panel}f7`, backgroundImage: C.panelGrad, borderTop: `1px solid ${C.hairLit}`, boxShadow: C.shadowLg, ...blur(16) }}>
               <div aria-hidden className="mx-auto mb-3 h-1 w-9 rounded-full" style={{ background: C.hairLit }} />
               <div className="mb-2 flex items-start justify-between">
@@ -8239,7 +8286,8 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
       </div>
 
       {/* toasts */}
-      <div className="pointer-events-none absolute inset-x-0 bottom-20 z-10 flex flex-col items-center gap-1.5">
+      <div className="pointer-events-none absolute inset-x-0 z-10 flex flex-col items-center gap-1.5"
+        style={{ bottom: sheetClear ? sheetClear + 12 : 80, transition: "bottom 0.18s ease-out" }}>
         {toasts.map((t) => (
           <div key={t.id} className="pt-anim-popIn rounded-full px-4 py-2 text-xs font-bold"
             style={{ ...display, background: C.amber, color: C.ink, boxShadow: C.shadowMd }}>{t.text}</div>

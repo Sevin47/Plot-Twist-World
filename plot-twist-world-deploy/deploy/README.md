@@ -24,8 +24,10 @@ source of truth (see "Server-validated economy" below for why that matters).
 
 1. Create a free project at https://supabase.com
 2. In the Supabase dashboard, open **SQL Editor**, paste the contents of
-   `supabase.sql`, and run it. This creates the `profiles`/`tiles` tables and
-   every economy function (buy/sell/upgrade/abandon/etc.) as locked-down
+   `supabase.sql` — which lives in the private `plot-twist-world-server`
+   repo, not here; see `SUPABASE.md` — and run it. This creates the
+   `profiles`/`tiles` tables and every economy function
+   (buy/sell/upgrade/abandon/etc.) as locked-down
    `security definer` RPCs — no table accepts a direct write from the client.
 3. **Enable Google sign-in:** Authentication → Providers → Google. You'll
    need an OAuth 2.0 Client ID from https://console.cloud.google.com (APIs &
@@ -126,7 +128,9 @@ or repo Action secrets referenced by the workflow.
 - `src/PlotTwistWorld.jsx` — the entire game (map engine, economy, trading, UI)
 - `src/storage.js` — the shared Supabase client
 - `src/auth.js` — Google sign-in / sign-out / session helpers
-- `supabase.sql` — one-time database setup: tables, RLS, and every economy
-  RPC (buy/sell/upgrade/abandon/rent/daily/boost/leaderboard)
+- `SUPABASE.md` — where the schema lives and why it isn't in this repo.
+  `supabase.sql` itself (tables, RLS, and every economy RPC) is in the
+  private `plot-twist-world-server` repo — it's the economy, and this repo
+  is public
 - `supabase/functions/delete-account/` — edge function for account deletion
   (needs the service-role key, so it can't be a client-callable RPC)
