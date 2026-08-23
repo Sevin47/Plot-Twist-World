@@ -4,6 +4,69 @@ Player-visible changes. Bumped together with `package.json`'s `version`,
 which is the single source of truth the corner badge and the new-version
 poll both read (see `vite.config.js`).
 
+## 1.36.0
+
+### Raids showed their totals and none of their terms
+
+- **Reported as "Attacks are very untransparant: I have no idea what
+  influences this and having to move to the wiki for a core game mechanic
+  isn't intuitive."** Both halves fair. The panel already printed `your
+  power 2 vs their power 6.75`, a win %, and the price — all honest, none
+  of it actionable, because nothing on screen said where any of those
+  numbers came from.
+- **The worst offender was the attacker's own side.** `attackableFrom`
+  gives 1 power per orthogonally adjacent tile you own, capped at 4 by
+  geometry. It is the only lever an attacker has, it is entirely under
+  their control, and it was displayed as a bare integer with no label.
+- **Defence collapsed five factors into one decimal.** `defPowerFor` is
+  `(1 + level) x rarity x (1 + 0.25 x prestige) x landmark x covenant`.
+  A player looking at `6.75` could not tell whether to out-build the tile,
+  wait for its covenant to lapse, or go somewhere else entirely.
+- **Cost hid a floor that scales with the attacker, not the target.**
+  `attackCostFor` takes `Math.max(product, 0.002 x your peak net worth)`,
+  so a wealthy player pays a minimum that has nothing to do with the tile
+  in front of them, and the panel never said so.
+- **Fixed by making the odds line a control.** `attackBreakdown()`
+  re-reads the same inputs in the same order as the two functions above
+  and names each factor; tapping the totals expands both sides plus the
+  price. It computes nothing new — a divergence between the breakdown and
+  the totals would be a bug in the mirror, not a second opinion on the
+  fight. `attack_tile()` remains the sole authority on the real outcome.
+- **Every defence term is shown even at x1.** `Common x1` is the point:
+  an omitted term reads as a factor that doesn't exist, and rarity is one
+  of the things a player is deciding whether to care about.
+- **Added `raid_ready` to `TIPS`.** PvP had exactly one coach mark,
+  `attacked`, and it fires for the *defender* — the only raid teaching in
+  the game arrived after you'd lost a tile. The new tip fires the first
+  time the attack panel is genuinely on screen, gated the same way
+  `covOfferHere` is, since a tip whose anchor isn't rendered spotlights
+  nothing.
+- **Not addressed here: the balance itself.** Defence still wins most
+  even fights — max attacker power is 4, and a level-3 Common already
+  matches that before rarity, prestige or a covenant. Making the numbers
+  legible is a prerequisite for retuning them, not a substitute.
+
+### "Not enough ₲" hid the price at the moment it mattered
+
+- **Reported as "When you can't afford something, it doesn't show the
+  price, just that you can't afford it. Seems a bit opaque."** Correct,
+  and inconsistent with the rest of the sheet: `Build`/`Rush` keep their
+  price and simply grey out, while `unlock-btn`, the claim-deed button,
+  the buy-a-listing button and the attack button all replaced their whole
+  label with a verdict.
+- **Fixed with `shortfallLabel(cost)`** — renders `Need ₲1,200 · ₲340
+  short`, so the two numbers a player actually wants (the price, and the
+  gap) are both there. All four sites now use it.
+- **`Math.ceil` on the gap.** `fmt` floors, so a balance a fraction under
+  the price would otherwise render `₲0 short`, which reads as a broken
+  button rather than a near miss.
+- **Not changed: the toasts.** `attackTile`/`rushBuild`'s "Not enough ₲"
+  toasts are unreachable backstops behind an already-disabled button, and
+  the two bulk ones (`Upgrade all`/`Rush all`) have no single price to
+  quote.
+- **Not changed: the Market rows and `Rush all`.** Both already print the
+  price immediately beside the button.
+
 ## 1.35.2
 
 ### Block Party and City Block only counted blocks the grid agreed with

@@ -43,6 +43,19 @@ const VERSION_CHECK_MS = 5 * 60 * 1000;
 // commit, not after the fact.
 const CHANGELOG = [
   {
+    id: "1.36.0",
+    date: "Aug 23, 2026",
+    notes: [
+      "Raids now show their working. Tap the odds line on any tile you can attack and both sides open up term by term — what your power is made of, what theirs is made of, and every factor in the price.",
+      "The headline of that: your power in a raid is simply how many tiles you own touching the target. One each, four at most. That was always the rule and the game never said it anywhere you'd be looking.",
+      "Their power is the tile's build level, its rarity, how many times it's been redeveloped, whether it's a landmark, and any covenant they've signed — all of it now listed with its own multiplier instead of arriving as a single decimal.",
+      "The attack price breaks down too, including the minimum every raid costs a landlord of your size, which is what's charging you when the tile itself looks cheap.",
+      "New players now get a one-time prompt the first time they're standing next to something they could take. Until now the only raid coaching in the game arrived after you'd already lost a tile to someone else.",
+      "Buttons you can't afford now tell you the price and how far short you are, instead of just “Not enough ₲”. Unlocking a region, claiming a deed, buying someone's listing and launching a raid all used to hide the number at exactly the moment you wanted it — Build and Rush never did, so the same situation read two different ways depending on the button.",
+      "The shortfall counts down live as your rent comes in.",
+    ],
+  },
+  {
     id: "1.35.2",
     date: "Aug 21, 2026",
     notes: [
@@ -797,8 +810,8 @@ const TUT_STEPS = [
    the tour is running, and only ever one at a time.
 
    Deliberately NOT tipped: market, friends/DMs, listing, landmarks — all
-   discoverable by browsing, none punishing to miss. Six good tips beat
-   twelve that turn the game into a popup gallery. */
+   discoverable by browsing, none punishing to miss. A handful of good
+   tips beat twelve that turn the game into a popup gallery. */
 const TIPS = [
   {
     id: "build_done",
@@ -828,6 +841,21 @@ const TIPS = [
     anchor: { dom: "nav-profile" },
     title: "Something's waiting",
     text: "Your daily stipend, contracts and collections all pay out on the Profile tab. The stipend expires at 00:00 UTC; collections never do.",
+  },
+  {
+    // The attacking side had no tip at all — `attacked` below fires for the
+    // DEFENDER, so the only PvP coaching in the game reached you after
+    // you'd already lost a tile. Nothing ever explained the rule that
+    // decides your half of a fight, and the panel itself is invisible
+    // until you happen to own a neighbour, so a player could reach Magnate
+    // without learning attacks exist. Fires the first time the panel is
+    // actually on screen, which is the first moment the rule is usable.
+    id: "raid_ready",
+    when: (ctx) => ctx.attackHere,
+    anchor: { dom: "attack-panel" },
+    side: "above-sheet",
+    title: "You can take this one",
+    text: "Your power in a raid is just how many tiles you own touching the target — one each, four at most. Theirs is what they've built: level, rarity, redevelopments, landmark status and whatever covenant they signed. Tap the odds to see both sides broken down.",
   },
   {
     id: "attacked",
@@ -2718,6 +2746,11 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
   const [tab, setTab] = useState("map");
   const [sel, setSel] = useState(null);          // quadkey or null
   const [roll, setRoll] = useState(null);        // {qk, phase, r}
+  // Attack panel's "show me the terms" toggle. Deliberately NOT reset when
+  // the selection changes: someone who opened the breakdown once is
+  // comparing targets, and re-collapsing it on every tap would make them
+  // re-open it for each tile they're weighing up.
+  const [atkDetail, setAtkDetail] = useState(false);
   const [modal, setModal] = useState(null);
   const [toasts, setToasts] = useState([]);
   // The toast strip sat at a fixed 80px from the bottom, which put it
@@ -4710,6 +4743,53 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
   // win probability from the attacker's side, same clamp as attack_tile()
   const winProbFor = (attPower, defPower) => Math.max(0.05, Math.min(0.90, attPower / (attPower + defPower)));
 
+  // Term-by-term expansion of attackCostFor/defPowerFor for the attack
+  // panel's detail block. Reads the SAME inputs in the SAME order as the
+  // two functions above — it doesn't recompute the fight, it just names
+  // the factors those two already multiplied together.
+  //
+  // This exists because the panel used to show only the totals: "your
+  // power 2 vs their power 6.75". Both numbers are honest and neither is
+  // actionable — nothing on screen said your power is simply how many
+  // tiles you own touching the target, or which of level/rarity/prestige/
+  // landmark/covenant built theirs. That sent people to the wiki to
+  // understand a button they were already looking at.
+  //
+  // Every defence term is listed even when it multiplies by 1 (a Common
+  // tile still shows "Common x1"): the point is to show what the levers
+  // ARE, and a silently-omitted term reads as a factor that doesn't exist.
+  const attackBreakdown = (rec, qk) => {
+    const lm = qk ? landmarksByQk.current.get(qk) : undefined;
+    const mods = modsOf(rec);
+    const lvl = rec.l || 0;
+    const pr = rec.pr || 0;
+
+    const def = [
+      { k: `${LVL[lvl]}${lvl ? ` (level ${lvl})` : ""}`, v: 1 + lvl, base: true },
+      { k: RAR[rec.r || 0].name, v: RAR[rec.r || 0].m },
+    ];
+    if (pr > 0) def.push({ k: `Redeveloped ${pr}x`, v: 1 + 0.25 * pr });
+    if (lm) def.push({ k: "Landmark", v: lm.defenseMult });
+    if (mods.def != null) def.push({ k: COVENANTS[rec.cv]?.name || "Covenant", v: mods.def });
+
+    // Cost side. The wealth floor is the one term that isn't a factor of
+    // the others — it's a Math.max, so it either binds or it doesn't, and
+    // when it binds the whole product above it is moot. Say which.
+    const base = lm ? lm.claimPrice : CLS[rec.cls].price;
+    const region = qk ? regionOf(qk) : null;
+    const siege = region ? landmarkPerkPct(region, "siege_discount") : 0;
+    const cost = [
+      { k: "Half its list price", v: Math.round(base * 0.5), money: true, base: true },
+      { k: `Built to ${LVL[lvl]}`, v: 1 + 0.5 * lvl },
+    ];
+    if (siege > 0) cost.push({ k: "Your region's siege works", v: 1 - siege / 100 });
+    if (mods.atk_cost != null) cost.push({ k: COVENANTS[rec.cv]?.name || "Covenant", v: mods.atk_cost });
+    const product = Math.round(base * 0.5 * (1 + 0.5 * lvl) * (1 - siege / 100) * (mods.atk_cost ?? 1));
+    const floor = Math.round((g.peakNetWorth || 0) * 0.002);
+
+    return { def, cost, floorBinds: floor > product, floor };
+  };
+
   const buyListed = async (qk) => {
     if (needName()) return;
     if (guestGate("trade with other players")) return;
@@ -6049,6 +6129,21 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
       // existing somewhere — the tip anchors to that element, so firing it
       // while the sheet is closed would spotlight nothing
       covOfferHere: !!(covOffer && covOffer.qk === sel),
+      // Same gating reasoning as covOfferHere: true only when the attack
+      // panel is really rendered right now, since the tip anchors to it.
+      // Mirrors the sheet's own render conditions in order — foreign tile,
+      // unlocked, adjacency, not covenant-proof, not inside a landmark's
+      // post-capture grace.
+      attackHere: (() => {
+        const rec = sel ? recOf(sel) : undefined;
+        if (!rec || !rec.o || rec.o === g.uid) return false;
+        if (sel && g.own.length > 0 && !unlockedRegions.current.has(regionOf(sel))) return false;
+        if (untargetable(rec)) return false;
+        const lm = landmarksByQk.current.get(sel);
+        if (rec.os && lm && !g.devMode &&
+            Date.now() - new Date(rec.os).getTime() < 48 * 3600 * 1000) return false;
+        return attackableFrom(sel);
+      })(),
       showTile: tutFocusTile,
     };
   };
@@ -6194,7 +6289,7 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
   const pickTip = () => {
     if (tut != null || modal || roll || pickingHome || !tutMigrated.current) return null;
     // Cheapest possible exit for the case that's permanent for every
-    // established player: all six seen, so this runs 4x/sec forever and
+    // established player: all of them seen, so this runs 4x/sec forever and
     // must not build a ctx or touch the DOM to find that out. The order
     // inside the loop matters for the same reason — the seen check and
     // when() are both free, resolveAnchor forces layout.
@@ -6444,6 +6539,19 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
   // reset_daily_energy's v_total_cap; the HUD reads it three times.
   const myEnergyCap = myStatus.cap + landmarkEnergyBonus() + collectionEnergyBonus();
 
+  // Label for a button you can't currently afford. Several of them used to
+  // collapse to a bare "Not enough ₲", which threw away the only two
+  // numbers the player wants at that moment — what the thing costs, and
+  // how far off they are — and did it inconsistently: Build and Rush kept
+  // their price and simply greyed out, so the same situation read two
+  // different ways depending on which button you were looking at.
+  //
+  // Ceil on the gap so a balance a fraction under the price can't render
+  // as "₲0 short" (fmt floors), which would look like a broken button.
+  // Recomputed every tick like any other balance-derived label, so the
+  // number visibly counts down as rent comes in.
+  const shortfallLabel = (cost) => `Need ₲${fmt(cost)} · ₲${fmt(Math.ceil(cost - g.bal))} short`;
+
   const selRec = sel ? recOf(sel) : undefined;
   const selDbg = dbg && sel ? classify(sel) : null;
   const selMine = sel ? ownMap.current.get(sel) : undefined;
@@ -6460,6 +6568,11 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
   const selLandmarkGraceLeft = (selRec?.os && selLandmark)
     ? Math.max(0, 48 * 3600 - Math.round((Date.now() - new Date(selRec.os).getTime()) / 1000))
     : 0;
+  // The attacker's whole contribution to a fight: 1 per orthogonally
+  // adjacent tile they own, so 0-4. Hoisted out of the sheet because the
+  // attack panel reads it three times (headline, odds, breakdown) and it
+  // was being recomputed inline at each site.
+  const atkPower = sel ? neighborsOf(sel).filter((nqk) => ownMap.current.has(nqk)).length : 0;
   const tilePxNow = cam.current.s / N;
   // unread DMs from current friends only — a count from someone since
   // unfriended would otherwise light the Social dot with no row to clear it
@@ -7102,7 +7215,7 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
                   </div>
                   <Btn full tut="unlock-btn" onClick={() => unlockRegion(sel)} disabled={!guest && g.bal < nextUnlockCost()}>
                     {guest ? "Sign in to unlock territory"
-                      : g.bal < nextUnlockCost() ? "Not enough ₲"
+                      : g.bal < nextUnlockCost() ? shortfallLabel(nextUnlockCost())
                       : `Unlock region — ₲${fmt(nextUnlockCost())}`}
                   </Btn>
                 </div>
@@ -7140,7 +7253,9 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
                     <Btn full onClick={() => guestGate("claim more land")}>Sign in to claim more land</Btn>
                   ) : (
                     <Btn full onClick={() => buyUnowned(sel)} disabled={g.bal < (selLandmark ? selLandmark.claimPrice : CLS[selCls].price)}>
-                      {g.bal < (selLandmark ? selLandmark.claimPrice : CLS[selCls].price) ? "Not enough ₲" : `Claim deed — ₲${fmt(selLandmark ? selLandmark.claimPrice : CLS[selCls].price)}`}
+                      {g.bal < (selLandmark ? selLandmark.claimPrice : CLS[selCls].price)
+                        ? shortfallLabel(selLandmark ? selLandmark.claimPrice : CLS[selCls].price)
+                        : `Claim deed — ₲${fmt(selLandmark ? selLandmark.claimPrice : CLS[selCls].price)}`}
                     </Btn>
                   )}
                 </div>
@@ -7167,7 +7282,7 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
                   </div>
                   {selRec.p ? (
                     <Btn full onClick={() => buyListed(sel)} disabled={g.bal < selRec.p}>
-                      {g.bal < selRec.p ? "Not enough ₲" : `Buy from ${selRec.n || "player"} — ₲${fmt(selRec.p)}`}
+                      {g.bal < selRec.p ? shortfallLabel(selRec.p) : `Buy from ${selRec.n || "player"} — ₲${fmt(selRec.p)}`}
                     </Btn>
                   ) : (
                     <div className="py-2 text-center text-xs" style={{ ...mono, color: C.dim }}>Not for sale. Try making friends.</div>
@@ -7195,24 +7310,80 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
                       </div>
                     </div>
                   ) : attackableFrom(sel) && (
-                    <div className="mt-2 border-t pt-2" style={{ borderColor: C.hair }}>
+                    <div data-tut="attack-panel" className="mt-2 border-t pt-2" style={{ borderColor: C.hair }}>
                       <div className="mb-1.5 flex items-center justify-between pt10" style={{ ...mono, color: C.dim }}>
                         <span>attacks left today: {Math.max(0, myStatus.atk - (g.attacksSent || 0))}/{myStatus.atk}</span>
                         <span>attacked {selRec.arc || 0}/{ATTACK_RECEIVED_CAP} today</span>
                       </div>
-                      <div className="mb-1.5 pt10" style={{ ...mono, color: C.dim }}>
-                        your power {neighborsOf(sel).filter((nqk) => ownMap.current.has(nqk)).length} vs their power {defPowerFor(selRec, sel).toFixed(2)}
+                      {/* The totals stay the headline — they're what you
+                          decide on. What changed is that they're now a
+                          control: tapping opens the terms behind both
+                          numbers, so the wiki is where you go for the
+                          exact formula, not to find out that adjacency is
+                          what your own power is made of. */}
+                      <button type="button" className="mb-1.5 w-full text-left pt10"
+                        onClick={() => setAtkDetail((v) => !v)}
+                        style={{ ...mono, color: C.dim }}>
+                        your power {atkPower} vs their power {defPowerFor(selRec, sel).toFixed(2)}
                         {" — "}
                         <span style={{ color: C.amber, fontWeight: 700 }}>
-                          {Math.round(winProbFor(neighborsOf(sel).filter((nqk) => ownMap.current.has(nqk)).length, defPowerFor(selRec, sel)) * 100)}% chance to win
+                          {Math.round(winProbFor(atkPower, defPowerFor(selRec, sel)) * 100)}% chance to win
                         </span>
-                      </div>
+                        <span className="ml-1" style={{ color: C.hairLit }}>{atkDetail ? "▴" : "▾"}</span>
+                      </button>
+                      {atkDetail && (() => {
+                        const bd = attackBreakdown(selRec, sel);
+                        const Row = ({ k, v, strike }) => (
+                          <div className="flex items-baseline justify-between gap-3 pt10"
+                            style={{ ...mono, color: strike ? C.hairLit : C.dim, textDecoration: strike ? "line-through" : "none" }}>
+                            <span className="truncate">{k}</span>
+                            <span style={{ fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>{v}</span>
+                          </div>
+                        );
+                        return (
+                          <div className="mb-1.5 rounded-xl p-2.5" style={cardSty}>
+                            <div className="pt10 font-bold" style={{ ...mono, color: C.mine }}>Your power</div>
+                            <Row k={`Tiles you own touching this one`} v={`${atkPower} of 4`} />
+                            <div className="mt-1 pt10" style={{ ...mono, color: C.hairLit }}>
+                              One power each. Taking the tiles around a target is the only way to raise it.
+                            </div>
+
+                            <div className="mt-2 pt10 font-bold" style={{ ...mono, color: "#F08A8A" }}>Their power</div>
+                            {bd.def.map((t, i) => (
+                              <Row key={t.k + i} k={t.k}
+                                v={t.base ? String(t.v) : `x${Number(t.v.toFixed(2))}`} />
+                            ))}
+                            <div className="mt-0.5 flex items-baseline justify-between gap-3 border-t pt10 pt-1"
+                              style={{ ...mono, color: C.text, borderColor: C.hair, fontWeight: 700 }}>
+                              <span>Total</span>
+                              <span style={{ fontVariantNumeric: "tabular-nums" }}>{defPowerFor(selRec, sel).toFixed(2)}</span>
+                            </div>
+
+                            <div className="mt-2 pt10 font-bold" style={{ ...mono, color: C.amber }}>What it costs to try</div>
+                            {bd.cost.map((t, i) => (
+                              <Row key={t.k + i} k={t.k} strike={bd.floorBinds}
+                                v={t.money ? `₲${fmt(t.v)}` : `x${Number(t.v.toFixed(2))}`} />
+                            ))}
+                            {bd.floorBinds && (
+                              <Row k="Minimum for someone your size" v={`₲${fmt(bd.floor)}`} />
+                            )}
+                            <div className="mt-0.5 flex items-baseline justify-between gap-3 border-t pt10 pt-1"
+                              style={{ ...mono, color: C.text, borderColor: C.hair, fontWeight: 700 }}>
+                              <span>Total</span>
+                              <span style={{ fontVariantNumeric: "tabular-nums" }}>₲{fmt(attackCostFor(selRec, sel))}</span>
+                            </div>
+                            <div className="mt-1 pt10" style={{ ...mono, color: C.hairLit }}>
+                              Charged whether you win or lose. Win and the tile resets to Vacant under your name.
+                            </div>
+                          </div>
+                        );
+                      })()}
                       <Btn full tone="danger"
                         onClick={() => attackTile(sel)}
                         disabled={g.bal < attackCostFor(selRec, sel) || (!g.devMode && ((g.attacksSent || 0) >= myStatus.atk || (selRec.arc || 0) >= ATTACK_RECEIVED_CAP))}>
                         {!g.devMode && (g.attacksSent || 0) >= myStatus.atk ? "No attacks left today"
                           : !g.devMode && (selRec.arc || 0) >= ATTACK_RECEIVED_CAP ? "Tile defended twice today"
-                          : g.bal < attackCostFor(selRec, sel) ? "Not enough ₲ to attack"
+                          : g.bal < attackCostFor(selRec, sel) ? shortfallLabel(attackCostFor(selRec, sel))
                           : `Attack — ₲${fmt(attackCostFor(selRec, sel))}`}
                       </Btn>
                     </div>
