@@ -43,6 +43,14 @@ const VERSION_CHECK_MS = 5 * 60 * 1000;
 // commit, not after the fact.
 const CHANGELOG = [
   {
+    id: "1.36.1",
+    date: "Aug 26, 2026",
+    notes: [
+      "Fixed: the map had “API KEY REQUIRED” stamped across every tile. CARTO, who supply the map imagery, started watermarking requests that don’t say who they’re from — the game had been asking anonymously for as long as it has existed, which was fine right up until it wasn’t.",
+      "It now identifies itself and the tiles arrive clean. Nothing about the map changed underneath: same imagery, same labels, same everything the watermark was sitting on top of.",
+    ],
+  },
+  {
     id: "1.36.0",
     date: "Aug 23, 2026",
     notes: [
@@ -936,6 +944,15 @@ function previewLevelFor(s) {
    ONLY to decide classification; the CARTO raster tiles elsewhere in
    this file remain the visual basemap, unchanged. */
 const PROTOMAPS_KEY = import.meta.env.VITE_PROTOMAPS_KEY || "";
+
+/* CARTO basemap key. CARTO began watermarking anonymous basemap tiles
+   ("API KEY REQUIRED" burned into the PNG itself, server-side), so the
+   key is no longer optional in practice — without it every tile on the
+   map carries the watermark. Free tier is 5M tile requests/month and the
+   key is issued instantly at carto.com/basemaps/apikey. It is a public,
+   domain-scoped key and is meant to ship to the client. */
+const CARTO_KEY = import.meta.env.VITE_CARTO_KEY || "";
+const CARTO_KEY_Q = CARTO_KEY ? `?key=${encodeURIComponent(CARTO_KEY)}` : "";
 const VECTOR_Z = 14; // ~2.4km reference tiles — fixed, independent of
 // display zoom, so a given real-world spot always classifies the same
 // way regardless of how zoomed in the camera happens to be
@@ -3550,7 +3567,7 @@ function Game({ G, onExit, startFresh, reducedOverride, jumpToQk, onJumpHandled,
     // Fetched directly from CARTO — no proxy. Classification is fully
     // vector-driven (see classifyFromVector), so nothing ever needs to read
     // this image's pixels back; a proxy hop here would only add latency.
-    const url = `https://${sub}.basemaps.cartocdn.com/dark_all/${z}/${tx}/${ty}.png`;
+    const url = `https://${sub}.basemaps.cartocdn.com/dark_all/${z}/${tx}/${ty}.png${CARTO_KEY_Q}`;
     if (inflight.current < MAX_INFLIGHT) startTileFetch(e, url);
     else {
       if (fetchQueue.current.length > 60) fetchQueue.current.shift(); // drop stalest queued request

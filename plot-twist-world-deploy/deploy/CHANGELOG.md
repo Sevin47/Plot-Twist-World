@@ -4,6 +4,35 @@ Player-visible changes. Bumped together with `package.json`'s `version`,
 which is the single source of truth the corner badge and the new-version
 poll both read (see `vite.config.js`).
 
+## 1.36.1
+
+### The map wore a watermark
+
+- **Reported as "I'm getting API key required text on the carto map."**
+  Confirmed server-side, not a client bug: fetching
+  `a.basemaps.cartocdn.com/dark_all/8/136/92.png` by hand returns `200 OK`
+  with "API KEY REQUIRED / carto.com/basemaps/apikey" burned into the PNG
+  pixels. Every player saw it, on every tile, at every zoom.
+- **CARTO has begun requiring keys on their raster basemaps.** The tiles
+  had been fetched anonymously since the basemap was first added — which
+  was how CARTO served them for years, and is exactly the usage they are
+  now metering. Nothing in this repo changed to cause it.
+- **Fixed by identifying the requests.** `VITE_CARTO_KEY` is appended as
+  `?key=` to the `dark_all` tile URL. With the var unset the URL is
+  byte-identical to before, so the change is inert without a key and there
+  is no fallback path to get wrong.
+- **The key is public and domain-scoped**, like `VITE_PROTOMAPS_KEY` and
+  `VITE_HCAPTCHA_SITE_KEY` beside it — it ships in the bundle by design.
+  In CI it must be a **repository** secret, not an Environment one
+  (Hard-won lessons #8: a missing secret resolves to an empty string with
+  no error, which would silently ship the watermark again).
+- **Free tier is 5M tile requests/month across raster and vector.**
+  Measured usage is roughly 150k/month at current player numbers, helped
+  by CARTO serving tiles with a 180-day `max-age`, so repeat views never
+  reach the network. Attribution stays on the map as a condition of that
+  tier — the renderer already draws it unconditionally, and it must
+  stay that way.
+
 ## 1.36.0
 
 ### Raids showed their totals and none of their terms

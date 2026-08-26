@@ -34,6 +34,11 @@ jobs:
           # to an empty string with no error, which ships a build where
           # "Play now" is rejected by Supabase's captcha protection.
           VITE_HCAPTCHA_SITE_KEY: ${{ secrets.VITE_HCAPTCHA_SITE_KEY }}
+          # CARTO basemap key. Same REPOSITORY-secret rule as above. CARTO
+          # watermarks anonymous basemap tiles ("API KEY REQUIRED" burned
+          # into the PNG server-side), so a missing secret here ships a
+          # build where every tile on the map carries the watermark.
+          VITE_CARTO_KEY: ${{ secrets.VITE_CARTO_KEY }}
       - uses: actions/upload-pages-artifact@v3
         with:
           path: plot-twist-world-deploy/deploy/dist
